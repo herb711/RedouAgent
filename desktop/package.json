@@ -1,0 +1,33 @@
+{
+  "name": "redou-agent-desktop",
+  "productName": "Redou Agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Redou Agent desktop shell",
+  "main": "src/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder --win nsis"
+  },
+  "devDependencies": {
+    "electron": "^39.2.6",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.redou.agent",
+    "productName": "Redou Agent",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "src/main.cjs"
+    },
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
