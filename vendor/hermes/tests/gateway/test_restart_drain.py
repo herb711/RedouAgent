@@ -1,6 +1,7 @@
 import asyncio
 import shutil
 import subprocess
+import sys
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
@@ -168,6 +169,14 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
 
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
+    if sys.platform == "win32":
+        assert cmd[0] == sys.executable
+        assert cmd[1] == "-c"
+        assert cmd[3:] == ["321", "/usr/bin/hermes", "gateway", "restart"]
+        assert kwargs["stdout"] is subprocess.DEVNULL
+        assert kwargs["stderr"] is subprocess.DEVNULL
+        return
+
     assert cmd[:2] == ["/usr/bin/setsid", "bash"]
     assert "gateway restart" in cmd[-1]
     assert "kill -0 321" in cmd[-1]

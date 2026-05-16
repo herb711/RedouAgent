@@ -74,6 +74,8 @@ def _terminate_process_group(proc: subprocess.Popen[bytes]) -> None:
 
 
 def with_process_timeout(args: list[str], seconds: int) -> list[str]:
+    if os.name == "nt":
+        return args
     timeout_bin = shutil.which("timeout")
     if timeout_bin:
         return [timeout_bin, str(seconds), *args]
