@@ -88,6 +88,9 @@ test("project artifacts and packaged skills stay under the project .redou direct
 
   assert.equal(project.contextPath, redouRoot);
   assert.equal(project.rulesPath, path.join(redouRoot, "PROJECT_RULES.md"));
+  const projectRules = fs.readFileSync(project.rulesPath, "utf8");
+  assert.match(projectRules, /Keep all task outputs for this project under the configured project workspace path/);
+  assert.equal(projectRules.includes(path.resolve(workspace)), true);
   assert.equal(project.hermesHomePath, redouRoot);
   assert.equal(project.skillsPath, path.join(redouRoot, "skills"));
   assert.equal(task.messagesPath, path.join(redouRoot, "tasks", task.id, "messages.jsonl"));

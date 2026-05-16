@@ -114,7 +114,8 @@ test("transient requests without an explicit remember signal are not stored as r
     userInput: "任务规则是什么？",
   });
 
-  assert.equal(fs.readFileSync(project.rulesPath, "utf8"), "# Project Rules\n\n");
+  const expectedProjectRule = `- Keep all task outputs for this project under the configured project workspace path: ${path.resolve(project.path)}. This includes generated files, reports, logs, and other artifacts, unless the user explicitly requests otherwise.`;
+  assert.equal(fs.readFileSync(project.rulesPath, "utf8").trimEnd(), `# Project Rules\n\n${expectedProjectRule}`);
   assert.equal(fs.readFileSync(task.rulesPath, "utf8"), "# Task Rules\n\n");
 });
 
@@ -144,7 +145,7 @@ test("manual task rule extraction copies task context constraints into task rule
     "",
     "---",
     "",
-    "## B. Raw Turn Log",
+    "## B. Recent Turn Digest",
     "",
   ].join("\n"));
 
@@ -186,7 +187,7 @@ test("manual project rule extraction writes selected task context rules into pro
     "",
     "---",
     "",
-    "## B. Raw Turn Log",
+    "## B. Recent Turn Digest",
     "",
   ].join("\n"));
 

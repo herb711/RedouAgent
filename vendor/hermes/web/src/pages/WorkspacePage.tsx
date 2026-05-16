@@ -81,7 +81,7 @@ const COPY = {
     recentRuns: "最近运行",
     refresh: "刷新",
     refreshWorkspace: "刷新控制台",
-    restartGateway: "重启网关",
+    restartGateway: "重启AGENT服务",
     runs: "运行",
     startChat: "开始工作",
     stored: "已保存",

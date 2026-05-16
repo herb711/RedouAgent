@@ -10,7 +10,7 @@ import {
   Circle,
   FileText,
   Folder,
-  FolderGit2,
+  FolderOpen,
   FolderPlus,
   HardDrive,
   ListPlus,
@@ -169,7 +169,6 @@ function compactPath(path: string, max = 36): string {
 const COPY = {
   zh: {
     projects: "项目",
-    pinned: "置顶",
     noWorkspace: "未选择本地空间",
     refresh: "刷新项目",
     newProject: "新建项目",
@@ -203,7 +202,6 @@ const COPY = {
   },
   en: {
     projects: "Projects",
-    pinned: "Pinned",
     noWorkspace: "No local workspace",
     refresh: "Refresh projects",
     newProject: "New project",
@@ -336,6 +334,8 @@ export function ProjectTaskPanel({
 }: Props) {
   const { locale } = useI18n();
   const copy = COPY[locale];
+  const openWorkspaceFolderLabel =
+    locale === "zh" ? "\u6253\u5f00\u6587\u4ef6\u5939" : "Open folder";
   const [projects, setProjects] = useState<ChatProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -368,7 +368,6 @@ export function ProjectTaskPanel({
     selectedProject?.tasks.find((task) => task.id === selectedTaskId) ??
     selectedProject?.tasks[0] ??
     null;
-  const pinnedProject = selectedProject ?? projects[0] ?? null;
   const packageSkillLabel = locale === "zh" ? "打包 Skill" : "Package as skill";
   const packageSkillBusyLabel = locale === "zh" ? "正在打包 Skill..." : "Packaging skill...";
   const packageSkillDone = useCallback(
@@ -460,6 +459,24 @@ export function ProjectTaskPanel({
     const picked = await picker();
     if (picked) setter(picked);
   }, [copy.pickerMissing]);
+
+  const openWorkspaceFolder = useCallback(async (targetPath: string) => {
+    const trimmedPath = targetPath.trim();
+    if (!trimmedPath) {
+      setError(copy.noWorkspace);
+      return;
+    }
+
+    setError(null);
+    try {
+      const result = await api.openLocalPath(trimmedPath);
+      if (!result.ok) {
+        throw new Error(result.message || `Could not open path: ${trimmedPath}`);
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [copy.noWorkspace]);
 
   const closeRename = useCallback(() => {
     setRenameTarget(null);
@@ -889,25 +906,6 @@ export function ProjectTaskPanel({
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-2 pb-3">
-        <div className="px-2 pb-2 pt-1 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          {copy.pinned}
-        </div>
-
-        {pinnedProject && (
-          <button
-            type="button"
-            onClick={() => selectProject(pinnedProject)}
-            className="mb-6 flex h-10 w-full min-w-0 items-center gap-3 rounded-md px-2 text-left text-muted-foreground transition-colors hover:bg-card/60 hover:text-midground"
-          >
-            <FolderGit2 className="h-5 w-5 shrink-0" />
-            <span className="truncate text-sm font-medium">{pinnedProject.name}</span>
-          </button>
-        )}
-
-        <div className="px-2 pb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          {copy.projects}
-        </div>
-
         <div className="space-y-1">
           {projects.map((project) => {
             const activeProject = project.id === selectedProject?.id;
@@ -1015,6 +1013,18 @@ export function ProjectTaskPanel({
                           ? compactPath(project.workspace_path)
                           : copy.noWorkspace}
                       </span>
+                      <button
+                        type="button"
+                        className="grid h-6 w-6 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:bg-card/60 hover:text-midground disabled:cursor-not-allowed disabled:opacity-45"
+                        title={project.workspace_path ? openWorkspaceFolderLabel : copy.noWorkspace}
+                        aria-label={
+                          project.workspace_path ? openWorkspaceFolderLabel : copy.noWorkspace
+                        }
+                        onClick={() => void openWorkspaceFolder(project.workspace_path)}
+                        disabled={!project.workspace_path}
+                      >
+                        <FolderOpen className="h-3.5 w-3.5" />
+                      </button>
                       <button
                         type="button"
                         className="shrink-0 rounded px-1.5 py-0.5 text-midground/70 transition-colors hover:bg-card/60 hover:text-midground"

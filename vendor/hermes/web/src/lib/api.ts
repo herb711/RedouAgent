@@ -41,6 +41,9 @@ declare global {
       pickDirectory?: () => Promise<string | null>;
       pickFiles?: () => Promise<string[]>;
       getFilePath?: (file: File) => string;
+      openLocalPath?: (
+        targetPath: string,
+      ) => Promise<{ ok: boolean; path?: string; message?: string }>;
       getStatus?: () => Promise<StatusResponse>;
       getConfig?: () => Promise<Record<string, unknown>>;
       getConfigDefaults?: () => Promise<Record<string, unknown>>;
@@ -261,6 +264,8 @@ export const api = {
     requireRedouMethod("extractTaskRules")(projectId, taskId, target),
   copyTaskAttachments: (projectId: string, taskId: string, filePaths: string[]) =>
     requireRedouMethod("copyTaskAttachments")(projectId, taskId, filePaths),
+  openLocalPath: (targetPath: string) =>
+    requireRedouMethod("openLocalPath")(targetPath),
   getGlobalContextFile: (kind: GlobalContextFileKind) =>
     requireRedouMethod("getGlobalContextFile")(kind),
   updateGlobalContextFile: (kind: GlobalContextFileKind, content: string) =>

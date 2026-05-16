@@ -9,6 +9,8 @@ const GLOBAL_RULES_FILE = "GLOBAL_RULES.md";
 const PROJECT_RULES_FILE = "PROJECT_RULES.md";
 const TASK_RULES_FILE = "TASK_RULES.md";
 const TASK_CONTEXT_FILE = "TASK_CONTEXT.md";
+const TASK_STATE_FILE = "TASK_STATE.json";
+const TASK_EVENTS_FILE = "events.jsonl";
 const TASK_MESSAGES_FILE = "messages.jsonl";
 const TASK_UPLOADS_DIR = "uploads";
 const REDOU_CONTEXT_DIR = ".redou";
@@ -20,8 +22,8 @@ const RECENT_MESSAGE_CONTENT_LIMIT = 4000;
 const DEFAULT_MODEL_CONTEXT_TOKENS = 128000;
 const COMPACT_FORCE_RATIO = 0.85;
 const COMPACT_EMERGENCY_RATIO = 0.95;
-const RECENT_RAW_TURN_LOG_LIMIT = 6;
-const RECENT_RAW_TURN_LOG_MAX_CHARS = 18000;
+const RECENT_TURN_DIGEST_LIMIT = 6;
+const RECENT_TURN_DIGEST_MAX_CHARS = 6000;
 const RECENT_CONVERSATION_MAX_CHARS = 24000;
 const MAX_ATTACHMENT_BYTES = 256 * 1024 * 1024;
 const CONTEXT_RULE_MAX_CHARS = 280;
@@ -333,6 +335,47 @@ function shouldCompactContext(contextUsage, budget) {
 }
 
 function defaultTaskContextText() {
+  return renderTaskContextMarkdown(defaultTaskState());
+}
+
+function defaultTaskState() {
+  return {
+    task_goal: "",
+    current_phase: "not_started",
+    constraints: [],
+    decisions: [],
+    completed: [],
+    open_issues: [],
+    files_changed: [],
+    commands_run: [],
+    current_focus: "",
+    next_steps: [],
+  };
+}
+
+const TASK_STATE_FIELDS = Object.keys(defaultTaskState());
+
+function normalizeTaskState(value) {
+  const source = value && typeof value === "object" ? value : {};
+  const normalized = defaultTaskState();
+  for (const field of TASK_STATE_FIELDS) {
+    const current = source[field];
+    if (Array.isArray(normalized[field])) {
+      normalized[field] = uniqueList(
+        (Array.isArray(current) ? current : current ? [current] : [])
+          .map((item) => markdownListText(item, 700))
+          .filter(Boolean),
+        80,
+      );
+    } else {
+      normalized[field] = markdownListText(current, 900);
+    }
+  }
+  return normalized;
+}
+
+function renderTaskStateStructuredMarkdown(state) {
+  const safe = normalizeTaskState(state);
   return [
     "# Task Context",
     "",
@@ -340,37 +383,107 @@ function defaultTaskContextText() {
     "",
     "### Current Goal",
     "",
-    "(empty)",
+    safe.task_goal || "(empty)",
+    "",
+    "### Current Phase",
+    "",
+    safe.current_phase || "(empty)",
     "",
     "### Constraints",
     "",
-    "(empty)",
+    renderMarkdownList(safe.constraints),
+    "",
+    "### Decisions",
+    "",
+    renderMarkdownList(safe.decisions),
     "",
     "### Completed",
     "",
-    "- No completed turns yet.",
+    renderMarkdownList(safe.completed),
     "",
     "### Open Issues",
     "",
-    "(empty)",
+    renderMarkdownList(safe.open_issues),
+    "",
+    "### Files Changed",
+    "",
+    renderMarkdownList(safe.files_changed),
+    "",
+    "### Commands Run",
+    "",
+    renderMarkdownList(safe.commands_run),
+    "",
+    "### Current Focus",
+    "",
+    safe.current_focus || "(empty)",
     "",
     "### Next Action",
     "",
-    "(empty)",
-    "",
-    "### Relevant Files",
-    "",
-    "(empty)",
-    "",
-    "### Risks",
-    "",
-    "(empty)",
+    renderMarkdownList(safe.next_steps),
     "",
     "---",
+  ].join("\n");
+}
+
+function renderRecentTurnDigest(state) {
+  const safe = normalizeTaskState(state);
+  const digest = [
+    ...safe.open_issues.slice(-3).map((item) => `issue: ${compact(item, 220)}`),
+    ...safe.commands_run.slice(-4).map((item) => `command: ${compact(item, 220)}`),
+    ...safe.files_changed.slice(-6).map((item) => `file: ${compact(item, 180)}`),
+    ...safe.completed.slice(-3).map((item) => `done: ${compact(item, 220)}`),
+  ];
+  return renderMarkdownList(digest, "(empty)");
+}
+
+function renderTaskContextMarkdown(state) {
+  return [
+    renderTaskStateStructuredMarkdown(state).trimEnd(),
     "",
-    "## B. Raw Turn Log",
+    "## B. Recent Turn Digest",
+    "",
+    renderRecentTurnDigest(state),
     "",
   ].join("\n");
+}
+
+function parseTaskStateFromStructuredText(text) {
+  const value = String(text || "");
+  return normalizeTaskState({
+    task_goal: markdownSectionsByTitle(value, ["Current Goal", "Current Brief"])[0] || "",
+    current_phase: markdownSectionsByTitle(value, ["Current Phase"])[0] || "",
+    constraints: parseMarkdownListSection(value, "Constraints").concat(parseMarkdownListSection(value, "Active Constraints")),
+    decisions: parseMarkdownListSection(value, "Decisions"),
+    completed: parseMarkdownListSection(value, "Completed").concat(parseMarkdownListSection(value, "Progress Summary")),
+    open_issues: parseMarkdownListSection(value, "Open Issues"),
+    files_changed: parseMarkdownListSection(value, "Files Changed").concat(parseMarkdownListSection(value, "Relevant Files")),
+    commands_run: parseMarkdownListSection(value, "Commands Run"),
+    current_focus: markdownSectionsByTitle(value, ["Current Focus"])[0] || "",
+    next_steps: parseMarkdownListSection(value, "Next Action").concat(parseMarkdownListSection(value, "Todo List")),
+  });
+}
+
+function taskStatePathFromContextPath(taskContextPath) {
+  return path.join(path.dirname(String(taskContextPath || "")), TASK_STATE_FILE);
+}
+
+function taskEventsPathFromContextPath(taskContextPath) {
+  return path.join(path.dirname(String(taskContextPath || "")), TASK_EVENTS_FILE);
+}
+
+function readTaskStateFile(taskStatePath) {
+  const parsed = readJson(taskStatePath, null);
+  return normalizeTaskState(parsed);
+}
+
+function writeTaskStateFiles(task, state) {
+  const safe = normalizeTaskState(state);
+  const statePath = task.statePath || taskStatePathFromContextPath(task.contextPath);
+  const contextPath = task.contextPath;
+  mkdirp(path.dirname(statePath));
+  fs.writeFileSync(statePath, `${JSON.stringify(safe, null, 2)}\n`, "utf8");
+  fs.writeFileSync(contextPath, renderTaskContextMarkdown(safe), "utf8");
+  return safe;
 }
 
 function hasTaskContextShape(text) {
@@ -378,7 +491,7 @@ function hasTaskContextShape(text) {
   return (
     /^# Task Context\s*$/m.test(value) &&
     /^## A\. Structured State\s*$/m.test(value) &&
-    /^## B\. Raw Turn Log\s*$/m.test(value)
+    (/^## B\. Recent Turn Digest\s*$/m.test(value) || /^## B\. Raw Turn Log\s*$/m.test(value))
   );
 }
 
@@ -391,80 +504,60 @@ function stripTaskContextHeading(text) {
 function normalizeTaskContextText(text) {
   const value = String(text || "").replace(/\r\n/g, "\n").trimEnd();
   if (!value.trim()) return defaultTaskContextText();
-  if (hasTaskContextShape(value)) return `${value}\n`;
+  if (hasTaskContextShape(value)) {
+    return value
+      .replace(/^## B\. Raw Turn Log\s*$/m, "## B. Recent Turn Digest")
+      .replace(/\n*$/, "\n");
+  }
   const legacy = stripTaskContextHeading(value);
-  const progress = legacy
-    ? compactMultiline(legacy, 12000)
-    : "";
-  return [
-    "# Task Context",
-    "",
-    "## A. Structured State",
-    "",
-    "### Current Brief",
-    "",
-    "### Active Constraints",
-    "",
-    "### Todo List",
-    "",
-    "### Progress Summary",
-    "",
-    progress,
-    "",
-    "### Evidence and Artifacts",
-    "",
-    "### Open Issues",
-    "",
-    "---",
-    "",
-    "## B. Raw Turn Log",
-    "",
-  ].join("\n");
+  const state = normalizeTaskState({
+    completed: legacy ? [compactMultiline(legacy, 1200)] : [],
+  });
+  return renderTaskContextMarkdown(state);
 }
 
 function splitTaskContext(text) {
   const normalized = normalizeTaskContextText(text);
+  const digestMarker = normalized.search(/^## B\. Recent Turn Digest\s*$/m);
   const rawMarker = normalized.search(/^## B\. Raw Turn Log\s*$/m);
-  if (rawMarker < 0) {
-    return { structuredState: normalizeTaskContextText(""), rawTurnLog: "" };
+  const marker = digestMarker >= 0 ? digestMarker : rawMarker;
+  if (marker < 0) {
+    const empty = normalizeTaskContextText("");
+    return { structuredState: empty, recentTurnDigest: "", rawTurnLog: "" };
   }
-  const structuredState = normalized.slice(0, rawMarker).trimEnd();
-  const rawTurnLog = normalized
-    .slice(rawMarker)
-    .replace(/^## B\. Raw Turn Log\s*$/m, "")
+  const structuredState = normalized.slice(0, marker).trimEnd();
+  const recentTurnDigest = normalized
+    .slice(marker)
+    .replace(/^## B\. (?:Recent Turn Digest|Raw Turn Log)\s*$/m, "")
     .trim();
-  return { structuredState, rawTurnLog };
+  return { structuredState, recentTurnDigest, rawTurnLog: recentTurnDigest };
 }
 
-function recentRawTurnLog(taskContext, maxEntries = RECENT_RAW_TURN_LOG_LIMIT, maxChars = RECENT_RAW_TURN_LOG_MAX_CHARS) {
+function recentTurnDigest(taskContext, maxEntries = RECENT_TURN_DIGEST_LIMIT, maxChars = RECENT_TURN_DIGEST_MAX_CHARS) {
   if (maxEntries <= 0 || maxChars <= 0) return "";
-  const { rawTurnLog } = splitTaskContext(taskContext);
-  if (!rawTurnLog) return "";
-  const entries = rawTurnLog
-    .split(/(?=^###\s+)/m)
+  const { recentTurnDigest: digest } = splitTaskContext(taskContext);
+  if (!digest) return "";
+  const entries = digest
+    .split(/\n(?=-\s+)/)
     .map((entry) => entry.trim())
     .filter(Boolean);
-  let text = entries.slice(-Math.max(0, maxEntries)).join("\n\n").trim();
+  let text = entries.slice(-Math.max(0, maxEntries)).join("\n").trim();
   if (text.length > maxChars) {
-    text = `[older raw turn log omitted]\n\n${text.slice(text.length - maxChars).replace(/^\s+/, "")}`;
+    text = `[older digest omitted]\n${text.slice(text.length - maxChars).replace(/^\s+/, "")}`;
   }
   return text;
 }
 
 function trimTaskContextRawLog(taskContext, maxEntries = 2) {
   const normalized = normalizeTaskContextText(taskContext);
-  const { structuredState, rawTurnLog } = splitTaskContext(normalized);
-  const entries = rawTurnLog
-    .split(/(?=^###\s+)/m)
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .slice(-Math.max(0, maxEntries));
+  const state = parseTaskStateFromStructuredText(splitTaskContext(normalized).structuredState);
+  const digest = recentTurnDigest(normalized, maxEntries);
   return [
-    structuredState.trimEnd(),
+    renderTaskStateStructuredMarkdown(state).trimEnd(),
     "",
-    "## B. Raw Turn Log",
+    "## B. Recent Turn Digest",
     "",
-    entries.join("\n\n"),
+    digest || "(empty)",
     "",
   ].join("\n");
 }
@@ -520,6 +613,13 @@ function appendDedupeRules(file, rules) {
   const entry = added.map((rule) => `- ${rule}`).join("\n");
   fs.writeFileSync(file, `${current.trimEnd()}\n\n${entry}\n`, "utf8");
   return added;
+}
+
+function projectWorkspaceOutputRule(workspacePath) {
+  const cleanPath = String(workspacePath || "").trim();
+  if (!cleanPath) return "";
+  const displayPath = path.resolve(cleanPath).replace(/`/g, "'");
+  return `Keep all task outputs for this project under the configured project workspace path: ${displayPath}. This includes generated files, reports, logs, and other artifacts, unless the user explicitly requests otherwise.`;
 }
 
 function markdownHeading(line) {
@@ -618,6 +718,40 @@ function extractedRulesFromMarkdownBlock(block) {
   return uniqueList(rules, 50);
 }
 
+function fallbackRulesFromNamedSections(markdown, titles) {
+  const wanted = new Set(titles.map((title) => String(title || "").trim().toLowerCase()).filter(Boolean));
+  const lines = String(markdown || "").replace(/\r\n/g, "\n").split("\n");
+  const rules = [];
+  let activeDepth = 0;
+  let activeLines = [];
+  const flush = () => {
+    if (activeLines.length) rules.push(...extractedRulesFromMarkdownBlock(activeLines.join("\n")));
+    activeLines = [];
+  };
+  for (const line of lines) {
+    const heading = markdownHeading(line);
+    if (heading) {
+      if (activeDepth && heading.depth <= activeDepth) {
+        flush();
+        activeDepth = 0;
+      }
+      if (wanted.has(heading.title)) {
+        activeDepth = heading.depth;
+        activeLines = [];
+      }
+      continue;
+    }
+    if (activeDepth && /^-{3,}\s*$/.test(line)) {
+      flush();
+      activeDepth = 0;
+      continue;
+    }
+    if (activeDepth) activeLines.push(line);
+  }
+  flush();
+  return uniqueList(rules, 50);
+}
+
 function labeledMarkdownBlock(text, label, stopLabels) {
   const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
   const labelPattern = new RegExp(`^${label}\\s*[:：]\\s*$`, "i");
@@ -682,6 +816,14 @@ function extractRulesFromTaskContextText(taskContext, targetScope) {
   const rules = [];
   for (const section of markdownSectionsByTitle(structuredState, sectionTitles)) {
     rules.push(...extractedRulesFromMarkdownBlock(section));
+  }
+  if (!rules.length) {
+    for (const section of markdownSectionsByTitle(normalized, sectionTitles)) {
+      rules.push(...extractedRulesFromMarkdownBlock(section));
+    }
+  }
+  if (!rules.length) {
+    rules.push(...fallbackRulesFromNamedSections(taskContext, sectionTitles));
   }
   rules.push(...explicitRulesFromRawTurnLog(rawTurnLog, targetScope));
   return uniqueList(rules, 50);
@@ -1045,82 +1187,31 @@ function renderMarkdownList(items, empty = "(empty)") {
 
 class TaskStateManager {
   static update(taskContext, userInput, assistantText, options = {}) {
-    const normalized = normalizeTaskContextText(taskContext);
-    const { structuredState, rawTurnLog } = splitTaskContext(normalized);
     const artifacts = options.artifacts && typeof options.artifacts === "object"
       ? options.artifacts
       : emptyTurnArtifacts();
-    const redactedUser = SecretRedactor.redactText(markdownListText(userInput, 900)).text;
-    const redactedAssistant = SecretRedactor.redactText(markdownListText(assistantText, 1200)).text;
-    const safeArtifacts = {
-      files: (artifacts.files || []).map((item) => SecretRedactor.redactText(item).text),
-      commands: (artifacts.commands || []).map((item) => SecretRedactor.redactText(item).text),
-      errors: (artifacts.errors || []).map((item) => SecretRedactor.redactText(item).text),
-      attachments: (artifacts.attachments || []).map((item) => SecretRedactor.redactText(item).text),
-    };
-    const tags = extractLightTags(redactedUser, redactedAssistant, safeArtifacts);
-    const currentGoal = redactedUser || compact(redactedAssistant, 300) || "(empty)";
-    const completed = [
-      ...parseMarkdownListSection(structuredState, "Completed"),
-      redactedAssistant || (safeArtifacts.files.length || safeArtifacts.commands.length ? "Turn completed with recorded artifacts." : ""),
-    ];
-    const constraints = [
-      ...parseMarkdownListSection(structuredState, "Constraints"),
-      ...tags.constraints,
-    ];
-    const openIssues = [
-      ...parseMarkdownListSection(structuredState, "Open Issues"),
-      ...safeArtifacts.errors,
-      ...tags.open_issues,
-    ];
-    const relevantFiles = [
-      ...parseMarkdownListSection(structuredState, "Relevant Files"),
-      ...safeArtifacts.files,
-      ...safeArtifacts.attachments,
-    ];
-    const risks = [
-      ...parseMarkdownListSection(structuredState, "Risks"),
-      ...safeArtifacts.errors,
-    ];
-    const nextAction = tags.todos[0] || parseMarkdownListSection(structuredState, "Next Action")[0] || "(empty)";
-    const nextStructured = [
-      "# Task Context",
-      "",
-      "## A. Structured State",
-      "",
-      "### Current Goal",
-      "",
-      currentGoal,
-      "",
-      "### Constraints",
-      "",
-      renderMarkdownList(constraints),
-      "",
-      "### Completed",
-      "",
-      renderMarkdownList(completed),
-      "",
-      "### Open Issues",
-      "",
-      renderMarkdownList(openIssues),
-      "",
-      "### Next Action",
-      "",
-      nextAction,
-      "",
-      "### Relevant Files",
-      "",
-      renderMarkdownList(relevantFiles),
-      "",
-      "### Risks",
-      "",
-      renderMarkdownList(risks),
-      "",
-      "---",
-    ].join("\n");
+    const existingState = parseTaskStateFromStructuredText(splitTaskContext(taskContext).structuredState);
+    const state = compressTaskContext([
+      { type: "turn_digest", user: userInput, assistant: assistantText, ...(artifacts || {}) },
+    ], options.budget || {});
+    const merged = normalizeTaskState({
+      ...state,
+      constraints: [...existingState.constraints, ...state.constraints],
+      decisions: [...existingState.decisions, ...state.decisions],
+      completed: [...existingState.completed, ...state.completed],
+      open_issues: [...existingState.open_issues, ...state.open_issues],
+      files_changed: [...existingState.files_changed, ...state.files_changed],
+      commands_run: [...existingState.commands_run, ...state.commands_run],
+      next_steps: [...existingState.next_steps, ...state.next_steps],
+      task_goal: state.task_goal || existingState.task_goal,
+      current_phase: state.current_phase || existingState.current_phase,
+      current_focus: state.current_focus || existingState.current_focus,
+    });
+    const nextStructured = renderTaskStateStructuredMarkdown(merged);
     return {
       structuredState: nextStructured,
-      rawTurnLog,
+      rawTurnLog: "",
+      recentTurnDigest: renderRecentTurnDigest(merged),
       taskStateSnapshot: nextStructured.replace(/^# Task Context\s*/i, "").trim(),
     };
   }
@@ -1711,6 +1802,87 @@ function emptyTurnArtifacts() {
   return { files: [], commands: [], errors: [], attachments: [] };
 }
 
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+}
+
+function tryParseJsonObject(value) {
+  if (value && typeof value === "object") return value;
+  const text = String(value || "").trim();
+  if (!text || !/^[{[]/.test(text)) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function outputPayloadFromEvent(event) {
+  if (!event || typeof event !== "object") return null;
+  if (event.type === "tool_output") return event.output;
+  if (event.type === "command_output") return tryParseJsonObject(event.content) || event;
+  return event.output || event.content || null;
+}
+
+function truthyErrorValue(value) {
+  if (value == null || value === false) return "";
+  const text = typeof value === "string" ? value.trim() : JSON.stringify(value);
+  if (!text || text === "null" || text === "false") return "";
+  return compactMultiline(text, 600);
+}
+
+function exitCodeFromValue(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function eventExitCode(event, payload = null) {
+  const source = asObject(payload) || {};
+  const code = exitCodeFromValue(
+    event?.exitCode ?? event?.exit_code ?? event?.code ?? source.exitCode ?? source.exit_code ?? source.status,
+  );
+  if (code != null) return code;
+  if (event?.type === "command_end" && event.success === false) return 1;
+  if (event?.success === true || source.success === true) return 0;
+  return null;
+}
+
+function stderrFromPayload(payload) {
+  const source = asObject(payload);
+  if (!source) return "";
+  return markdownListText(source.stderr || source.stdErr || source.errorOutput || "", 700);
+}
+
+function keyErrorLines(text, maxLines = 4) {
+  const lines = String(text || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const keyed = lines.filter((line) => /(error|exception|traceback|assertion|failed|failure|stderr|失败|报错)/i.test(line));
+  return uniqueList((keyed.length ? keyed : lines).map((line) => compact(line, 240)), maxLines);
+}
+
+function summarizeEventError(event) {
+  if (!event || typeof event !== "object") return "";
+  if (event.type === "error") return truthyErrorValue(event.message || event.details);
+  const payload = outputPayloadFromEvent(event);
+  const payloadObject = asObject(payload);
+  if (event.type === "tool_output") {
+    const toolError = truthyErrorValue(payloadObject ? payloadObject.error : event.error);
+    if (toolError) return toolError;
+  }
+  const stderr = stderrFromPayload(payload);
+  const exitCode = eventExitCode(event, payload);
+  if (exitCode != null && exitCode !== 0) {
+    const source = stderr || (payloadObject ? payloadObject.stdout || payloadObject.output || "" : payload);
+    const keyLines = keyErrorLines(source).join(" | ");
+    return [`exitCode ${exitCode}`, keyLines].filter(Boolean).join(": ");
+  }
+  if (stderr) return keyErrorLines(stderr).join(" | ");
+  return "";
+}
+
 function recordTurnArtifact(artifacts, key, value) {
   if (!artifacts || !Object.prototype.hasOwnProperty.call(artifacts, key)) return;
   const text = compactMultiline(value, 1000).trim();
@@ -1721,6 +1893,16 @@ function recordTurnArtifact(artifacts, key, value) {
 
 function collectTurnArtifactFromEvent(artifacts, event) {
   if (!artifacts || !event || typeof event !== "object") return;
+  if (event.type === "command_end") {
+    const code = eventExitCode(event);
+    if (code != null && code !== 0) recordTurnArtifact(artifacts, "errors", eventContent(event));
+    return;
+  }
+  if (event.type === "command_output" || event.type === "tool_output" || event.type === "raw_log") {
+    const summary = summarizeEventError(event);
+    if (summary) recordTurnArtifact(artifacts, "errors", summary);
+    return;
+  }
   if (event.type === "command_start") {
     recordTurnArtifact(artifacts, "commands", event.command);
   } else if (event.type === "file_changed") {
@@ -1788,6 +1970,317 @@ function extractLightTags(userInput, assistantSummary, artifacts = emptyTurnArti
     evidence: evidenceMatches(combined),
     open_issues: matchingKeywords(combined, LIGHT_TAG_KEYWORDS.open_issues),
   };
+}
+
+function eventEnvelope(raw) {
+  const entry = raw && typeof raw === "object" ? raw : {};
+  const metadata = entry.metadata && typeof entry.metadata === "object" ? entry.metadata : {};
+  const event = metadata.event && typeof metadata.event === "object"
+    ? metadata.event
+    : entry.event && typeof entry.event === "object"
+      ? entry.event
+      : entry;
+  return { entry, metadata, event };
+}
+
+function contextEventId(raw, fallbackIndex = 0) {
+  const { entry, metadata, event } = eventEnvelope(raw);
+  return String(
+    event.id ||
+    metadata.eventId ||
+    metadata.toolCallId ||
+    metadata.inputEnvelope?.id ||
+    entry.id ||
+    `${event.type || entry.role || "event"}:${event.command || entry.content || ""}:${entry.createdAt || event.createdAt || fallbackIndex}`,
+  );
+}
+
+function commandKey(command) {
+  return String(command || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function commandRecordKey(event, index) {
+  const metadata = event?.metadata && typeof event.metadata === "object" ? event.metadata : {};
+  return String(
+    metadata.commandId ||
+    metadata.toolCallId ||
+    event.id ||
+    metadata.command ||
+    event.command ||
+    `command-${index}`,
+  );
+}
+
+function addStateItem(target, field, value, limit = 80) {
+  const text = markdownListText(value, 700);
+  if (!text || !Array.isArray(target[field])) return;
+  target[field] = uniqueList([...target[field], text], limit);
+}
+
+function addOpenIssue(openIssues, id, text) {
+  const key = String(id || text || "").trim();
+  const body = markdownListText(text, 700);
+  if (!key || !body) return;
+  openIssues.set(key, body);
+}
+
+function removeOpenIssue(openIssues, id) {
+  const key = String(id || "").trim();
+  if (!key) return;
+  openIssues.delete(key);
+}
+
+function summarizeMessageForState(text, max = 260) {
+  return SecretRedactor.redactText(compact(markdownListText(text, max), max)).text;
+}
+
+function extractConstraintCandidates(text) {
+  const source = String(text || "");
+  if (!/(must|only|never|do not|don't|required|constraint|禁止|必须|不要|只能|不允许|默认|保持|优先)/i.test(source)) {
+    return [];
+  }
+  return [summarizeMessageForState(source, 320)];
+}
+
+function extractDecisionCandidates(text) {
+  const source = String(text || "");
+  if (!/(decide|decision|choose|chosen|use |adopt|决定|选择|采用|确认)/i.test(source)) return [];
+  return [summarizeMessageForState(source, 280)];
+}
+
+function extractNextStepCandidates(text) {
+  const source = String(text || "");
+  if (!/(next|todo|follow.?up|remaining|下一步|待办|继续|后续)/i.test(source)) return [];
+  return [summarizeMessageForState(source, 260)];
+}
+
+function commandSummary(command, record) {
+  const cleanCommand = SecretRedactor.redactText(compact(command || record?.command || "command", 220)).text;
+  const exitCode = record?.exitCode ?? 0;
+  if (record?.status === "failed") {
+    const lines = SecretRedactor.redactText(
+      keyErrorLines([record.stderr, record.error, record.output].filter(Boolean).join("\n")).join(" | "),
+    ).text;
+    return `failed: ${cleanCommand} (exitCode ${exitCode})${lines ? `: ${lines}` : ""}`;
+  }
+  return `passed: ${cleanCommand} (exitCode ${exitCode})`;
+}
+
+function parseEventsJsonl(text) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function stateBudgetMaxChars(budget) {
+  if (typeof budget === "number") return Math.max(800, Math.floor(budget));
+  const source = budget && typeof budget === "object" ? budget : {};
+  return Math.max(
+    800,
+    Math.floor(
+      Number(source.stateMaxChars || source.taskStateMaxChars || source.maxChars || source.structuredStateMaxChars) ||
+      Number(source.inputBudget || 0) * 4 ||
+      12000,
+    ),
+  );
+}
+
+const TASK_STATE_FIELD_WEIGHTS = {
+  task_goal: 0.06,
+  current_phase: 0.03,
+  constraints: 0.16,
+  decisions: 0.13,
+  completed: 0.08,
+  open_issues: 0.18,
+  files_changed: 0.10,
+  commands_run: 0.12,
+  current_focus: 0.04,
+  next_steps: 0.10,
+};
+
+function trimItemsToChars(items, maxChars, preferRecent = false) {
+  const source = preferRecent ? [...items].reverse() : [...items];
+  const kept = [];
+  let used = 0;
+  for (const raw of source) {
+    const item = markdownListText(raw, Math.max(120, maxChars));
+    if (!item) continue;
+    const remaining = maxChars - used;
+    if (remaining <= 0) break;
+    const trimmed = item.length > remaining ? compact(item, Math.max(80, remaining)) : item;
+    if (!trimmed) break;
+    kept.push(trimmed);
+    used += trimmed.length + 2;
+  }
+  return preferRecent ? kept.reverse() : kept;
+}
+
+function applyTaskStateBudget(state, budget) {
+  const normalized = normalizeTaskState(state);
+  const maxChars = stateBudgetMaxChars(budget);
+  const next = defaultTaskState();
+  for (const field of TASK_STATE_FIELDS) {
+    const fieldBudget = Math.max(120, Math.floor(maxChars * (TASK_STATE_FIELD_WEIGHTS[field] || 0.05)));
+    if (Array.isArray(normalized[field])) {
+      const preferRecent = ["commands_run", "files_changed", "open_issues", "next_steps"].includes(field);
+      next[field] = trimItemsToChars(normalized[field], fieldBudget, preferRecent);
+    } else {
+      next[field] = compact(normalized[field], fieldBudget);
+    }
+  }
+  return normalizeTaskState(next);
+}
+
+function compressTaskContext(events, budget = {}) {
+  const state = defaultTaskState();
+  const seenIds = new Set();
+  const commandsByKey = new Map();
+  const commandAliasByCommand = new Map();
+  const openIssues = new Map();
+  const commandIssues = new Map();
+  let latestUser = "";
+  let latestAssistant = "";
+  let latestFocus = "";
+
+  const sortedEvents = (Array.isArray(events) ? events : []).filter(Boolean);
+  sortedEvents.forEach((raw, index) => {
+    const id = contextEventId(raw, index);
+    if (seenIds.has(id)) return;
+    seenIds.add(id);
+    const { entry, metadata, event } = eventEnvelope(raw);
+    const type = String(event.type || metadata.eventType || entry.role || "").trim();
+    const role = String(entry.role || "").trim();
+    const content = String(entry.content || event.content || event.message || "").trim();
+
+    if (role === "user" || type === "user") {
+      latestUser = summarizeMessageForState(content || metadata.inputEnvelope?.text || "", 320);
+      if (latestUser) latestFocus = latestUser;
+      for (const item of extractConstraintCandidates(content)) addStateItem(state, "constraints", item);
+      for (const item of extractDecisionCandidates(content)) addStateItem(state, "decisions", item);
+      for (const item of extractNextStepCandidates(content)) addStateItem(state, "next_steps", item);
+      return;
+    }
+
+    if (role === "assistant" || type === "assistant_message") {
+      latestAssistant = summarizeMessageForState(content || event.content || "", 320);
+      if (latestAssistant) {
+        addStateItem(state, "completed", latestAssistant);
+        latestFocus = latestAssistant;
+      }
+      for (const item of extractDecisionCandidates(latestAssistant)) addStateItem(state, "decisions", item);
+      for (const item of extractNextStepCandidates(latestAssistant)) addStateItem(state, "next_steps", item);
+      return;
+    }
+
+    if (type === "turn_digest" || type === "turn_summary") {
+      if (event.user) latestUser = summarizeMessageForState(event.user, 320);
+      if (event.assistant) latestAssistant = summarizeMessageForState(event.assistant, 320);
+      if (event.goal) latestUser = summarizeMessageForState(event.goal, 320);
+      if (latestUser) latestFocus = latestUser;
+      if (latestAssistant) addStateItem(state, "completed", latestAssistant);
+      for (const item of event.constraints || []) addStateItem(state, "constraints", item);
+      for (const item of event.decisions || []) addStateItem(state, "decisions", item);
+      for (const item of event.next_steps || event.nextSteps || []) addStateItem(state, "next_steps", item);
+      for (const item of event.files || []) addStateItem(state, "files_changed", item);
+      for (const item of event.commands || []) addStateItem(state, "commands_run", item);
+      for (const item of event.errors || []) addOpenIssue(openIssues, `turn:${item}`, item);
+      return;
+    }
+
+    if (type === "file_changed") {
+      addStateItem(state, "files_changed", event.path || event.summary);
+      latestFocus = event.path || latestFocus;
+      return;
+    }
+
+    if (type === "error") {
+      const issue = summarizeEventError(event) || summarizeMessageForState(content, 320);
+      addOpenIssue(openIssues, `error:${id}`, issue);
+      latestFocus = issue || latestFocus;
+      return;
+    }
+
+    if (type === "command_start") {
+      const key = commandRecordKey(event, index);
+      const command = event.command || metadata.command || content;
+      commandsByKey.set(key, { command, status: "running", output: "", stderr: "", error: "", exitCode: null });
+      if (command) commandAliasByCommand.set(commandKey(command), key);
+      return;
+    }
+
+    if (type === "command_output" || type === "tool_output") {
+      const payload = outputPayloadFromEvent(event);
+      const payloadObject = asObject(payload);
+      const command = event.command || metadata.command || payloadObject?.command || "";
+      const key = command
+        ? (commandAliasByCommand.get(commandKey(command)) || commandKey(command))
+        : commandRecordKey(event, index);
+      const record = commandsByKey.get(key) || { command, status: "running", output: "", stderr: "", error: "", exitCode: null };
+      record.command = record.command || command || metadata.command || event.name || "tool";
+      record.output = compactMultiline([record.output, payloadObject?.stdout || payloadObject?.output || event.content || ""].filter(Boolean).join("\n"), 900);
+      record.stderr = compactMultiline([record.stderr, stderrFromPayload(payload)].filter(Boolean).join("\n"), 900);
+      record.error = compactMultiline([record.error, summarizeEventError(event)].filter(Boolean).join("\n"), 900);
+      const code = eventExitCode(event, payload);
+      if (code != null) record.exitCode = code;
+      if (record.error || (record.exitCode != null && record.exitCode !== 0)) record.status = "failed";
+      commandsByKey.set(key, record);
+      if (record.command) commandAliasByCommand.set(commandKey(record.command), key);
+      if (record.status === "failed") {
+        const issueId = `command:${commandKey(record.command)}`;
+        commandIssues.set(commandKey(record.command), issueId);
+        addOpenIssue(openIssues, issueId, commandSummary(record.command, record));
+      }
+      return;
+    }
+
+    if (type === "command_end") {
+      const command = event.command || metadata.command || "";
+      const key = command
+        ? (commandAliasByCommand.get(commandKey(command)) || commandKey(command))
+        : commandRecordKey(event, index);
+      const record = commandsByKey.get(key) || { command, status: "running", output: "", stderr: "", error: "", exitCode: null };
+      record.command = record.command || command || "command";
+      const code = eventExitCode(event);
+      record.exitCode = code == null ? (event.success === false ? 1 : 0) : code;
+      record.status = record.exitCode === 0 ? "passed" : "failed";
+      commandsByKey.set(key, record);
+      if (record.command) commandAliasByCommand.set(commandKey(record.command), key);
+      const issueId = commandIssues.get(commandKey(record.command)) || `command:${commandKey(record.command)}`;
+      if (record.status === "passed") {
+        removeOpenIssue(openIssues, issueId);
+      } else {
+        commandIssues.set(commandKey(record.command), issueId);
+        addOpenIssue(openIssues, issueId, commandSummary(record.command, record));
+      }
+    }
+  });
+
+  for (const record of commandsByKey.values()) {
+    if (!record.command || record.status === "running") continue;
+    addStateItem(state, "commands_run", commandSummary(record.command, record), 120);
+  }
+
+  state.task_goal = latestUser || state.task_goal || "";
+  state.current_focus = latestFocus || latestAssistant || latestUser || "";
+  state.current_phase = state.open_issues.length || openIssues.size
+    ? "blocked"
+    : state.completed.length || state.commands_run.length || state.files_changed.length
+      ? "in_progress"
+      : "not_started";
+  state.open_issues = uniqueList([...state.open_issues, ...openIssues.values()], 80);
+  if (!state.next_steps.length && state.open_issues.length) {
+    addStateItem(state, "next_steps", "Resolve the current open issue before continuing.");
+  }
+  return applyTaskStateBudget(state, budget);
 }
 
 function inferCommandFromTool(event) {
@@ -2166,6 +2659,8 @@ class RedouLocalService {
     const contextRoot = root;
     const hermesSessionId = compact(task.hermesSessionId || task.session_id, 160) || undefined;
     const contextPath = path.join(contextRoot, TASK_CONTEXT_FILE);
+    const statePath = path.join(contextRoot, TASK_STATE_FILE);
+    const eventsPath = path.join(contextRoot, TASK_EVENTS_FILE);
     return {
       id,
       projectId: project.id,
@@ -2174,6 +2669,8 @@ class RedouLocalService {
       appDataPath: root,
       rulesPath: path.join(contextRoot, TASK_RULES_FILE),
       contextPath,
+      statePath,
+      eventsPath,
       messagesPath: path.join(root, TASK_MESSAGES_FILE),
       uploadsPath: path.join(root, TASK_UPLOADS_DIR),
       hermesSessionId,
@@ -2204,21 +2701,51 @@ class RedouLocalService {
     mkdirp(normalized.appDataPath);
     mkdirp(normalized.uploadsPath);
     ensureTextFile(normalized.rulesPath, "# Task Rules\n\n");
-    ensureTextFile(normalized.contextPath, defaultTaskContextText());
-    this.ensureTaskContextShape(normalized.contextPath);
+    ensureEmptyFile(normalized.eventsPath);
+    if (!fs.existsSync(normalized.statePath)) {
+      writeTaskStateFiles(normalized, defaultTaskState());
+    }
+    ensureTextFile(normalized.contextPath, renderTaskContextMarkdown(readTaskStateFile(normalized.statePath)));
+    this.ensureTaskContextShape(normalized.contextPath, normalized);
     ensureEmptyFile(normalized.messagesPath);
     const taskJson = path.join(normalized.appDataPath, "task.json");
     writeJsonAtomic(taskJson, normalized);
     return normalized;
   }
 
-  ensureTaskContextShape(taskContextPath) {
+  ensureTaskContextShape(taskContextPath, task = null) {
     const current = readText(taskContextPath);
-    const next = normalizeTaskContextText(current);
+    if (current.trim() && hasTaskContextShape(current)) {
+      const normalized = normalizeTaskContextText(current);
+      if (current !== normalized) fs.writeFileSync(taskContextPath, normalized, "utf8");
+      return normalized;
+    }
+    const statePath = task?.statePath || taskStatePathFromContextPath(taskContextPath);
+    let state = readTaskStateFile(statePath);
+    if (!fs.existsSync(statePath) && current.trim()) {
+      state = parseTaskStateFromStructuredText(splitTaskContext(current).structuredState);
+    }
+    const next = renderTaskContextMarkdown(state);
     if (current !== next) {
       fs.writeFileSync(taskContextPath, next, "utf8");
     }
     return next;
+  }
+
+  ensureTaskStateShape(task) {
+    const statePath = task?.statePath || taskStatePathFromContextPath(task?.contextPath || "");
+    const eventsPath = task?.eventsPath || taskEventsPathFromContextPath(task?.contextPath || "");
+    mkdirp(path.dirname(statePath));
+    if (!fs.existsSync(eventsPath)) ensureEmptyFile(eventsPath);
+    let state = readTaskStateFile(statePath);
+    if (!fs.existsSync(statePath)) {
+      const contextText = readText(task.contextPath);
+      state = contextText.trim()
+        ? parseTaskStateFromStructuredText(splitTaskContext(contextText).structuredState)
+        : defaultTaskState();
+      writeTaskStateFiles(task, state);
+    }
+    return state;
   }
 
   desiredProjectProfileName(projectId) {
@@ -4377,6 +4904,7 @@ class RedouLocalService {
       updatedAt: createdAt,
       tasks: [],
     });
+    appendDedupeRules(project.rulesPath, [projectWorkspaceOutputRule(project.path || project.workspace_path)]);
     const task = this.ensureTask(project, {
       id: `task-${Date.now().toString(36)}`,
       projectId: project.id,
@@ -4722,8 +5250,26 @@ class RedouLocalService {
       attachments: Array.isArray(attachments) ? attachments : [],
     };
     fs.appendFileSync(task.messagesPath, `${JSON.stringify(payload)}\n`, "utf8");
+    this.appendTaskEventJsonl(task, payload);
     this.updateChatTask(projectId, taskId, {}, { activate: false });
     return payload;
+  }
+
+  appendTaskEventJsonl(task, event) {
+    if (!task?.eventsPath) return null;
+    mkdirp(path.dirname(task.eventsPath));
+    const payload = {
+      id: event.id || crypto.randomUUID(),
+      createdAt: event.createdAt || isoNow(),
+      ...event,
+    };
+    fs.appendFileSync(task.eventsPath, `${JSON.stringify(payload)}\n`, "utf8");
+    return payload;
+  }
+
+  readTaskEvents(task) {
+    const eventsPath = task?.eventsPath || taskEventsPathFromContextPath(task?.contextPath || "");
+    return parseEventsJsonl(readText(eventsPath));
   }
 
   updateUserInputEnvelopeStatus(projectId, taskId, envelopeId, patch = {}) {
@@ -4795,17 +5341,24 @@ class RedouLocalService {
     if (!task) throw new Error("Task not found");
     const file = kind === "rules" ? task.rulesPath : task.contextPath;
     if (kind !== "rules") {
-      this.ensureTaskContextShape(file);
+      this.ensureTaskContextShape(file, task);
     }
     return { kind, path: file, content: readText(file) };
   }
 
   updateTaskContextFile(projectId, taskId, kind, content) {
+    const { task } = this.findProjectAndTask(projectId, taskId);
+    if (!task) throw new Error("Task not found");
     const response = this.getTaskContextFile(projectId, taskId, kind);
     const nextContent = kind === "rules"
       ? String(content || "")
       : normalizeTaskContextText(content);
     fs.writeFileSync(response.path, nextContent, "utf8");
+    if (kind !== "rules") {
+      const state = parseTaskStateFromStructuredText(splitTaskContext(nextContent).structuredState);
+      const statePath = task.statePath || taskStatePathFromContextPath(response.path);
+      fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    }
     return { ...response, content: nextContent, ok: true };
   }
 
@@ -4814,7 +5367,7 @@ class RedouLocalService {
     const { project, task } = this.findProjectAndTask(projectId, taskId);
     if (!project || !task) throw new Error("Project or task not found");
 
-    const taskContext = this.ensureTaskContextShape(task.contextPath);
+    const taskContext = normalizeTaskContextText(readText(task.contextPath));
     const targetPath = targetScope === "project" ? project.rulesPath : task.rulesPath;
     const targetLabel = targetScope === "project" ? "PROJECT_RULES.md" : "TASK_RULES.md";
     let extractedRules = extractRulesFromTaskContextText(taskContext, targetScope);
@@ -5043,74 +5596,30 @@ class RedouLocalService {
   }
 
   appendRawTurnLog(projectId, taskId, userInput, assistantText, options = {}) {
-    const user = SecretRedactor.redactText(markdownListText(userInput, 900)).text;
-    const assistant = SecretRedactor.redactText(markdownListText(assistantText, 1400)).text;
-    if (!user && !assistant) return null;
     const { task } = this.findProjectAndTask(projectId, taskId);
     if (!task) return null;
-    const taskContextPath = task.contextPath;
-    const current = this.ensureTaskContextShape(taskContextPath).trimEnd();
+    const user = String(userInput || "");
+    const assistant = String(assistantText || "");
+    if (!user.trim() && !assistant.trim()) return null;
     const artifacts = options.artifacts && typeof options.artifacts === "object"
       ? options.artifacts
       : emptyTurnArtifacts();
     seedAttachmentArtifacts(artifacts, options.attachments || []);
-    const safeArtifacts = {
-      files: (artifacts.files || []).map((item) => SecretRedactor.redactText(item).text),
-      commands: (artifacts.commands || []).map((item) => SecretRedactor.redactText(item).text),
-      errors: (artifacts.errors || []).map((item) => SecretRedactor.redactText(item).text),
-      attachments: (artifacts.attachments || []).map((item) => SecretRedactor.redactText(item).text),
-    };
-    const tags = extractLightTags(user, assistant, safeArtifacts);
-    const state = TaskStateManager.update(current, user, assistant, { artifacts: safeArtifacts });
-    const localTime = new Date().toISOString().replace("T", " ").slice(0, 16);
-    const entry = [
-      `### ${localTime}`,
-      "",
-      "User Request:",
-      user || "(empty)",
-      "",
-      "Assistant Summary:",
-      assistant || "(empty)",
-      "",
-      "Observed Artifacts:",
-      "- files:",
-      markdownBulletBlock(safeArtifacts.files),
-      "- commands:",
-      markdownBulletBlock(safeArtifacts.commands),
-      "- errors:",
-      markdownBulletBlock(safeArtifacts.errors),
-      "- attachments:",
-      markdownBulletBlock(safeArtifacts.attachments),
-      "",
-      "Light Tags:",
-      "- constraints:",
-      markdownBulletBlock(tags.constraints),
-      "- todos:",
-      markdownBulletBlock(tags.todos),
-      "- evidence:",
-      markdownBulletBlock(tags.evidence),
-      "- open_issues:",
-      markdownBulletBlock(tags.open_issues),
-      "",
-    ].join("\n");
-    const priorRaw = state.rawTurnLog
-      .split(/(?=^###\s+)/m)
-      .map((item) => item.trim())
-      .filter(Boolean)
-      .slice(-4)
-      .join("\n\n");
-    const next = [
-      state.structuredState.trimEnd(),
-      "",
-      "## B. Raw Turn Log",
-      "",
-      priorRaw,
-      priorRaw ? "" : null,
-      entry,
-      "",
-    ].filter((item) => item != null).join("\n");
-    fs.writeFileSync(taskContextPath, next, "utf8");
-    return { path: taskContextPath, length: next.length };
+    this.appendTaskEventJsonl(task, {
+      type: "turn_digest",
+      user,
+      assistant,
+      files: artifacts.files || [],
+      commands: artifacts.commands || [],
+      errors: artifacts.errors || [],
+      attachments: artifacts.attachments || [],
+      createdAt: isoNow(),
+    });
+    const events = this.readTaskEvents(task);
+    const state = compressTaskContext(events, options.budget || { maxChars: 12000 });
+    writeTaskStateFiles(task, state);
+    const content = readText(task.contextPath);
+    return { path: task.contextPath, statePath: task.statePath, eventsPath: task.eventsPath, length: content.length };
   }
 
   updateTaskContextAfterTurn(projectId, taskId, userInput, assistantText, options = {}) {
@@ -5313,9 +5822,8 @@ class RedouLocalService {
     const currentSafe = SecretRedactor.redactText(effectiveUserInput);
     redactionStats.count += currentSafe.count;
     const currentRequestText = currentSafe.text.trim();
-    const taskContext = this.ensureTaskContextShape(task.contextPath);
-    const { structuredState } = splitTaskContext(taskContext);
-    const completedRunIds = completedRunIdsFromMessages(allMessages);
+    const state = this.ensureTaskStateShape(task);
+    const structuredState = renderTaskStateStructuredMarkdown(state);
     const excludedQueuedMessageIds = [];
     const excludedGuideControlEventIds = [];
 
@@ -5330,10 +5838,7 @@ class RedouLocalService {
       }
     }
 
-    const historyMessages = (allMessages || [])
-      .filter((message) => isPromptHistoryMessage(message, completedRunIds, currentEnvelope?.id || ""))
-      .slice(-Math.max(0, recentMessageLimit))
-      .map((message) => renderPromptHistoryMessage(message, currentRequestText, redactionStats));
+    const historyMessages = [];
 
     const taskStateRaw = compactMultiline(
       scrubCurrentRequestEcho(structuredState, currentRequestText),
@@ -5341,13 +5846,6 @@ class RedouLocalService {
     );
     const taskState = SecretRedactor.redactText(taskStateRaw);
     redactionStats.count += taskState.count;
-
-    const toolSummary = ToolLogSummarizer.summarize(
-      allMessages,
-      completedRunIds,
-      currentRequestText,
-      redactionStats,
-    );
 
     const attachmentSafe = SecretRedactor.redactText(
       compactMultiline(currentAttachmentText, attachmentMaxChars),
@@ -5383,13 +5881,6 @@ class RedouLocalService {
         metadata: { redouContextKind: "task_state" },
       },
       ...historyMessages,
-      ...(toolSummary
-        ? [{
-            role: "developer",
-            content: ["# Tool Result Summary", "", toolSummary].join("\n"),
-            metadata: { redouContextKind: "tool_summary" },
-          }]
-        : []),
       {
         role: "user",
         content: finalUserParts.join("\n"),
@@ -5471,45 +5962,15 @@ class RedouLocalService {
     });
   }
 
-  compactTaskContext({ project, task, recentMessages, currentAttachments, effectiveUserInput, budget, compactReason, provider, model }) {
-    const beforeTaskContext = this.ensureTaskContextShape(task.contextPath);
-    const beforeTokens = estimateContextTokens(beforeTaskContext);
-    const payload = {
-      projectId: project.id,
-      taskId: task.id,
-      hermesProfile: project.hermesProfile,
-      provider,
-      model,
-      projectRules: SecretRedactor.redactText(readText(project.rulesPath)).text,
-      taskRules: SecretRedactor.redactText(readText(task.rulesPath)).text,
-      taskContext: SecretRedactor.redactText(beforeTaskContext).text,
-      recentMessages: SecretRedactor.redactText(this.renderRecentMessages(recentMessages.slice(-RECENT_MESSAGE_LIMIT))).text,
-      attachments: SecretRedactor.redactText(this.formatAttachmentsForContext(currentAttachments)).text,
-      currentUserRequest: SecretRedactor.redactText(compactMultiline(effectiveUserInput, 4000)).text,
-      compactReason,
-      budget,
-    };
-    const response = this.runContextCompactModel(payload, project);
-    if (!response?.ok || !response.result || typeof response.result !== "object") {
-      const error = response?.error || "compact model did not return a usable result";
-      this.log(`redou context compact failed projectId=${project.id} taskId=${task.id}: ${redact(error)}`);
-      return {
-        triggered: true,
-        succeeded: false,
-        taskContextBeforeTokens: beforeTokens,
-        taskContextAfterTokens: beforeTokens,
-        error,
-        reason: compactReason,
-      };
-    }
-    const result = response.result;
-    const compressedTaskContext = trimTaskContextRawLog(
-      normalizeTaskContextText(result.compressed_task_context || ""),
-      2,
-    );
-    const projectRulesAdded = appendDedupeRules(project.rulesPath, result.project_rules_to_add || []);
-    const taskRulesAdded = appendDedupeRules(task.rulesPath, result.task_rules_to_add || []);
-    fs.writeFileSync(task.contextPath, compressedTaskContext, "utf8");
+  compactTaskContext({ project, task, budget, compactReason }) {
+    const beforeState = readTaskStateFile(task.statePath);
+    const beforeTokens = estimateContextTokens(renderTaskStateStructuredMarkdown(beforeState));
+    const state = applyTaskStateBudget(beforeState, {
+      ...budget,
+      maxChars: Math.max(2000, Math.floor(Number(budget?.inputBudget || 0) * 2) || 12000),
+    });
+    writeTaskStateFiles(task, state);
+    const compressedTaskContext = readText(task.contextPath);
     const afterTokens = estimateContextTokens(compressedTaskContext);
     return {
       triggered: true,
@@ -5517,8 +5978,8 @@ class RedouLocalService {
       taskContextBeforeTokens: beforeTokens,
       taskContextAfterTokens: afterTokens,
       reason: compactReason,
-      projectRulesAdded,
-      taskRulesAdded,
+      projectRulesAdded: [],
+      taskRulesAdded: [],
     };
   }
 
@@ -5591,17 +6052,12 @@ class RedouLocalService {
     const currentAttachmentText = this.formatAttachmentsForContext(currentAttachments);
     const effectiveUserInput = userInput.trim() || this.attachmentOnlyRequestText(currentAttachments);
     const { messages } = this.loadMessagesFile(task.messagesPath, { projectId, taskId });
-    const completedRunIds = completedRunIdsFromMessages(messages);
-    const promptRecentMessages = messages
-      .filter((message) => isPromptHistoryMessage(message, completedRunIds, currentEnvelope.id))
-      .slice(-Math.max(0, maxRecentMessages));
     const recentMessages = messages.slice(-Math.max(0, maxRecentMessages));
-    this.ensureTaskContextShape(task.contextPath);
+    this.ensureTaskStateShape(task);
     const includedFiles = [
       project.rulesPath,
       task.rulesPath,
-      task.contextPath,
-      task.messagesPath,
+      task.statePath,
       ...currentAttachmentPaths,
     ];
     const taskType = this.inferTaskType({ ...input, userInput: effectiveUserInput, capability: task.capability });
@@ -5648,7 +6104,7 @@ class RedouLocalService {
         ...this.compactTaskContext({
           project,
           task,
-          recentMessages: promptRecentMessages,
+          recentMessages: [],
           currentAttachments,
           effectiveUserInput,
           budget,
@@ -5718,7 +6174,7 @@ class RedouLocalService {
       hermesProfile: project.hermesProfile,
       includedFiles,
       recentMessageCount: recentMessages.length,
-      promptRecentMessageCount: promptRecentMessages.length,
+      promptRecentMessageCount: 0,
       attachmentCount: currentAttachments.length,
       imageAttachmentCount: currentAttachments.filter((attachment) => isImageMime(attachment.mimeType)).length,
       contextLength,
@@ -5738,6 +6194,7 @@ class RedouLocalService {
       projectRulesPath: project.rulesPath,
       taskRulesPath: task.rulesPath,
       taskContextPath: task.contextPath,
+      taskStatePath: task.statePath,
       currentRequestId: rendered.debugReport.currentRequestId,
       currentTurnId: currentEnvelope.turnId,
       promptMessageCount: rendered.debugReport.includedMessageCount,
@@ -6480,4 +6937,5 @@ module.exports = {
   SecretRedactor,
   ToolLogSummarizer,
   TaskStateManager,
+  compressTaskContext,
 };

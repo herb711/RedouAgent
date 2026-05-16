@@ -86,8 +86,8 @@ test("buildTaskContext exposes current and historical attachment paths", () => {
   });
 
   assert.match(second.userContext, /## 4\. Recent Conversation/);
-  assert.match(second.userContext, /Attachments:/);
-  assert.match(second.userContext, /diagram\.jpg/);
+  assert.doesNotMatch(second.userContext, /Attachments:/);
+  assert.doesNotMatch(second.userContext, /diagram\.jpg/);
 });
 
 test("sendMessage accepts attachment-only messages and persists the transfer", () => {
@@ -156,6 +156,8 @@ test("projects and tasks use only the current Redou markdown files", () => {
   const projectRulesPath = path.join(workspacePath, ".redou", "PROJECT_RULES.md");
   const taskRulesPath = path.join(workspacePath, ".redou", "tasks", task.id, "TASK_RULES.md");
   const taskContextPath = path.join(workspacePath, ".redou", "tasks", task.id, "TASK_CONTEXT.md");
+  const taskStatePath = path.join(workspacePath, ".redou", "tasks", task.id, "TASK_STATE.json");
+  const taskEventsPath = path.join(workspacePath, ".redou", "tasks", task.id, "events.jsonl");
 
   const loaded = service.readProject(project.id);
   const projectFile = service.getProjectContextFile(project.id, "rules");
@@ -166,15 +168,19 @@ test("projects and tasks use only the current Redou markdown files", () => {
   assert.equal(loaded.rulesPath, projectRulesPath);
   assert.equal(loaded.tasks[0].rulesPath, taskRulesPath);
   assert.equal(loaded.tasks[0].contextPath, taskContextPath);
+  assert.equal(loaded.tasks[0].statePath, taskStatePath);
+  assert.equal(loaded.tasks[0].eventsPath, taskEventsPath);
   assert.equal(fs.existsSync(projectRulesPath), true);
   assert.equal(fs.existsSync(taskRulesPath), true);
   assert.equal(fs.existsSync(taskContextPath), true);
+  assert.equal(fs.existsSync(taskStatePath), true);
+  assert.equal(fs.existsSync(taskEventsPath), true);
   assert.equal(path.basename(taskContextFile.path), "TASK_CONTEXT.md");
   assert.match(taskContextFile.content, /## A\. Structured State/);
-  assert.match(taskContextFile.content, /## B\. Raw Turn Log/);
+  assert.match(taskContextFile.content, /## B\. Recent Turn Digest/);
 });
 
-test("updateTaskContextAfterTurn appends lightweight raw turn log only", () => {
+test("updateTaskContextAfterTurn renders structured state and lightweight turn digest", () => {
   const { service } = makeService();
   const { project, task } = createProjectAndTask(service);
 
@@ -196,14 +202,14 @@ test("updateTaskContextAfterTurn appends lightweight raw turn log only", () => {
   assert.ok(result);
   const content = fs.readFileSync(task.contextPath, "utf8");
   assert.match(content, /## A\. Structured State/);
-  assert.match(content, /## B\. Raw Turn Log/);
-  assert.match(content, /User Request:\n请帮我实现这个功能/);
-  assert.match(content, /Assistant Summary:\nChanged desktop\/src\/services\/redouLocalService\.cjs/);
-  assert.match(content, /- files:\n  - desktop\/src\/services\/redouLocalService\.cjs/);
-  assert.match(content, /- commands:\n  - npm --prefix desktop test/);
-  assert.match(content, /- constraints:\n  - 必须/);
-  assert.match(content, /- todos:\n  - 帮我/);
-  assert.doesNotMatch(content, /## Recent Turn Summaries/);
+  assert.match(content, /## B\. Recent Turn Digest/);
+  assert.match(content, /### Current Goal/);
+  assert.match(content, /### Completed\n\n- Changed desktop\/src\/services\/redouLocalService\.cjs/);
+  assert.match(content, /### Files Changed\n\n- desktop\/src\/services\/redouLocalService\.cjs/);
+  assert.match(content, /### Commands Run\n\n- npm --prefix desktop test/);
+  assert.doesNotMatch(content, /User Request:/);
+  assert.doesNotMatch(content, /Assistant Summary:/);
+  assert.doesNotMatch(content, /Observed Artifacts:/);
 });
 
 test("buildTaskContext uses dynamic budget and compacts oversized task context", () => {
@@ -211,91 +217,30 @@ test("buildTaskContext uses dynamic budget and compacts oversized task context",
   const workspacePath = path.join(root, "workspace");
   fs.mkdirSync(workspacePath, { recursive: true });
   const { project, task } = createProjectAndTask(service, workspacePath);
-  service.runContextCompactModel = () => ({
-    ok: true,
-    result: {
-      project_rules_to_add: ["Long-lived project compact rule."],
-      task_rules_to_add: ["Current task compact rule."],
-      compressed_task_context: [
-        "# Task Context",
-        "",
-        "## A. Structured State",
-        "",
-        "### Current Brief",
-        "",
-        "Compacted brief.",
-        "",
-        "### Active Constraints",
-        "",
-        "Current task compact rule.",
-        "",
-        "### Todo List",
-        "",
-        "- Continue the request.",
-        "",
-        "### Progress Summary",
-        "",
-        "Oversized raw context was compacted.",
-        "",
-        "### Evidence and Artifacts",
-        "",
-        "None.",
-        "",
-        "### Open Issues",
-        "",
-        "None.",
-        "",
-        "---",
-        "",
-        "## B. Raw Turn Log",
-        "",
-      ].join("\n"),
-    },
-  });
-  service.updateTaskContextFile(
-    project.id,
-    task.id,
-    "context",
-    [
-      "# Task Context",
-      "",
-      "## A. Structured State",
-      "",
-      "### Current Brief",
-      "",
-      String.fromCharCode(0x6d4b).repeat(30000),
-      "",
-      "### Active Constraints",
-      "",
-      "### Todo List",
-      "",
-      "### Progress Summary",
-      "",
-      "### Evidence and Artifacts",
-      "",
-      "### Open Issues",
-      "",
-      "---",
-      "",
-      "## B. Raw Turn Log",
-      "",
-    ].join("\n"),
-  );
-
-  const built = service.buildTaskContext({
+  fs.writeFileSync(task.statePath, `${JSON.stringify({
+    task_goal: String.fromCharCode(0x6d4b).repeat(120000),
+    current_phase: "in_progress",
+    constraints: Array.from({ length: 80 }, (_, index) => `constraint-${index}-${String.fromCharCode(0x6d4b).repeat(700)}`),
+    decisions: Array.from({ length: 80 }, (_, index) => `decision-${index}-${String.fromCharCode(0x6d4b).repeat(700)}`),
+    completed: Array.from({ length: 80 }, (_, index) => `completed-${index}-${String.fromCharCode(0x6d4b).repeat(700)}`),
+    open_issues: [],
+    files_changed: [],
+    commands_run: [],
+    current_focus: "",
+    next_steps: [],
+  })}\n`, "utf8");
+  const deterministic = service.buildTaskContext({
     projectId: project.id,
     taskId: task.id,
     userInput: "Use the current task context.",
     modelContextTokens: 24000,
   });
 
-  assert.notEqual(built.metadata.contextMaxTokens, 200000);
-  assert.equal(built.metadata.modelContextTokens, 24000);
-  assert.equal(built.metadata.contextCompressed, true);
-  assert.equal(built.metadata.contextCompression.succeeded, true);
-  assert.ok(built.metadata.contextTokens <= built.metadata.contextMaxTokens);
-  assert.ok(built.metadata.contextPercent <= 100);
-  assert.match(fs.readFileSync(project.rulesPath, "utf8"), /Long-lived project compact rule/);
-  assert.match(fs.readFileSync(task.rulesPath, "utf8"), /Current task compact rule/);
-  assert.match(fs.readFileSync(task.contextPath, "utf8"), /Compacted brief/);
+  assert.notEqual(deterministic.metadata.contextMaxTokens, 200000);
+  assert.equal(deterministic.metadata.modelContextTokens, 24000);
+  assert.equal(deterministic.metadata.contextCompressed, true);
+  assert.equal(deterministic.metadata.contextCompression.succeeded, true);
+  assert.ok(deterministic.metadata.contextTokens <= deterministic.metadata.contextMaxTokens);
+  assert.ok(deterministic.metadata.contextPercent <= 100);
+  assert.doesNotMatch(fs.readFileSync(task.contextPath, "utf8"), new RegExp(String.fromCharCode(0x6d4b).repeat(1000)));
 });

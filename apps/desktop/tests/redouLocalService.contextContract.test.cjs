@@ -200,7 +200,7 @@ test("current user request appears exactly once even when old history had the sa
   assert.equal(built.metadata.contextValidation.ok, true);
 });
 
-test("raw turn log is not included in the assembled prompt", () => {
+test("recent turn digest is not included in the assembled prompt", () => {
   const { service, project, task } = makeService();
   service.updateTaskContextFile(project.id, task.id, "context", [
     "# Task Context",
@@ -213,7 +213,7 @@ test("raw turn log is not included in the assembled prompt", () => {
     "",
     "---",
     "",
-    "## B. Raw Turn Log",
+    "## B. Recent Turn Digest",
     "",
     "### Earlier",
     "",
@@ -260,8 +260,8 @@ test("run event records are summarized without raw event labels entering history
   assert.doesNotMatch(text, /\bcommand_start\b/);
   assert.doesNotMatch(text, /\btool_start\b/);
   assert.doesNotMatch(text, /\btool_end\b/);
-  assert.match(text, /Tool Result Summary/);
-  assert.match(text, /npm test/);
+  assert.doesNotMatch(text, /Tool Result Summary/);
+  assert.doesNotMatch(text, /npm test/);
   assert.equal(built.metadata.contextValidation.ok, true);
 });
 

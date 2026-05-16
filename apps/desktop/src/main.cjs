@@ -204,6 +204,24 @@ ipcMain.handle("redou:pick-files", async () => {
   return result.filePaths;
 });
 
+ipcMain.handle("redou:paths:open", async (_event, targetPath) => {
+  const rawPath = String(targetPath || "").trim();
+  if (!rawPath) {
+    return { ok: false, message: "Path is empty." };
+  }
+
+  const resolvedPath = path.resolve(rawPath);
+  if (!fs.existsSync(resolvedPath)) {
+    return { ok: false, message: `Path not found: ${resolvedPath}` };
+  }
+
+  const errorMessage = await shell.openPath(resolvedPath);
+  if (errorMessage) {
+    return { ok: false, message: errorMessage, path: resolvedPath };
+  }
+  return { ok: true, path: resolvedPath };
+});
+
 ipcMain.handle("redou:projects:list", () => getLocalService().getChatProjects());
 
 ipcMain.handle("redou:projects:create", (_event, body) =>

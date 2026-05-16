@@ -4,6 +4,7 @@ contextBridge.exposeInMainWorld("redouDesktop", {
   pickDirectory: () => ipcRenderer.invoke("redou:pick-directory"),
   pickFiles: () => ipcRenderer.invoke("redou:pick-files"),
   getFilePath: (file) => webUtils.getPathForFile(file),
+  openLocalPath: (targetPath) => ipcRenderer.invoke("redou:paths:open", targetPath),
   getStatus: () => ipcRenderer.invoke("redou:status"),
   getConfig: () => ipcRenderer.invoke("redou:config:get"),
   getConfigDefaults: () => ipcRenderer.invoke("redou:config:defaults"),
