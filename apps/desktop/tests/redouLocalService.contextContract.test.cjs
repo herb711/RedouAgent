@@ -1,0 +1,343 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const test = require("node:test");
+
+const { RedouLocalService, SecretRedactor } = require("../src/services/redouLocalService.cjs");
+
+function makeService() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "redou-context-contract-"));
+  const app = {
+    getPath(name) {
+      assert.equal(name, "userData");
+      return path.join(root, "userData");
+    },
+  };
+  const logs = [];
+  const service = new RedouLocalService({
+    app,
+    projectRoot: root,
+    hermesHome: path.join(root, "hermes-home"),
+    log: (line) => logs.push(String(line || "")),
+  });
+  service.ensureInitialized();
+  const workspacePath = path.join(root, "workspace");
+  fs.mkdirSync(workspacePath, { recursive: true });
+  const { project } = service.createChatProject({
+    name: "Context Contract Project",
+    workspace_path: workspacePath,
+  });
+  const task = project.tasks[0];
+  return { root, service, project, task, logs };
+}
+
+function addActiveRun(service, project, task, runId = "active-run") {
+  const writes = [];
+  const child = {
+    pid: 0,
+    killed: false,
+    stdin: {
+      destroyed: false,
+      write(line) {
+        writes.push(String(line || ""));
+      },
+    },
+    kill() {
+      child.killed = true;
+    },
+  };
+  service.activeRuns.set(runId, {
+    child,
+    projectId: project.id,
+    taskId: task.id,
+    webContents: null,
+    startedAt: new Date().toISOString(),
+    startedAtMs: Date.now(),
+    lastActiveAtMs: Date.now(),
+    stopRequested: false,
+    turnArtifacts: { files: [], commands: [], errors: [], attachments: [] },
+  });
+  return { child, writes, runId };
+}
+
+function promptText(built) {
+  return built.contextMessages.map((message) => String(message.content || "")).join("\n\n");
+}
+
+function lastUserMessage(built) {
+  return built.contextMessages.filter((message) => message.role === "user").at(-1);
+}
+
+test("active run user input defaults to queue and does not steer the active run", () => {
+  const { service, project, task } = makeService();
+  const active = addActiveRun(service, project, task);
+
+  const response = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "queued future question",
+  });
+
+  assert.equal(response.queued, true);
+  assert.equal(response.queueDepth, 1);
+  assert.equal(active.writes.length, 0);
+
+  const loaded = service.getChatTaskMessages(project.id, task.id);
+  const queued = loaded.messages.find((message) => message.role === "user");
+  assert.equal(queued.content, "queued future question");
+  assert.equal(queued.metadata.inputEnvelope.deliveryMode, "queue");
+  assert.equal(queued.metadata.inputEnvelope.status, "pending");
+});
+
+test("context preview can be built without a current user request", () => {
+  const { service, project, task } = makeService();
+
+  const preview = service.buildTaskContext({
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "",
+    preview: true,
+  });
+
+  assert.equal(preview.metadata.preview, true);
+  assert.equal(preview.metadata.contextValidation.ok, true);
+  assert.equal(preview.metadata.taskContextPath, task.contextPath);
+});
+
+test("queued messages are excluded until their own turn becomes current", () => {
+  const { service, project, task } = makeService();
+  addActiveRun(service, project, task);
+  const queued = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "do not leak this queued request",
+  });
+
+  const built = service.buildTaskContext({
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "current active request",
+  });
+
+  assert.doesNotMatch(promptText(built), /do not leak this queued request/);
+  assert.equal(lastUserMessage(built).content.includes("current active request"), true);
+  assert.ok(built.metadata.contextDebugReport.excludedQueuedMessageIds.includes(queued.queueId));
+  assert.equal(built.metadata.contextValidation.ok, true);
+});
+
+test("guide delivery is stored as a control event and never as ordinary user history", () => {
+  const { service, project, task } = makeService();
+  const active = addActiveRun(service, project, task);
+
+  const response = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "steer the active run only",
+    deliveryMode: "guide",
+  });
+
+  assert.equal(response.guided, true);
+  assert.equal(active.writes.length, 1);
+  const loaded = service.getChatTaskMessages(project.id, task.id);
+  assert.equal(loaded.messages.some((message) => message.role === "user" && message.content === "steer the active run only"), false);
+  const control = loaded.messages.find((message) => message.metadata.eventType === "control_event");
+  assert.ok(control);
+  assert.equal(control.metadata.inputEnvelope.deliveryMode, "guide");
+
+  const built = service.buildTaskContext({
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "next real request",
+  });
+  assert.doesNotMatch(promptText(built), /steer the active run only/);
+  assert.ok(built.metadata.contextDebugReport.excludedGuideControlEventIds.includes(control.metadata.inputEnvelope.id));
+});
+
+test("interrupt_replace cancels the active run and starts a replacement turn", () => {
+  const { service, project, task } = makeService();
+  const active = addActiveRun(service, project, task);
+
+  const response = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "replace with this request",
+    deliveryMode: "interrupt_replace",
+  });
+
+  assert.equal(active.child.killed, true);
+  assert.equal(service.activeRuns.get(active.runId).stopRequested, true);
+  assert.notEqual(response.runId, active.runId);
+
+  const loaded = service.getChatTaskMessages(project.id, task.id);
+  const replacement = loaded.messages.find((message) => message.role === "user" && message.content === "replace with this request");
+  assert.ok(replacement);
+  assert.equal(replacement.metadata.inputEnvelope.deliveryMode, "interrupt_replace");
+  assert.equal(replacement.metadata.inputEnvelope.status, "cancelled");
+});
+
+test("current user request appears exactly once even when old history had the same text", () => {
+  const { service, project, task } = makeService();
+  service.appendTaskMessage(project.id, task.id, "user", "repeat exact request", {
+    inputEnvelope: {
+      id: "old-input",
+      text: "repeat exact request",
+      turnId: "old-turn",
+      deliveryMode: "new_turn",
+      status: "completed",
+    },
+  });
+  service.appendTaskMessage(project.id, task.id, "assistant", "old answer");
+
+  const built = service.buildTaskContext({
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "repeat exact request",
+  });
+
+  const text = promptText(built);
+  assert.equal(text.split("repeat exact request").length - 1, 1);
+  assert.equal(built.metadata.contextValidation.ok, true);
+});
+
+test("raw turn log is not included in the assembled prompt", () => {
+  const { service, project, task } = makeService();
+  service.updateTaskContextFile(project.id, task.id, "context", [
+    "# Task Context",
+    "",
+    "## A. Structured State",
+    "",
+    "### Current Goal",
+    "",
+    "Continue safely.",
+    "",
+    "---",
+    "",
+    "## B. Raw Turn Log",
+    "",
+    "### Earlier",
+    "",
+    "User Request:",
+    "OLD RAW UNIQUE SHOULD NOT ENTER PROMPT",
+  ].join("\n"));
+
+  const built = service.buildTaskContext({
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "fresh request",
+  });
+
+  assert.doesNotMatch(promptText(built), /OLD RAW UNIQUE SHOULD NOT ENTER PROMPT/);
+  assert.equal(built.metadata.contextValidation.ok, true);
+});
+
+test("run event records are summarized without raw event labels entering history", () => {
+  const { service, project, task } = makeService();
+  service.appendTaskMessage(project.id, task.id, "event", "npm test", {
+    eventType: "command_start",
+    event: { type: "command_start", command: "npm test", metadata: { runId: "run-1" } },
+  });
+  service.appendTaskMessage(project.id, task.id, "event", "tool started", {
+    eventType: "tool_start",
+    event: { type: "tool_start", name: "terminal", metadata: { runId: "run-1" } },
+  });
+  service.appendTaskMessage(project.id, task.id, "event", "tool done", {
+    eventType: "tool_end",
+    event: { type: "tool_end", name: "terminal", success: true, metadata: { runId: "run-1" } },
+  });
+  service.appendTaskMessage(project.id, task.id, "event", "done", {
+    eventType: "done",
+    event: { type: "done", metadata: { runId: "run-1" } },
+  });
+
+  const built = service.buildTaskContext({
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "summarize safe state",
+  });
+  const text = promptText(built);
+
+  assert.doesNotMatch(text, /\bcommand_start\b/);
+  assert.doesNotMatch(text, /\btool_start\b/);
+  assert.doesNotMatch(text, /\btool_end\b/);
+  assert.match(text, /Tool Result Summary/);
+  assert.match(text, /npm test/);
+  assert.equal(built.metadata.contextValidation.ok, true);
+});
+
+test("secret values in scripts are redacted before entering prompt or task state", () => {
+  const { service, project, task } = makeService();
+  const secret = "super-secret-password";
+  const built = service.buildTaskContext({
+    projectId: project.id,
+    taskId: task.id,
+    userInput: `Review this script:\npassword = '${secret}'\nAuthorization: Bearer abcdefghijklmnop`,
+  });
+
+  const text = promptText(built);
+  assert.doesNotMatch(text, new RegExp(secret));
+  assert.doesNotMatch(text, /Bearer abcdefghijklmnop/);
+  assert.match(text, /\[REDACTED_SECRET\]/);
+  assert.equal(built.metadata.contextValidation.ok, true);
+
+  service.updateTaskContextAfterTurn(project.id, task.id, `password = '${secret}'`, "done");
+  assert.doesNotMatch(fs.readFileSync(task.contextPath, "utf8"), new RegExp(secret));
+});
+
+test("Chinese credential labels and ssh inline passwords are redacted", () => {
+  const secret = "G7@kL9!qR2#vX5mT8";
+  const minioSecret = "G9rT2mV8pK6zN4yH7sL3dF5j";
+  const source = [
+    `密码：\`${secret}\``,
+    `ssh -p 8956 ubuntu@118.25.230.236 ${secret}`,
+    `Password bytes: b'${secret}'`,
+    `- 密码: \`${minioSecret}\``,
+  ].join("\n");
+
+  const redacted = SecretRedactor.redactText(source).text;
+
+  assert.doesNotMatch(redacted, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.doesNotMatch(redacted, new RegExp(minioSecret));
+  assert.equal(SecretRedactor.containsUnredactedSecret(redacted), false);
+});
+
+test("redacted password prompts do not reconnect to following transcript text", () => {
+  const prompt = "ubuntu@host's password: [REDACTED_SECRET] Permission denied, please try again.";
+  const transcript = "ssh -p 8956 ubuntu@118.25.230.236 ubuntu@118.25.230.236's password: [REDACTED_SECRET] Permission denied, please try again.";
+  const redactedTranscript = "ssh -p 8956 ubuntu@118.25.230.236 ubuntu@118.25.230.236's password=[REDACTED_SECRET] Permission denied, please try again.";
+
+  assert.equal(SecretRedactor.containsUnredactedSecret(prompt), false);
+  assert.equal(SecretRedactor.containsUnredactedSecret(transcript), false);
+  assert.equal(SecretRedactor.containsUnredactedSecret(redactedTranscript), false);
+});
+
+test("last user message remains the current request for weak model prompts", () => {
+  const { service, project, task } = makeService();
+  service.updateChatTask(project.id, task.id, {
+    model_provider: "minimax",
+    model: "MiniMax-M2.7",
+  });
+  service.appendTaskMessage(project.id, task.id, "user", "completed old request", {
+    inputEnvelope: {
+      id: "completed-old",
+      text: "completed old request",
+      turnId: "completed-turn",
+      deliveryMode: "new_turn",
+      status: "completed",
+    },
+  });
+  service.appendTaskMessage(project.id, task.id, "assistant", "completed old answer");
+
+  const built = service.buildTaskContext({
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "the current weak-model request",
+    provider: "minimax",
+    model: "MiniMax-M2.7",
+  });
+
+  const users = built.contextMessages.filter((message) => message.role === "user");
+  assert.equal(users.at(-1).content.includes("the current weak-model request"), true);
+  assert.equal(built.contextMessages.at(-1).role, "user");
+  assert.equal(built.metadata.contextValidation.ok, true);
+});

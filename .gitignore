@@ -1,0 +1,34 @@
+# Redou workspace
+node_modules/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*.lnk
+.DS_Store
+Thumbs.db
+.env
+.venv/
+venv/
+logs/
+tmp/
+temp/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# build outputs
+apps/desktop/dist/
+vendor/hermes/hermes_cli/web_dist/
+vendor/hermes/web/dist/
+vendor/hermes/web/public/ds-assets/
+vendor/hermes/web/public/fonts/
+vendor/hermes/ui-tui/dist/
+vendor/hermes/ui-tui/packages/hermes-ink/dist/
+vendor/hermes/website/build/
+vendor/hermes/website/out/

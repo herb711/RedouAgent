@@ -1,0 +1,488 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const test = require("node:test");
+
+const { RedouLocalService } = require("../src/services/redouLocalService.cjs");
+
+function makeService() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "redou-analysis-"));
+  const app = {
+    getPath(name) {
+      assert.equal(name, "userData");
+      return path.join(root, "userData");
+    },
+  };
+  const service = new RedouLocalService({
+    app,
+    projectRoot: root,
+    hermesHome: path.join(root, "hermes-home"),
+    log: () => {},
+  });
+  return { root, service };
+}
+
+function writeAnalysisPrompt(root, file, text) {
+  const promptPath = path.join(root, "vendor", "hermes", "analyze", file);
+  fs.mkdirSync(path.dirname(promptPath), { recursive: true });
+  fs.writeFileSync(promptPath, text, "utf8");
+}
+
+test("analysis prompts replace the fixed docker environment per model", () => {
+  const { root, service } = makeService();
+  writeAnalysisPrompt(
+    root,
+    "task2.md",
+    [
+      "Docker Compose service: agent-lab",
+      "Docker container: agent-lab",
+      'Run: docker compose exec agent-lab bash -lc "npm test"',
+    ].join("\n"),
+  );
+
+  const prompt = service.analysisPromptForTask(
+    { id: "task2", file: "task2.md", title: "Small project build", capability: "implementation" },
+    "openai",
+    "gpt-test",
+    { key: "openai--gpt-test" },
+  );
+
+  assert.match(prompt, /\bagent-lab-openai-gpt-test\b/);
+  assert.doesNotMatch(prompt, /agent-lab(?!-[a-z0-9])/);
+  assert.match(prompt, /docker compose exec agent-lab-openai-gpt-test/);
+});
+
+test("analysis workspace falls back when the previous workspace is locked", () => {
+  const { service } = makeService();
+  const key = "local-vllm--qwen-qwen3.6-27b-fp8";
+  const preferred = path.join(service.analysisWorkspaceRoot(), key);
+  fs.mkdirSync(preferred, { recursive: true });
+  fs.writeFileSync(path.join(preferred, "old.txt"), "busy", "utf8");
+
+  const originalRmSync = fs.rmSync;
+  let attempts = 0;
+  fs.rmSync = (target, options) => {
+    if (path.resolve(target) === path.resolve(preferred)) {
+      attempts += 1;
+      const error = new Error("busy");
+      error.code = "EBUSY";
+      throw error;
+    }
+    return originalRmSync(target, options);
+  };
+
+  try {
+    const workspace = service.prepareAnalysisWorkspace(key, "run-locked");
+    assert.notEqual(path.resolve(workspace), path.resolve(preferred));
+    assert.match(path.basename(workspace), /^local-vllm--qwen-qwen3\.6-27b-fp8-run-locked/);
+    assert.equal(fs.existsSync(path.join(workspace, "projects")), true);
+    assert.equal(fs.existsSync(path.join(workspace, "reports")), true);
+    assert.equal(fs.existsSync(path.join(workspace, "logs")), true);
+    assert.equal(fs.existsSync(path.join(preferred, "old.txt")), true);
+    assert.ok(attempts > 0);
+  } finally {
+    fs.rmSync = originalRmSync;
+  }
+});
+
+test("analysis evaluation expects the model-specific docker environment", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(path.join(workspace, "projects"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "reports"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "logs"), { recursive: true });
+  fs.writeFileSync(path.join(workspace, "Dockerfile"), "FROM node:20\n", "utf8");
+  fs.writeFileSync(
+    path.join(workspace, "docker-compose.yml"),
+    [
+      "services:",
+      "  agent-lab-openai-gpt-test:",
+      "    container_name: agent-lab-openai-gpt-test",
+      "    volumes:",
+      "      - .:/workspace",
+      "    command: sleep infinity",
+    ].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(path.join(workspace, "README.md"), `${"Readme ".repeat(90)}\n`, "utf8");
+  fs.writeFileSync(path.join(workspace, "ENV_REPORT.md"), `${"Report ".repeat(120)}\n`, "utf8");
+  fs.writeFileSync(path.join(workspace, "logs", "env_check.txt"), "node v20\n", "utf8");
+
+  const evaluation = service.evaluateAnalysisTask(
+    "task1",
+    workspace,
+    [
+      { type: "command_start", command: "docker compose up -d --build" },
+      { type: "command_start", command: "docker compose ps" },
+      {
+        type: "command_start",
+        command:
+          'docker compose exec agent-lab-openai-gpt-test bash -lc "node -v && npm -v && python3 --version && pip --version && git --version && curl --version && wget --version"',
+      },
+    ],
+    "",
+    { analysisEnvName: "agent-lab-openai-gpt-test" },
+  );
+
+  const composeContract = evaluation.sections.find((section) => section.id === "compose_contract");
+  const environmentVerification = evaluation.sections.find((section) => section.id === "environment_verification");
+  assert.equal(composeContract.score, 100);
+  assert.equal(environmentVerification.score, 100);
+});
+
+test("analysis evaluation accepts direct docker exec for model containers", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  const envName = "agent-lab-openai-gpt-test";
+  const boardDir = path.join(workspace, "projects", "agent-task-board");
+  fs.mkdirSync(path.join(boardDir, "src"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "reports"), { recursive: true });
+  fs.writeFileSync(path.join(boardDir, "package.json"), "{\"scripts\":{\"start\":\"vite\"}}\n", "utf8");
+  fs.writeFileSync(path.join(boardDir, "src", "app.js"), "subtask Planner Coder Reviewer Tester pending running completed failed log progress localStorage\n", "utf8");
+  fs.writeFileSync(path.join(boardDir, "src", "style.css"), "body { color: #111; }\n", "utf8");
+  fs.writeFileSync(path.join(boardDir, "README.md"), "Agent Task Board\n", "utf8");
+  fs.writeFileSync(
+    path.join(workspace, "reports", "agent-task-board-report.md"),
+    `${"report ".repeat(140)}\n`,
+    "utf8",
+  );
+
+  const task2 = service.evaluateAnalysisTask(
+    "task2",
+    workspace,
+    [
+      {
+        type: "tool_start",
+        name: "terminal",
+        input: {
+          command: `docker exec ${envName} bash -lc "cd /workspace/projects/agent-task-board && npm start && curl -I http://127.0.0.1:5173"`,
+        },
+      },
+    ],
+    "",
+    { analysisEnvName: envName },
+  );
+  assert.equal(task2.sections.find((section) => section.id === "container_execution").score, 100);
+
+  const labDir = path.join(workspace, "projects", "bug-fix-lab");
+  fs.mkdirSync(path.join(labDir, "src"), { recursive: true });
+  fs.mkdirSync(path.join(labDir, "tests"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "logs"), { recursive: true });
+  fs.mkdirSync(path.join(workspace, "reports"), { recursive: true });
+  fs.writeFileSync(path.join(labDir, "package.json"), "{\"scripts\":{\"test\":\"node --test\"}}\n", "utf8");
+  fs.writeFileSync(path.join(labDir, "src", "calculator.js"), "function add(){} function subtract(){} function multiply(){} function divide(){}\n", "utf8");
+  fs.writeFileSync(path.join(labDir, "src", "textUtils.js"), "function reverseText(){} function countWords(){} function capitalizeWords(){} function isPalindrome(){}\n", "utf8");
+  fs.writeFileSync(path.join(labDir, "tests", "calculator.test.js"), "test('calculator', () => {})\n", "utf8");
+  fs.writeFileSync(path.join(labDir, "tests", "textUtils.test.js"), "test('text', () => {})\n", "utf8");
+  fs.writeFileSync(path.join(workspace, "logs", "bug-fix-lab-test.log"), `${"failed pass ".repeat(30)}\n`, "utf8");
+  fs.writeFileSync(path.join(workspace, "reports", "bug-fix-lab-report.md"), `${"bug fix failed passed ".repeat(80)}\n`, "utf8");
+
+  const task3 = service.evaluateAnalysisTask(
+    "task3",
+    workspace,
+    [
+      {
+        type: "tool_start",
+        name: "terminal",
+        input: {
+          command: `docker exec -w /workspace/projects/bug-fix-lab ${envName} npm test`,
+        },
+      },
+    ],
+    "",
+    { analysisEnvName: envName },
+  );
+  assert.equal(task3.sections.find((section) => section.id === "container_execution").score, 100);
+});
+
+test("analysis evaluation treats model API failures as invalid zero-score tasks", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+
+  const evaluation = service.evaluateAnalysisTask(
+    "task3",
+    workspace,
+    [],
+    "API call failed after 3 retries: HTTP 429: usage limit exceeded, resets at 2026-05-16T00:00:00+08:00",
+    { analysisEnvName: "agent-lab-minimax-cn-minimax-m2-7-highspeed" },
+  );
+
+  assert.equal(evaluation.score, 0);
+  assert.deepEqual(evaluation.sections, []);
+});
+
+test("analysis evaluation treats partial stream recovery as invalid zero-score tasks", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+
+  const evaluation = service.evaluateAnalysisTask(
+    "task4",
+    workspace,
+    [],
+    "Now let me create the comprehensive final report.\n\nWarning: Stream interrupted before completion; returned partial output.",
+    { analysisEnvName: "agent-lab-xiaomi-mimo-v2-5-pro" },
+  );
+
+  assert.equal(evaluation.score, 0);
+  assert.deepEqual(evaluation.sections, []);
+});
+
+test("analysis task3 does not award test or pass-loop credit without artifacts", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+
+  const task3 = service.evaluateAnalysisTask(
+    "task3",
+    workspace,
+    [],
+    "Token Plan Plus request failed before any tests ran",
+    { analysisEnvName: "agent-lab-minimax-cn-minimax-m2-7-highspeed" },
+  );
+
+  assert.equal(task3.score, 0);
+  assert.equal(task3.sections.find((section) => section.id === "tests_created").score, 0);
+  assert.equal(task3.sections.find((section) => section.id === "bug_loop").score, 0);
+});
+
+test("analysis task4 container check requires the delivered report and an in-container file check", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  const envName = "agent-lab-openai-gpt-test";
+  const reportsDir = path.join(workspace, "reports");
+  fs.mkdirSync(reportsDir, { recursive: true });
+  const events = [
+    {
+      type: "tool_start",
+      name: "terminal",
+      input: {
+        command: `docker exec ${envName} ls -lh /workspace/reports/chinese-agent-product-research.md`,
+      },
+    },
+  ];
+
+  const missingReport = service.evaluateAnalysisTask("task4", workspace, events, "", {
+    analysisEnvName: envName,
+  });
+  assert.equal(missingReport.sections.find((section) => section.id === "container_check").score, 0);
+
+  fs.writeFileSync(
+    path.join(reportsDir, "chinese-agent-product-research.md"),
+    [
+      "| Tool | Form | Source |",
+      "| --- | --- | --- |",
+      "| Claude Code | Terminal | https://example.com/claude |",
+      "| Cursor | IDE | https://example.com/cursor |",
+      "| Codex | Terminal | https://example.com/codex |",
+      "MVP 产品 用户 场景 痛点 架构 路线图 风险 多模型 模型协作 大模型 小模型 Cline OpenHands",
+      "https://example.com/a https://example.com/b https://example.com/c https://example.com/d https://example.com/e https://example.com/f",
+      "content ".repeat(240),
+    ].join("\n"),
+    "utf8",
+  );
+
+  const deliveredReport = service.evaluateAnalysisTask("task4", workspace, events, "", {
+    analysisEnvName: envName,
+  });
+  assert.equal(deliveredReport.sections.find((section) => section.id === "report_saved").score, 100);
+  assert.equal(deliveredReport.sections.find((section) => section.id === "container_check").score, 100);
+});
+
+test("analysis cleanup tears down the model-specific docker compose environment", async () => {
+  const { root, service } = makeService();
+  const key = "openai--gpt-test";
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(
+    path.join(workspace, "docker-compose.yml"),
+    [
+      "services:",
+      "  agent-lab-openai-gpt-test:",
+      "    container_name: agent-lab-openai-gpt-test",
+    ].join("\n"),
+    "utf8",
+  );
+  service.writeAnalysisStore({
+    version: 1,
+    results: [
+      {
+        key,
+        runId: "run-cleanup",
+        provider: "openai",
+        model: "gpt-test",
+        status: "completed",
+        summary: "9/9 tasks completed.",
+        tasks: [],
+      },
+    ],
+  });
+
+  let captured = null;
+  service.runAnalysisShellCommand = async (input) => {
+    captured = input;
+    return { code: 0, output: "removed" };
+  };
+
+  const result = await service.cleanupAnalysisDockerEnvironment(
+    { key, runId: "run-cleanup", provider: "openai", model: "gpt-test" },
+    workspace,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(captured.cwd, workspace);
+  assert.deepEqual(captured.args, ["compose", "down", "--volumes", "--rmi", "local", "--remove-orphans"]);
+  const stored = service.readAnalysisStore().results[0];
+  assert.match(stored.summary, /Cleaned Docker test environment agent-lab-openai-gpt-test/);
+});
+
+test("analysis cleanup is skipped during app shutdown", async () => {
+  const { root, service } = makeService();
+  const key = "openai--gpt-test";
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(path.join(workspace, "docker-compose.yml"), "services: {}\n", "utf8");
+  service.writeAnalysisStore({
+    version: 1,
+    results: [
+      {
+        key,
+        runId: "run-cleanup",
+        provider: "openai",
+        model: "gpt-test",
+        status: "interrupted",
+        summary: "Stopped because Redou Agent is closing.",
+        tasks: [],
+      },
+    ],
+  });
+
+  let called = false;
+  service.runAnalysisShellCommand = async () => {
+    called = true;
+    return { code: 0, output: "removed" };
+  };
+  service.shuttingDown = true;
+
+  const result = await service.cleanupAnalysisDockerEnvironment(
+    { key, runId: "run-cleanup", provider: "openai", model: "gpt-test" },
+    workspace,
+  );
+
+  assert.equal(result.status, "skipped");
+  assert.equal(called, false);
+  const stored = service.readAnalysisStore().results[0];
+  assert.equal(stored.summary, "Stopped because Redou Agent is closing.");
+});
+
+test("analysis cleanup removes stale model container when compose file is missing", async () => {
+  const { root, service } = makeService();
+  const key = "openai--gpt-test";
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  service.writeAnalysisStore({
+    version: 1,
+    results: [
+      {
+        key,
+        runId: "run-stale",
+        provider: "openai",
+        model: "gpt-test",
+        status: "failed",
+        summary: "compose file was missing",
+        tasks: [],
+      },
+    ],
+  });
+
+  let captured = null;
+  service.runAnalysisShellCommand = async (input) => {
+    captured = input;
+    return { code: 0, output: "agent-lab-openai-gpt-test" };
+  };
+
+  const result = await service.cleanupAnalysisDockerEnvironment(
+    { key, runId: "run-stale", provider: "openai", model: "gpt-test" },
+    workspace,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(captured.args, ["rm", "-f", "agent-lab-openai-gpt-test"]);
+  const stored = service.readAnalysisStore().results[0];
+  assert.match(stored.summary, /Cleaned stale Docker test container agent-lab-openai-gpt-test/);
+});
+
+test("analysis benchmark scheduling uses agent max turns and does not cap explicit max iterations", () => {
+  const { service } = makeService();
+  const webContents = {
+    isDestroyed: () => false,
+    send: () => {},
+  };
+  service.startAnalysisQueue = () => {};
+  fs.mkdirSync(service.hermesHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(service.hermesHome, "config.yaml"),
+    ["agent:", "  max_turns: 1234", ""].join("\n"),
+    "utf8",
+  );
+
+  const defaultResponse = service.startAnalysisBenchmarks(webContents, {
+    models: [{ provider: "openai", model: "gpt-default" }],
+  });
+  assert.equal(defaultResponse.queued, 1);
+  assert.equal(service.analysisQueue.at(-1).maxIterations, 1234);
+
+  const overrideResponse = service.startAnalysisBenchmarks(webContents, {
+    models: [{ provider: "openai", model: "gpt-long" }],
+    maxIterations: 5000,
+  });
+  assert.equal(overrideResponse.queued, 1);
+  assert.equal(service.analysisQueue.at(-1).maxIterations, 5000);
+});
+
+test("analysis benchmarks start selected models in parallel", async () => {
+  const { service } = makeService();
+  const launched = [];
+  const releases = new Map();
+  const webContents = {
+    isDestroyed: () => false,
+    send: () => {},
+  };
+
+  service.cleanupAnalysisDockerEnvironment = async () => ({ status: "skipped" });
+  service.runAnalysisModelBenchmark = (item) => {
+    launched.push(item.key);
+    return new Promise((resolve) => {
+      releases.set(item.key, resolve);
+    });
+  };
+
+  const response = service.startAnalysisBenchmarks(webContents, {
+    models: [
+      { provider: "openai", model: "gpt-a" },
+      { provider: "anthropic", model: "claude-b" },
+    ],
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(response.queued, 2);
+  assert.equal(service.analysisQueue.length, 0);
+  assert.equal(service.activeAnalysisRuns.size, 2);
+  assert.deepEqual(new Set(launched), new Set(["openai--gpt-a", "anthropic--claude-b"]));
+
+  const benchmarks = service.getAnalysisBenchmarks();
+  assert.equal(benchmarks.queueDepth, 0);
+  assert.deepEqual(new Set(benchmarks.activeRunIds), new Set(response.runIds));
+
+  for (const release of releases.values()) {
+    release();
+  }
+  await new Promise((resolve) => setImmediate(resolve));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(service.activeAnalysisRuns.size, 0);
+  assert.equal(service.activeAnalysisRun, null);
+});
