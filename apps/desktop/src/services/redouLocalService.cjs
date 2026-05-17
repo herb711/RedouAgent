@@ -30,6 +30,7 @@ const CONTEXT_RULE_MAX_CHARS = 280;
 const VALID_MESSAGE_ROLES = new Set(["user", "assistant", "system", "tool", "event"]);
 const PROFILE_RUNTIME_CONFIG_KEYS = ["model", "providers", "custom_providers", "model_aliases", "agent"];
 const DELIVERY_MODES = new Set(["new_turn", "queue", "guide", "interrupt_replace"]);
+const RUN_MODES = new Set(["execute", "plan"]);
 const USER_INPUT_STATUSES = new Set(["pending", "consumed", "completed", "cancelled"]);
 const ANALYSIS_RESULTS_FILE = "model-benchmarks.json";
 const ANALYSIS_DEFAULT_MAX_ITERATIONS = 1000;
@@ -203,6 +204,11 @@ function classifyContextDirective(value) {
 function normalizeDeliveryMode(value, fallback = "queue") {
   const mode = String(value || "").trim().toLowerCase();
   return DELIVERY_MODES.has(mode) ? mode : fallback;
+}
+
+function normalizeRunMode(value, fallback = "execute") {
+  const mode = String(value || "").trim().toLowerCase();
+  return RUN_MODES.has(mode) ? mode : fallback;
 }
 
 class SecretRedactor {
@@ -849,6 +855,97 @@ function readTextFirst(files) {
   return "";
 }
 
+const LOG_FILES = {
+  agent: "agent.log",
+  errors: "errors.log",
+  gateway: "gateway.log",
+};
+
+const LOG_LEVEL_ORDER = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
+const LOG_COMPONENT_PREFIXES = {
+  gateway: ["gateway"],
+  agent: ["agent", "run_agent", "model_tools", "batch_runner"],
+  tools: ["tools"],
+  cli: ["hermes_cli", "cli"],
+  cron: ["cron"],
+};
+const LOG_LEVEL_RE = /\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s/;
+const LOG_LOGGER_NAME_RE = /\s(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)(?:\s+\[.*?\])?\s+(\S+):/;
+
+function clampLogLineCount(value) {
+  const n = Number(value || 100);
+  if (!Number.isFinite(n)) return 100;
+  return Math.min(500, Math.max(1, Math.round(n)));
+}
+
+function extractLogLevel(line) {
+  const match = String(line || "").match(LOG_LEVEL_RE);
+  return match ? match[1] : null;
+}
+
+function extractLogLoggerName(line) {
+  const match = String(line || "").match(LOG_LOGGER_NAME_RE);
+  return match ? match[1] : null;
+}
+
+function logLineMatchesFilters(line, { minLevel = null, componentPrefixes = null } = {}) {
+  if (minLevel) {
+    const level = extractLogLevel(line);
+    if (level && LOG_LEVEL_ORDER[level] < LOG_LEVEL_ORDER[minLevel]) {
+      return false;
+    }
+  }
+  if (componentPrefixes) {
+    const loggerName = extractLogLoggerName(line);
+    if (!loggerName || !componentPrefixes.some((prefix) => loggerName.startsWith(prefix))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function splitLogLines(text, { dropFirst = false } = {}) {
+  const lines = String(text || "").split(/\r?\n/);
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  if (dropFirst && lines.length) lines.shift();
+  return lines;
+}
+
+function readLastLogLines(file, count) {
+  const n = Math.max(1, Number(count || 1));
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.size) return [];
+    if (stat.size <= 1_048_576) {
+      return splitLogLines(fs.readFileSync(file, "utf8")).slice(-n);
+    }
+
+    const fd = fs.openSync(file, "r");
+    try {
+      const chunks = [];
+      let position = stat.size;
+      let chunkSize = 8192;
+      let newlineCount = 0;
+      while (position > 0 && newlineCount <= n) {
+        const readSize = Math.min(chunkSize, position);
+        position -= readSize;
+        const buffer = Buffer.allocUnsafe(readSize);
+        fs.readSync(fd, buffer, 0, readSize, position);
+        chunks.unshift(buffer);
+        for (let i = 0; i < buffer.length; i += 1) {
+          if (buffer[i] === 10) newlineCount += 1;
+        }
+        chunkSize = Math.min(chunkSize * 2, 65536);
+      }
+      return splitLogLines(Buffer.concat(chunks).toString("utf8"), { dropFirst: position > 0 }).slice(-n);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return splitLogLines(readText(file)).slice(-n);
+  }
+}
+
 function readJson(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -1384,7 +1481,6 @@ function isAnalysisModelCallFailure(text) {
     /\bRateLimitError\b/i,
     /\brate_limit_error\b/i,
     /\busage limit exceeded\b/i,
-    /\bHTTP\s+429\b/i,
     /\bStream stalled mid tool-call\b/i,
     /\bStream interrupted before completion\b/i,
     /\bPartial stream dropped tool call/i,
@@ -1440,6 +1536,34 @@ function analysisTestPassRatio(summary) {
   const judge = summary?.judge_result || {};
   const metric = Number(summary?.current_metric ?? judge.metric ?? 0);
   return Number.isFinite(metric) ? Math.max(0, Math.min(1, metric)) : 0;
+}
+
+function analysisTaskProcessStatus({
+  stopped = false,
+  childError = null,
+  exitCode = 0,
+  modelCallFailed = false,
+  postProcessFailed = false,
+  finalAssistantText = "",
+} = {}) {
+  if (stopped) return "interrupted";
+  if (childError || modelCallFailed || postProcessFailed) return "failed";
+  const hasFinalAssistantText = String(finalAssistantText || "").trim().length > 0;
+  if (exitCode != null && exitCode !== 0 && !hasFinalAssistantText) return "failed";
+  return "completed";
+}
+
+function normalizeAnalysisTaskStatus(task, { score = 0, sections = [], gradeLogText = "", migratedSummary = null } = {}) {
+  const status = String(task?.status || "pending");
+  if (status !== "failed") return status;
+  const summaryText = `${task?.summary || ""}\n${task?.error || ""}`;
+  if (isAnalysisModelCallFailure(summaryText)) return status;
+  const hasEvaluation =
+    Boolean(migratedSummary) ||
+    analysisFinalScoreFromLog(gradeLogText) != null ||
+    (Array.isArray(sections) && sections.length > 0) ||
+    Number(score || 0) > 0;
+  return hasEvaluation ? "completed" : status;
 }
 
 function analysisTaskGradeLogText(workspacePath, taskId) {
@@ -3217,6 +3341,47 @@ class RedouLocalService {
     return this.runDashboardBridge("setup_main_model", body);
   }
 
+  getLogs(params = {}) {
+    const fileKey = String(params?.file || "agent").toLowerCase();
+    const logName = LOG_FILES[fileKey];
+    if (!logName) {
+      throw new Error(`Unknown log file: ${fileKey}`);
+    }
+
+    const lineCount = clampLogLineCount(params?.lines);
+    const rawLevel = String(params?.level || "").toUpperCase();
+    const minLevel = rawLevel && rawLevel !== "ALL" ? rawLevel : null;
+    if (minLevel && !(minLevel in LOG_LEVEL_ORDER)) {
+      throw new Error(`Unknown log level: ${rawLevel}`);
+    }
+
+    const rawComponent = String(params?.component || "").toLowerCase();
+    let componentPrefixes = null;
+    if (rawComponent && rawComponent !== "all") {
+      componentPrefixes = LOG_COMPONENT_PREFIXES[rawComponent];
+      if (!componentPrefixes) {
+        throw new Error(`Unknown log component: ${rawComponent}`);
+      }
+    }
+
+    const search = String(params?.search || "").toLowerCase();
+    const hasFilters = Boolean(minLevel || componentPrefixes || search);
+    const rawLimit = hasFilters ? Math.max(lineCount * 20, 2000) : lineCount;
+    const logPath = path.join(this.hermesHome, "logs", logName);
+    if (!fs.existsSync(logPath)) {
+      return { file: fileKey, lines: [] };
+    }
+
+    let lines = readLastLogLines(logPath, Math.min(rawLimit, 10000));
+    if (minLevel || componentPrefixes) {
+      lines = lines.filter((line) => logLineMatchesFilters(line, { minLevel, componentPrefixes }));
+    }
+    if (search) {
+      lines = lines.filter((line) => line.toLowerCase().includes(search));
+    }
+    return { file: fileKey, lines: lines.slice(-lineCount) };
+  }
+
   getModelsAnalytics(days) {
     return this.runDashboardBridge("get_models_analytics", { days });
   }
@@ -4065,11 +4230,17 @@ class RedouLocalService {
             evidence: String(section.evidence || ""),
           }))
         : [];
+      const score = migratedScore ?? analysisFinalScoreFromLog(gradeLogText) ?? clampScore(task.score);
+      const sections = migratedSections.length > 0
+        ? migratedSections
+        : gradeLogSections.length > 0
+          ? gradeLogSections
+          : rawSections;
       return {
         id: taskId,
         title: String(task.title || ""),
         capability: String(task.capability || ""),
-        status: String(task.status || "pending"),
+        status: normalizeAnalysisTaskStatus(task, { score, sections, gradeLogText, migratedSummary }),
         startedAt: task.startedAt || null,
         completedAt: task.completedAt || null,
         durationMs: toInt(task.durationMs),
@@ -4079,12 +4250,8 @@ class RedouLocalService {
         reasoningTokens: toInt(task.reasoningTokens),
         apiCalls: toInt(task.apiCalls),
         estimatedCostUsd: Number(task.estimatedCostUsd || 0),
-        score: migratedScore ?? analysisFinalScoreFromLog(gradeLogText) ?? clampScore(task.score),
-        sections: migratedSections.length > 0
-          ? migratedSections
-          : gradeLogSections.length > 0
-            ? gradeLogSections
-            : rawSections,
+        score,
+        sections,
         error: task.error ? String(task.error) : null,
         summary: String(task.summary || ""),
         artifacts: analysisTaskDisplayArtifacts(workspacePath, taskId),
@@ -4893,13 +5060,44 @@ class RedouLocalService {
     }
 
     const supportCopy = await this.copyAnalysisBenchmarkSupportIntoDocker(workspacePath, envName);
+    const requirementsInstall = await this.runAnalysisShellCommand({
+      command: "docker",
+      args: [
+        "compose",
+        "exec",
+        "-T",
+        envName,
+        "bash",
+        "-lc",
+        [
+          `cd ${ANALYSIS_DOCKER_WORKSPACE}`,
+          "if test -f task_project_requirements.txt; then python3 -m pip install -r task_project_requirements.txt || python3 -m pip install --break-system-packages -r task_project_requirements.txt; fi",
+        ].join(" && "),
+      ],
+      cwd: workspacePath,
+      timeoutMs: 300000,
+    });
+    if (requirementsInstall.code !== 0) {
+      return {
+        status: "failed",
+        envName,
+        createdFallback: fallbackCreated,
+        reason: fallbackReason || reason,
+        error: requirementsInstall.output || requirementsInstall.error || "Analysis project requirements installation failed.",
+        supportCopy,
+      };
+    }
     return {
       status: supportCopy.status === "failed" ? "failed" : "completed",
       envName,
       createdFallback: fallbackCreated,
       reason: fallbackReason || reason,
-      output: compactMultiline([upResult.output, supportCopy.output].filter(Boolean).join("\n"), 1600),
+      output: compactMultiline(
+        [upResult.output, supportCopy.output, requirementsInstall.output].filter(Boolean).join("\n"),
+        1600,
+      ),
       supportCopy,
+      requirementsInstall,
     };
   }
 
@@ -5480,11 +5678,14 @@ class RedouLocalService {
                 modelRunName: resolvedModelRunName,
               });
           const postProcessFailed = postProcessResult?.status === "failed";
-          const status = stopped
-            ? "interrupted"
-            : childError || code !== 0 || modelCallFailed || postProcessFailed
-              ? "failed"
-              : "completed";
+          const status = analysisTaskProcessStatus({
+            stopped,
+            childError,
+            exitCode: code,
+            modelCallFailed,
+            postProcessFailed,
+            finalAssistantText,
+          });
           const summary = stopped
             ? "Stopped because Redou Agent is closing."
             : [failureSummary, postProcessResult?.summary].filter(Boolean).join("\n\n");
@@ -7445,6 +7646,7 @@ class RedouLocalService {
     const projectId = String(input.projectId || "").trim();
     const taskId = String(input.taskId || "").trim();
     const userInput = String(input.userInput || "");
+    const runMode = normalizeRunMode(options.runMode || input.runMode, "execute");
     if (!projectId || !taskId) throw new Error("Select a Project and Task before sending.");
 
     const { project, task } = this.findProjectAndTask(projectId, taskId);
@@ -7512,6 +7714,7 @@ class RedouLocalService {
       this.appendTaskMessage(projectId, taskId, "user", userInput, {
         riskConfirmed,
         deliveryMode,
+        runMode,
         inputEnvelope: currentEnvelope,
         ...(contextDirective ? { contextDirective } : {}),
         ...(options.queueId ? { queueId: options.queueId } : {}),
@@ -7526,6 +7729,7 @@ class RedouLocalService {
       model: effectiveModel,
       modelSource,
       deliveryMode,
+      runMode,
       currentRequestId: currentEnvelope.id,
       currentTurnId: currentEnvelope.turnId,
       queueDepth: this.queueDepth(projectId, taskId),
@@ -7710,17 +7914,25 @@ class RedouLocalService {
             stopRequested: true,
           };
         } else {
-          const contextUpdate = this.updateTaskContextAfterTurn(
-            projectId,
-            taskId,
-            userInput,
-            finalAssistantText,
-            { artifacts: runRecord.turnArtifacts, attachments },
-          );
+          const contextUpdate = runMode === "plan"
+            ? null
+            : this.updateTaskContextAfterTurn(
+                projectId,
+                taskId,
+                userInput,
+                finalAssistantText,
+                { artifacts: runRecord.turnArtifacts, attachments },
+              );
           this.updateUserInputEnvelopeStatus(projectId, taskId, currentEnvelope.id, {
             ...currentEnvelope,
             status: "completed",
           });
+          if (runMode === "plan") {
+            event.metadata = {
+              ...(event.metadata || {}),
+              planReviewRequired: true,
+            };
+          }
           if (contextUpdate) {
             event.metadata = {
               ...(event.metadata || {}),
@@ -7831,6 +8043,7 @@ class RedouLocalService {
       model: effectiveModel,
       provider: effectiveProvider,
       workspacePath: project.path || this.projectRoot,
+      runMode,
       maxIterations: Number(input.maxIterations || 40),
     }) + "\n");
 
@@ -7854,6 +8067,7 @@ class RedouLocalService {
     if (!userInput.trim() && attachments.length === 0) throw new Error("Message is empty.");
     const activeRun = this.activeRunForTask(projectId, taskId);
     const deliveryMode = normalizeDeliveryMode(input.deliveryMode, activeRun ? "queue" : "new_turn");
+    const runMode = normalizeRunMode(input.runMode, "execute");
     const riskConfirmed = input.riskConfirmed === true;
 
     if (activeRun && deliveryMode === "interrupt_replace") {
@@ -7901,7 +8115,7 @@ class RedouLocalService {
       }, { deliveryMode: "interrupt_replace", envelope });
     }
 
-    if (activeRun && deliveryMode === "guide" && attachments.length === 0) {
+    if (activeRun && deliveryMode === "guide" && runMode === "execute" && attachments.length === 0) {
       const guideId = crypto.randomUUID();
       const envelope = createUserInputEnvelope({
         id: guideId,
@@ -7914,6 +8128,7 @@ class RedouLocalService {
       });
       this.appendTaskMessage(projectId, taskId, "event", `Guidance for active run: ${redact(userInput)}`, {
         riskConfirmed,
+        runMode,
         eventType: "control_event",
         controlEvent: true,
         controlEventType: "guide",
@@ -7993,6 +8208,7 @@ class RedouLocalService {
         riskConfirmed,
         deliveryMode: "queue",
         requestedDeliveryMode: deliveryMode,
+        runMode,
         queueId,
         queuedAt,
         inputEnvelope: envelope,
@@ -8016,6 +8232,8 @@ class RedouLocalService {
         activeRun.runId,
         deliveryMode === "guide" && attachments.length > 0
           ? "Attachments are queued for the next turn."
+          : deliveryMode === "guide" && runMode === "plan"
+            ? "Plan requests are queued for the next turn."
           : "Message queued for the next turn.",
         { queueId: queued.id, activeRunId: activeRun.runId },
       );
@@ -8027,6 +8245,8 @@ class RedouLocalService {
         queueDepth: this.queueDepth(projectId, taskId),
         ...(deliveryMode === "guide" && attachments.length > 0
           ? { warning: "Guidance with attachments is queued for the next turn." }
+          : deliveryMode === "guide" && runMode === "plan"
+            ? { warning: "Plan requests are queued for the next turn." }
           : {}),
       };
     }
@@ -8079,4 +8299,5 @@ module.exports = {
   ToolLogSummarizer,
   TaskStateManager,
   compressTaskContext,
+  analysisTaskProcessStatus,
 };

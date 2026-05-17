@@ -74,6 +74,9 @@ declare global {
       ) => Promise<AnalysisBenchmarkStartResponse>;
       getAnalytics?: (days: number) => Promise<AnalyticsResponse>;
       getChatProjects?: () => Promise<ChatProjectsResponse>;
+      getLogs?: (
+        params: { file?: string; lines?: number; level?: string; component?: string },
+      ) => Promise<LogsResponse>;
       createChatProject?: (body: ChatProjectCreateRequest) => Promise<ChatProjectMutationResponse>;
       updateChatProject?: (
         projectId: string,
@@ -288,6 +291,9 @@ export const api = {
   ) =>
     requireRedouMethod("updateTaskContextFile")(projectId, taskId, kind, content),
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
+    if (isRedouDesktop()) {
+      return requireRedouMethod("getLogs")(params);
+    }
     const qs = new URLSearchParams();
     if (params.file) qs.set("file", params.file);
     if (params.lines) qs.set("lines", String(params.lines));
@@ -429,47 +435,6 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/trigger`, { method: "POST" }),
   deleteCronJob: (id: string) =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}`, { method: "DELETE" }),
-
-  // Profiles (minimal)
-  getProfiles: () =>
-    fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
-  createProfile: (body: { name: string; clone_from_default: boolean }) =>
-    fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-  renameProfile: (name: string, newName: string) =>
-    fetchJSON<{ ok: boolean; name: string; path: string }>(
-      `/api/profiles/${encodeURIComponent(name)}`,
-      {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ new_name: newName }),
-      },
-    ),
-  deleteProfile: (name: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/profiles/${encodeURIComponent(name)}`,
-      { method: "DELETE" },
-    ),
-  getProfileSetupCommand: (name: string) =>
-    fetchJSON<{ command: string }>(
-      `/api/profiles/${encodeURIComponent(name)}/setup-command`,
-    ),
-  getProfileSoul: (name: string) =>
-    fetchJSON<{ content: string; exists: boolean }>(
-      `/api/profiles/${encodeURIComponent(name)}/soul`,
-    ),
-  updateProfileSoul: (name: string, content: string) =>
-    fetchJSON<{ ok: boolean }>(
-      `/api/profiles/${encodeURIComponent(name)}/soul`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      },
-    ),
 
   // Skills & Toolsets
   getSkills: () =>
@@ -1009,6 +974,7 @@ export interface SendMessageInput {
   taskId: string;
   userInput: string;
   deliveryMode?: "queue" | "guide" | "interrupt_replace";
+  runMode?: "execute" | "plan";
   attachments?: ChatAttachment[];
   maxRecentMessages?: number;
   maxIterations?: number;
@@ -1122,16 +1088,6 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary;
     top_skills: AnalyticsSkillEntry[];
   };
-}
-
-export interface ProfileInfo {
-  name: string;
-  path: string;
-  is_default: boolean;
-  model: string | null;
-  provider: string | null;
-  has_env: boolean;
-  skill_count: number;
 }
 
 export interface ModelsAnalyticsModelEntry {

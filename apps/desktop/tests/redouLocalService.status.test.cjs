@@ -196,6 +196,40 @@ test("desktop analytics and session messages use local task logs", () => {
   );
 });
 
+test("desktop log viewer reads local Hermes logs with filters", () => {
+  const { service, root } = makeService();
+  const logsDir = path.join(root, "hermes-home", "logs");
+  fs.mkdirSync(logsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(logsDir, "agent.log"),
+    [
+      "2026-05-17 10:00:00 INFO gateway.run: gateway ready",
+      "2026-05-17 10:01:00 INFO tools.terminal: command started",
+      "2026-05-17 10:02:00 WARNING agent.runner: retrying request",
+      "2026-05-17 10:03:00 ERROR tools.browser: navigation failed",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const all = service.getLogs({ file: "agent", lines: 2 });
+  assert.deepEqual(all.lines, [
+    "2026-05-17 10:02:00 WARNING agent.runner: retrying request",
+    "2026-05-17 10:03:00 ERROR tools.browser: navigation failed",
+  ]);
+
+  const filtered = service.getLogs({
+    file: "agent",
+    lines: 10,
+    level: "WARNING",
+    component: "tools",
+  });
+  assert.deepEqual(filtered.lines, [
+    "2026-05-17 10:03:00 ERROR tools.browser: navigation failed",
+  ]);
+
+  assert.throws(() => service.getLogs({ file: "not-a-log" }), /Unknown log file/);
+});
+
 test("run_stage events persist as events without entering prompt history", () => {
   const { service, project, task } = makeService();
 

@@ -16,6 +16,7 @@ import {
   Loader2,
   MessageSquare,
   PanelRight,
+  Play,
   Send,
   Square,
   Upload,
@@ -55,6 +56,7 @@ const CHAT_SCROLL_SETTLE_DELAY_MS = 700;
 
 type RunState = "idle" | "loading" | "thinking" | "running" | "done" | "error";
 type DeliveryMode = "queue" | "guide";
+type RunMode = "execute" | "plan";
 type TodoPlanStatus = "pending" | "in_progress" | "completed" | "cancelled";
 
 function isChatScrolledToBottom(node: HTMLElement): boolean {
@@ -74,6 +76,13 @@ interface TodoPlan {
 
 interface TodoPlanUpdate extends TodoPlan {
   merge: boolean;
+}
+
+interface PlanReview {
+  id: string;
+  content: string;
+  request: string;
+  createdAt: string;
 }
 
 const CHAT_COPY = {
@@ -101,6 +110,22 @@ const CHAT_COPY = {
       queueTitle: "排到当前任务完成后执行",
       guideTitle: "插入到当前运行中的后续步骤",
       queued: (count: number) => `${count} 条排队中`,
+    },
+    runMode: {
+      execute: "执行",
+      plan: "先计划",
+      executeTitle: "直接执行这一轮请求",
+      planTitle: "先生成计划，确认后再执行",
+    },
+    planReview: {
+      title: "计划待确认",
+      detail: "Redou 这轮只生成计划。确认后才会开始执行。",
+      execute: "执行此计划",
+      adjust: "调整计划",
+      dismiss: "先不执行",
+      adjustDraft: "请基于上面的计划做这些调整：",
+      executePrompt: (plan: string, request: string) =>
+        `请按下面已经确认的计划执行。\n\n原始需求：\n${request || "(无)"}\n\n已确认计划：\n${plan}\n\n执行要求：按计划推进；如果发现计划已经不适用，先停下来说明需要调整的地方。`,
     },
     send: {
       default: "发送",
@@ -193,6 +218,22 @@ const CHAT_COPY = {
       queueTitle: "Run after the current task turn finishes",
       guideTitle: "Steer the active run on its next step",
       queued: (count: number) => `${count} queued`,
+    },
+    runMode: {
+      execute: "Execute",
+      plan: "Plan first",
+      executeTitle: "Run this request directly",
+      planTitle: "Generate a plan first, then wait for confirmation",
+    },
+    planReview: {
+      title: "Plan awaiting confirmation",
+      detail: "Redou only planned this turn. Execution starts after you confirm.",
+      execute: "Execute this plan",
+      adjust: "Adjust plan",
+      dismiss: "Not now",
+      adjustDraft: "Please revise the plan above with these changes:",
+      executePrompt: (plan: string, request: string) =>
+        `Please execute the confirmed plan below.\n\nOriginal request:\n${request || "(none)"}\n\nConfirmed plan:\n${plan}\n\nExecution instructions: follow the plan; if it is no longer valid, stop and explain what needs to change before continuing.`,
     },
     send: {
       default: "Send",
@@ -451,41 +492,9 @@ function todoUpdatesFromRawLog(content: string, updatedAt?: string): TodoPlanUpd
   return updates;
 }
 
-function todoStatusFromRunStageStatus(value: unknown): TodoPlanStatus {
-  const status = String(value || "").trim().toLowerCase();
-  if (status === "completed" || status === "done" || status === "success") return "completed";
-  if (status === "running" || status === "active" || status === "in_progress") return "in_progress";
-  if (["failed", "error", "interrupted", "cancelled", "canceled"].includes(status)) return "cancelled";
-  return "pending";
-}
-
-function todoUpdateFromRunStage(
-  event: Extract<AgentEvent, { type: "run_stage" }>,
-  updatedAt?: string,
-): TodoPlanUpdate | null {
-  const metadata = eventMetadata(event);
-  const id = String(event.stage || metadata.analysisTaskId || event.label || "").trim();
-  const content = String(event.label || metadata.analysisTaskTitle || id).trim();
-  if (!id || !content) return null;
-  return {
-    items: [
-      {
-        id,
-        content,
-        status: todoStatusFromRunStageStatus(event.status),
-      },
-    ],
-    updatedAt,
-    merge: true,
-  };
-}
-
 function todoUpdatesFromMessage(message: ChatTaskMessage): TodoPlanUpdate[] {
   const event = eventFromMessage(message);
-  if (event?.type === "run_stage") {
-    const update = todoUpdateFromRunStage(event, message.createdAt);
-    return update ? [update] : [];
-  }
+  // run_stage events are runtime progress for Task Details, not user-authored todos.
   if (event?.type === "tool_start" && event.name === "todo") {
     const update = todoUpdateFromPayload(event.input, message.createdAt);
     return update ? [update] : [];
@@ -534,6 +543,39 @@ function latestTodoPlanFromMessages(messages: ChatTaskMessage[]): TodoPlan | nul
     }
   }
   return plan?.items.length ? plan : null;
+}
+
+function messageRunMode(message: ChatTaskMessage): RunMode {
+  const event = eventFromMessage(message);
+  const metadata = eventMetadata(event);
+  const messageMetadata = message.metadata && typeof message.metadata === "object" ? message.metadata : {};
+  const value = metadata.runMode ?? messageMetadata.runMode;
+  return value === "plan" ? "plan" : "execute";
+}
+
+function latestPlanReviewFromMessages(messages: ChatTaskMessage[]): PlanReview | null {
+  let lastUserRequest = "";
+  let review: PlanReview | null = null;
+  for (const message of messages) {
+    if (message.role === "user") {
+      lastUserRequest = message.content.trim();
+      review = null;
+      continue;
+    }
+    if (message.role !== "assistant" || messageRunMode(message) !== "plan") continue;
+    const content = message.content.trim();
+    if (!content) continue;
+    const event = eventFromMessage(message);
+    const metadata = eventMetadata(event);
+    const runId = typeof metadata.runId === "string" ? metadata.runId : "";
+    review = {
+      id: runId || `${message.createdAt}:${content.slice(0, 48)}`,
+      content,
+      request: lastUserRequest,
+      createdAt: message.createdAt,
+    };
+  }
+  return review;
 }
 
 function metadataNumber(metadata: Record<string, unknown>, keys: string[]): number | null {
@@ -924,6 +966,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [runState, setRunState] = useState<RunState>("idle");
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("queue");
+  const [runMode, setRunMode] = useState<RunMode>("execute");
+  const [dismissedPlanReviewIds, setDismissedPlanReviewIds] = useState<Set<string>>(() => new Set());
   const [queuedCount, setQueuedCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [currentRunId, setCurrentRunId] = useState<string | null>(null);
@@ -939,6 +983,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   );
   const composingRef = useRef(false);
   const dragDepthRef = useRef(0);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const autoScrollRef = useRef(true);
   const programmaticScrollRef = useRef(false);
@@ -1102,6 +1147,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setAttachmentWarnings([]);
       setDraggingAttachments(false);
       setPendingRisk(null);
+      setDismissedPlanReviewIds(new Set());
       setQueuedCount(0);
       setRunState("idle");
       return;
@@ -1113,6 +1159,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setAttachmentWarnings([]);
     setDraggingAttachments(false);
     setPendingRisk(null);
+    setDismissedPlanReviewIds(new Set());
     setQueuedCount(0);
     setRunState("loading");
     try {
@@ -1148,6 +1195,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       cancelled = true;
     };
   }, [loadTaskMessages, selectedProjectId, selectedTaskId]);
+
+  useEffect(() => {
+    if (runMode === "plan" && deliveryMode === "guide") {
+      setDeliveryMode("queue");
+    }
+  }, [deliveryMode, runMode]);
 
   useEffect(() => {
     const unsubscribe = api.onAgentEvent((payload) => {
@@ -1312,7 +1365,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setPendingRisk(risk);
       return;
     }
-    const effectiveDeliveryMode: DeliveryMode = busy
+    const effectiveDeliveryMode: DeliveryMode = runMode === "plan"
+      ? "queue"
+      : busy
       ? deliveryMode === "guide" && attachments.length === 0
         ? "guide"
         : "queue"
@@ -1333,6 +1388,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         metadata: {
           projectId: selectedProjectId,
           taskId: selectedTaskId,
+          runMode,
           deliveryMode: busy ? effectiveDeliveryMode : "immediate",
           ...(busy && effectiveDeliveryMode === "queue" ? { queued: true } : {}),
           ...(busy && effectiveDeliveryMode === "guide" ? { guided: true } : {}),
@@ -1346,6 +1402,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         taskId: selectedTaskId,
         userInput,
         deliveryMode: effectiveDeliveryMode,
+        runMode,
         attachments,
         riskConfirmed: options.riskConfirmed === true,
       });
@@ -1366,7 +1423,82 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setRunState("error");
       setMessages((current) => appendAgentEvent(current, event));
     }
-  }, [copy.selectProjectTaskBeforeSending, deliveryMode, draft, pendingAttachments, runState, selectedProjectId, selectedTaskId]);
+  }, [copy.selectProjectTaskBeforeSending, deliveryMode, draft, pendingAttachments, runMode, runState, selectedProjectId, selectedTaskId]);
+
+  const executePlan = useCallback(async (plan: PlanReview) => {
+    if (!selectedProjectId || !selectedTaskId) {
+      setError(copy.selectProjectTaskBeforeSending);
+      return;
+    }
+    const userInput = copy.planReview.executePrompt(plan.content, plan.request);
+    const busy = runState === "running" || runState === "thinking";
+    const effectiveDeliveryMode: DeliveryMode = "queue";
+    setDismissedPlanReviewIds((current) => {
+      const next = new Set(current);
+      next.add(plan.id);
+      return next;
+    });
+    setStreaming("");
+    setError(null);
+    if (!busy) setRunState("thinking");
+    setMessages((current) => [
+      ...current,
+      {
+        role: "user",
+        content: userInput,
+        createdAt: new Date().toISOString(),
+        metadata: {
+          projectId: selectedProjectId,
+          taskId: selectedTaskId,
+          runMode: "execute",
+          planReviewId: plan.id,
+          deliveryMode: busy ? effectiveDeliveryMode : "immediate",
+          ...(busy ? { queued: true } : {}),
+        },
+        attachments: [],
+      },
+    ]);
+    try {
+      const response = await api.sendChatMessage({
+        projectId: selectedProjectId,
+        taskId: selectedTaskId,
+        userInput,
+        deliveryMode: effectiveDeliveryMode,
+        runMode: "execute",
+        attachments: [],
+        riskConfirmed: false,
+      });
+      if (response.queueDepth !== undefined) {
+        setQueuedCount(Math.max(0, Number(response.queueDepth || 0)));
+      }
+      if (response.warning) setError(response.warning);
+      setCurrentRunId(response.ok ? response.runId : null);
+      if (response.context) setContext(response.context);
+      if (!response.ok && response.warning) {
+        setError(response.warning);
+        setRunState("error");
+      }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      const event = { type: "error", message } satisfies AgentEvent;
+      setError(message);
+      setRunState("error");
+      setMessages((current) => appendAgentEvent(current, event));
+    }
+  }, [copy.planReview, copy.selectProjectTaskBeforeSending, runState, selectedProjectId, selectedTaskId]);
+
+  const adjustPlan = useCallback((plan: PlanReview) => {
+    setDraft(`${copy.planReview.adjustDraft}\n`);
+    setRunMode("plan");
+    setDismissedPlanReviewIds((current) => {
+      const next = new Set(current);
+      next.add(plan.id);
+      return next;
+    });
+    window.setTimeout(() => {
+      textareaRef.current?.focus();
+    }, 0);
+  }, [copy.planReview.adjustDraft]);
 
   const stop = useCallback(async () => {
     const runId = currentRunId ?? selectedTask?.active_run_id ?? null;
@@ -1513,7 +1645,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const ruleCandidate = makeRuleCandidate(selectedProject, selectedTask, messages);
   const ruleCandidateKey = ruleCandidate ? `${ruleCandidate.scope}:${ruleCandidate.content}` : null;
   const latestTodoPlan = useMemo(() => latestTodoPlanFromMessages(messages), [messages]);
+  const latestPlanReview = useMemo(() => latestPlanReviewFromMessages(messages), [messages]);
+  const visiblePlanReview =
+    latestPlanReview &&
+    !dismissedPlanReviewIds.has(latestPlanReview.id) &&
+    runState !== "thinking" &&
+    runState !== "running"
+      ? latestPlanReview
+      : null;
   const modeCopy = copy.mode;
+  const runModeCopy = copy.runMode;
   const sendDisabled = (!draft.trim() && pendingAttachments.length === 0) || inputDisabled;
   const sendTitle = draft.trim() ? copy.send.message : attachmentSendText(pendingAttachments, copy);
 
@@ -1636,6 +1777,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   </div>
                 )}
                 {latestTodoPlan && <TodoPlanCard plan={latestTodoPlan} />}
+                {visiblePlanReview && (
+                  <PlanReviewCard
+                    onAdjust={() => adjustPlan(visiblePlanReview)}
+                    onDismiss={() =>
+                      setDismissedPlanReviewIds((current) => {
+                        const next = new Set(current);
+                        next.add(visiblePlanReview.id);
+                        return next;
+                      })
+                    }
+                    onExecute={() => void executePlan(visiblePlanReview)}
+                  />
+                )}
               </div>
               {showJumpToLatest && (
                 <Button
@@ -1678,33 +1832,65 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 />
               )}
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <div className="inline-flex h-8 overflow-hidden rounded-md border border-border bg-background/35">
-                  {(
-                    [
-                      { mode: "queue" as const, icon: ListPlus, label: modeCopy.queue, title: modeCopy.queueTitle },
-                      { mode: "guide" as const, icon: CornerDownRight, label: modeCopy.guide, title: modeCopy.guideTitle },
-                    ]
-                  ).map(({ mode, icon: Icon, label, title }) => {
-                    const active = deliveryMode === mode;
-                    return (
-                      <button
-                        key={mode}
-                        type="button"
-                        title={title}
-                        aria-pressed={active}
-                        onClick={() => setDeliveryMode(mode)}
-                        className={cn(
-                          "inline-flex h-8 items-center gap-1.5 px-2.5 text-xs font-medium transition-colors",
-                          active
-                            ? "bg-midground text-background-base"
-                            : "text-muted-foreground hover:bg-card/60 hover:text-midground",
-                        )}
-                      >
-                        <Icon className="h-3.5 w-3.5 shrink-0" />
-                        <span>{label}</span>
-                      </button>
-                    );
-                  })}
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="inline-flex h-8 overflow-hidden rounded-md border border-border bg-background/35">
+                    {(
+                      [
+                        { mode: "execute" as const, icon: Play, label: runModeCopy.execute, title: runModeCopy.executeTitle },
+                        { mode: "plan" as const, icon: ListPlus, label: runModeCopy.plan, title: runModeCopy.planTitle },
+                      ]
+                    ).map(({ mode, icon: Icon, label, title }) => {
+                      const active = runMode === mode;
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          title={title}
+                          aria-pressed={active}
+                          onClick={() => setRunMode(mode)}
+                          className={cn(
+                            "inline-flex h-8 items-center gap-1.5 px-2.5 text-xs font-medium transition-colors",
+                            active
+                              ? "bg-midground text-background-base"
+                              : "text-muted-foreground hover:bg-card/60 hover:text-midground",
+                          )}
+                        >
+                          <Icon className="h-3.5 w-3.5 shrink-0" />
+                          <span>{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="inline-flex h-8 overflow-hidden rounded-md border border-border bg-background/35">
+                    {(
+                      [
+                        { mode: "queue" as const, icon: ListPlus, label: modeCopy.queue, title: modeCopy.queueTitle },
+                        { mode: "guide" as const, icon: CornerDownRight, label: modeCopy.guide, title: modeCopy.guideTitle },
+                      ]
+                    ).map(({ mode, icon: Icon, label, title }) => {
+                      const active = deliveryMode === mode;
+                      const disabled = runMode === "plan" && mode === "guide";
+                      return (
+                        <button
+                          key={mode}
+                          type="button"
+                          title={title}
+                          aria-pressed={active}
+                          disabled={disabled}
+                          onClick={() => setDeliveryMode(mode)}
+                          className={cn(
+                            "inline-flex h-8 items-center gap-1.5 px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+                            active
+                              ? "bg-midground text-background-base"
+                              : "text-muted-foreground hover:bg-card/60 hover:text-midground",
+                          )}
+                        >
+                          <Icon className="h-3.5 w-3.5 shrink-0" />
+                          <span>{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
                 {queuedCount > 0 && (
                   <span className="inline-flex h-7 items-center rounded-md border border-warning/35 bg-warning/5 px-2 text-xs text-warning">
@@ -1731,6 +1917,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   </div>
                 )}
                 <textarea
+                  ref={textareaRef}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={onKeyDown}
@@ -1787,7 +1974,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
 function TodoPlanCard({ plan }: { plan: TodoPlan }) {
   const { locale } = useI18n();
-  const title = locale === "zh" ? "计划" : "Plan";
+  const title = locale === "zh" ? "任务清单" : "Task List";
   return (
     <div className="flex justify-start" aria-live="polite">
       <div className="w-full max-w-[min(48rem,92%)] rounded-lg border border-border/70 bg-card/55 px-3 py-2 shadow-sm">
@@ -1824,6 +2011,44 @@ function TodoPlanCard({ plan }: { plan: TodoPlan }) {
             </li>
           ))}
         </ol>
+      </div>
+    </div>
+  );
+}
+
+function PlanReviewCard({
+  onAdjust,
+  onDismiss,
+  onExecute,
+}: {
+  onAdjust(): void;
+  onDismiss(): void;
+  onExecute(): void;
+}) {
+  const { locale } = useI18n();
+  const copy = CHAT_COPY[locale].planReview;
+  return (
+    <div className="flex justify-start" aria-live="polite">
+      <div className="w-full max-w-[min(48rem,92%)] rounded-lg border border-warning/40 bg-warning/5 px-3 py-2 shadow-sm">
+        <div className="mb-1 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.14em] text-warning">
+          <ListPlus className="h-3.5 w-3.5" />
+          {copy.title}
+        </div>
+        <div className="text-xs leading-5 text-muted-foreground">{copy.detail}</div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button size="sm" type="button" onClick={onExecute} title={copy.execute} aria-label={copy.execute}>
+            <CheckCircle2 className="mr-1.5 h-3.5 w-3.5" />
+            {copy.execute}
+          </Button>
+          <Button outlined size="sm" type="button" onClick={onAdjust} title={copy.adjust} aria-label={copy.adjust}>
+            <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+            {copy.adjust}
+          </Button>
+          <Button ghost size="sm" type="button" onClick={onDismiss} title={copy.dismiss} aria-label={copy.dismiss}>
+            <X className="mr-1.5 h-3.5 w-3.5" />
+            {copy.dismiss}
+          </Button>
+        </div>
       </div>
     </div>
   );

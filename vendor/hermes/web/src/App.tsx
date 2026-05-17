@@ -63,7 +63,6 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import ModelsPage from "@/pages/ModelsPage";
 import CronPage from "@/pages/CronPage";
-import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
@@ -115,7 +114,6 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/cron": CronPage,
   "/skills": SkillsPage,
   "/plugins": PluginsPage,
-  "/profiles": ProfilesPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -152,7 +150,6 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/plugins", labelKey: "plugins", label: "Plugins", icon: Puzzle },
-  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   {
@@ -723,11 +720,13 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
       icon: Download,
       label: t.status.updateHermes,
       runningLabel: t.status.updatingHermes,
+      disabled: true,
       spin: false,
     },
   ];
 
-  const handleClick = (action: SystemAction) => {
+  const handleClick = (action: SystemAction, disabled = false) => {
+    if (disabled) return;
     if (isBusy) return;
     void runAction(action);
     navigate("/workspace");
@@ -754,18 +753,18 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
       <SidebarStatusStrip />
 
       <ul className="flex flex-col">
-        {items.map(({ action, icon: Icon, label, runningLabel, spin }) => {
+        {items.map(({ action, disabled: itemDisabled, icon: Icon, label, runningLabel, spin }) => {
           const isPending = pendingAction === action;
           const isActionRunning =
             activeAction === action && isRunning && !isPending;
           const busy = isPending || isActionRunning;
           const displayLabel = isActionRunning ? runningLabel : label;
-          const disabled = isBusy && !busy;
+          const disabled = Boolean(itemDisabled) || (isBusy && !busy);
 
           return (
             <li key={action}>
               <ListItem
-                onClick={() => handleClick(action)}
+                onClick={() => handleClick(action, Boolean(itemDisabled))}
                 disabled={disabled}
                 aria-busy={busy}
                 active={busy}
@@ -833,5 +832,6 @@ interface SystemActionItem {
   icon: ComponentType<{ className?: string }>;
   label: string;
   runningLabel: string;
+  disabled?: boolean;
   spin: boolean;
 }

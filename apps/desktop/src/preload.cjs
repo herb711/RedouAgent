@@ -27,6 +27,7 @@ contextBridge.exposeInMainWorld("redouDesktop", {
   setupMainModel: (body) => ipcRenderer.invoke("redou:model-setup", body),
   getAnalytics: (days) => ipcRenderer.invoke("redou:analytics:usage", days),
   getModelsAnalytics: (days) => ipcRenderer.invoke("redou:analytics:models", days),
+  getLogs: (params) => ipcRenderer.invoke("redou:logs", params),
   getAnalysisBenchmarks: () => ipcRenderer.invoke("redou:analysis:benchmarks"),
   startAnalysisBenchmarks: (body) => ipcRenderer.invoke("redou:analysis:start", body),
   getChatProjects: () => ipcRenderer.invoke("redou:projects:list"),

@@ -18,6 +18,7 @@ test_command: "python -m pytest .judge/tests/ --tb=short -q"
 requires:
   - pytest
   - markupsafe
+  - trio
 
 description: |
   Jinja2 是 Python 最流行的模板引擎之一（Flask 的默认模板引擎）。

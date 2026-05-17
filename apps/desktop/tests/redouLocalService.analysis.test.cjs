@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { RedouLocalService } = require("../src/services/redouLocalService.cjs");
+const { RedouLocalService, analysisTaskProcessStatus } = require("../src/services/redouLocalService.cjs");
 
 function makeService() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "redou-analysis-"));
@@ -121,6 +121,13 @@ test("analysis scheduler creates a fallback docker environment when task1 did no
   assert.match(compose, /\.:\/workspace/);
   assert.ok(calls.some((call) => call.args.join(" ") === "compose up -d --build"));
   assert.ok(calls.some((call) => call.args.includes("exec") && call.args.includes("-T")));
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.args.includes("exec") &&
+        call.args.join(" ").includes("python3 -m pip install -r task_project_requirements.txt"),
+    ),
+  );
 });
 
 test("analysis batch postprocess writes display logs with docker environment variables", async () => {
@@ -377,6 +384,25 @@ test("analysis evaluation treats partial stream recovery as invalid zero-score t
   assert.deepEqual(evaluation.sections, []);
 });
 
+test("analysis task process status separates completion from evaluator quality", () => {
+  assert.equal(
+    analysisTaskProcessStatus({
+      exitCode: 1,
+      finalAssistantText: "Completed the task; hidden tests passed 421/429.",
+    }),
+    "completed",
+  );
+  assert.equal(analysisTaskProcessStatus({ exitCode: 1, finalAssistantText: "" }), "failed");
+  assert.equal(
+    analysisTaskProcessStatus({
+      exitCode: 0,
+      finalAssistantText: "API call failed after 3 retries: HTTP 429",
+      modelCallFailed: true,
+    }),
+    "failed",
+  );
+});
+
 test("analysis task3 does not award test or pass-loop credit without artifacts", () => {
   const { root, service } = makeService();
   const workspace = path.join(root, "workspace");
@@ -494,6 +520,39 @@ test("analysis task4 preserves partial score from the batch grade log", () => {
   });
   const storedTask = service.getAnalysisBenchmarks().results[0].tasks[0];
   assert.equal(storedTask.score, 30);
+  assert.equal(storedTask.status, "completed");
+});
+
+test("analysis stored model failures remain failed", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  service.writeAnalysisStore({
+    version: 1,
+    results: [
+      {
+        key: "openai--gpt-test",
+        provider: "openai",
+        model: "gpt-test",
+        workspacePath: workspace,
+        tasks: [
+          {
+            id: "task3",
+            title: "Debug and repair loop",
+            status: "failed",
+            completedAt: "2026-05-17T00:00:00.000Z",
+            score: 0,
+            sections: [],
+            summary: "API call failed after 3 retries: HTTP 429: usage limit exceeded",
+          },
+        ],
+      },
+    ],
+  });
+
+  const storedTask = service.getAnalysisBenchmarks().results[0].tasks[0];
+  assert.equal(storedTask.score, 0);
+  assert.equal(storedTask.status, "failed");
 });
 
 test("analysis task1-4 sections come from batch grade logs", () => {
@@ -588,7 +647,7 @@ test("analysis migrated project tasks score by pass ratio instead of threshold",
         command: "docker compose exec -T agent-lab-xiaomi-mimo-v2-pro bash -lc 'python task_project_evaluate.py --task 6'",
       },
     ],
-    "",
+    "Implemented RateLimitPlugin; it returns HTTP 429 when requests exceed the configured limit.",
     { analysisEnvName: "agent-lab-xiaomi-mimo-v2-pro", modelRunName: modelRun },
   );
 

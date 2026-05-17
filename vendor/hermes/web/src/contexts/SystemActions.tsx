@@ -66,14 +66,11 @@ export function SystemActionsProvider({
 
   const runAction = useCallback(
     async (action: SystemAction) => {
+      if (action === "update") return;
       setPendingAction(action);
       setActionStatus(null);
       try {
-        if (action === "restart") {
-          await api.restartGateway();
-        } else {
-          await api.updateHermes();
-        }
+        await api.restartGateway();
         setActiveAction(action);
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);

@@ -52,6 +52,19 @@ RUN_STAGE_STATUSES = {
     "blocked",
     "failed",
 }
+PLAN_MODE_SYSTEM_CONTEXT = """
+Redou Plan Mode is active for this turn.
+
+Follow the Hermes bundled plan skill behavior:
+- Plan only. Do not implement code or modify project files except the plan markdown file.
+- You may inspect the workspace with read-only tools and commands when needed.
+- Do not run mutating terminal commands, commit, push, install packages, or perform external actions.
+- Write a concrete markdown plan under `.hermes/plans/` in the active workspace.
+- Include the goal, current context and assumptions, proposed approach, step-by-step plan, likely files to change, tests or validation, and risks or open questions when relevant.
+- After saving the plan, reply briefly with the plan summary and saved path.
+
+The user will review the plan in Redou before any execution turn is started.
+""".strip()
 
 
 def _project_root() -> Path:
@@ -392,6 +405,9 @@ def main() -> int:
 
     system_context = str(payload.get("systemContext") or "")
     user_context = str(payload.get("userContext") or "")
+    run_mode = str(payload.get("runMode") or "execute").strip().lower()
+    if run_mode == "plan":
+        system_context = _merge_system_context(system_context, PLAN_MODE_SYSTEM_CONTEXT)
     system_context, user_context, conversation_history = _context_messages_to_history(
         payload.get("contextMessages"),
         system_context,

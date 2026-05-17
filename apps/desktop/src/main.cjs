@@ -352,6 +352,7 @@ ipcMain.handle("redou:analytics:models", (_event, days) =>
 ipcMain.handle("redou:analytics:usage", (_event, days) =>
   getLocalService().getUsageAnalytics(days),
 );
+ipcMain.handle("redou:logs", (_event, params) => getLocalService().getLogs(params));
 ipcMain.handle("redou:analysis:benchmarks", () =>
   getLocalService().getAnalysisBenchmarks(),
 );

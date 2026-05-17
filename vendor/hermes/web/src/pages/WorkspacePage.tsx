@@ -96,6 +96,7 @@ const COPY = {
     tools: "工具",
     time: "时间",
     stages: "阶段",
+    taskList: "任务清单",
     status: "状态",
     stage: "阶段",
     currentTool: "当前工具",
@@ -238,6 +239,7 @@ const COPY = {
     tools: "Tools",
     time: "Time",
     stages: "Stages",
+    taskList: "Task List",
     status: "Status",
     stage: "Stage",
     currentTool: "Current tool",
@@ -342,6 +344,7 @@ type NormalizedTaskStatus =
   | "paused";
 type StageKey = "analysis" | "editing" | "testing" | "packaging" | "finalizing";
 type StageEventStatus = "completed" | "running" | "pending" | "failed";
+type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
 type ArtifactType =
   | "modifiedFile"
   | "document"
@@ -380,6 +383,17 @@ type StageTimelineItem = {
   label: string;
   status: StageEventStatus;
   timestampMs?: number;
+};
+
+type TodoItem = {
+  id: string;
+  content: string;
+  status: TodoStatus;
+};
+
+type TodoUpdate = {
+  items: TodoItem[];
+  merge: boolean;
 };
 
 type ArtifactView = {
@@ -422,6 +436,7 @@ type TaskViewModel = {
   statusLabel: string;
   testSummary: string;
   title: string;
+  todoItems: TodoItem[];
   tokens: number;
   toolCalls: number;
   updatedAt: number;
@@ -501,6 +516,122 @@ function displayTaskTitle(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseJsonish(value: unknown): unknown {
+  let current = value;
+  for (let index = 0; index < 2; index += 1) {
+    if (typeof current !== "string") return current;
+    const trimmed = current.trim();
+    if (!trimmed) return current;
+    try {
+      current = JSON.parse(trimmed) as unknown;
+    } catch {
+      return current;
+    }
+  }
+  return current;
+}
+
+function normalizeTodoStatus(value: unknown): TodoStatus {
+  const status = String(value || "pending").trim().toLowerCase();
+  if (status === "completed" || status === "in_progress" || status === "cancelled") return status;
+  return "pending";
+}
+
+function todoItemsFromPayload(value: unknown): TodoItem[] {
+  const payload = parseJsonish(value);
+  const rawTodos = isRecord(payload) ? payload.todos : Array.isArray(payload) ? payload : null;
+  if (!Array.isArray(rawTodos)) return [];
+  return rawTodos
+    .map((item, index) => {
+      if (!isRecord(item)) return null;
+      const content = cleanText(item.content, "", 500);
+      if (!content) return null;
+      return {
+        id: cleanText(item.id, String(index + 1), 80),
+        content,
+        status: normalizeTodoStatus(item.status),
+      };
+    })
+    .filter((item): item is TodoItem => item !== null);
+}
+
+function todoUpdateFromPayload(value: unknown): TodoUpdate | null {
+  const payload = parseJsonish(value);
+  const items = todoItemsFromPayload(payload);
+  if (!items.length) return null;
+  return {
+    items,
+    merge: isRecord(payload) && payload.merge === true,
+  };
+}
+
+function todoUpdatesFromRawLog(content: string): TodoUpdate[] {
+  const updates: TodoUpdate[] = [];
+  const marker = /^\[(tool_start|tool_output)\]\s+todo\b.*$/gm;
+  while (marker.exec(content) !== null) {
+    const start = marker.lastIndex;
+    const rest = content.slice(start);
+    const nextMarker = rest.search(/^\[[a-z_]+\]/m);
+    const payload = rest.slice(0, nextMarker >= 0 ? nextMarker : undefined).trim();
+    const update = todoUpdateFromPayload(payload);
+    if (update) updates.push(update);
+  }
+  return updates;
+}
+
+function todoUpdatesFromMessage(message: ChatTaskMessage): TodoUpdate[] {
+  const metadata = isRecord(message.metadata) ? message.metadata : {};
+  const event = isRecord(metadata.event) ? metadata.event : null;
+  const type = cleanText(metadata.eventType ?? event?.type, "", 80);
+  const name = cleanText(event?.name, "", 80);
+  if (type === "tool_start" && name === "todo") {
+    const update = todoUpdateFromPayload(event?.input);
+    return update ? [update] : [];
+  }
+  if (type === "tool_output" && name === "todo") {
+    const update = todoUpdateFromPayload(event?.output);
+    return update ? [update] : [];
+  }
+  if (type === "raw_log") {
+    return todoUpdatesFromRawLog(String(event?.content ?? message.content ?? ""));
+  }
+  if (message.role === "event" && message.content) {
+    return todoUpdatesFromRawLog(String(message.content));
+  }
+  return [];
+}
+
+function applyTodoUpdate(current: TodoItem[], update: TodoUpdate): TodoItem[] {
+  if (!update.merge) return update.items;
+
+  const byId = new Map(current.map((item) => [item.id, item]));
+  for (const item of update.items) {
+    byId.set(item.id, item);
+  }
+  const existingIds = new Set(current.map((item) => item.id));
+  return [
+    ...current.map((item) => byId.get(item.id) ?? item),
+    ...update.items.filter((item) => !existingIds.has(item.id)),
+  ];
+}
+
+function latestTodoItemsFromMessages(messages: ChatTaskMessage[]): TodoItem[] {
+  let items: TodoItem[] = [];
+  let hasTodo = false;
+  for (const message of messages) {
+    if (message.role === "user") {
+      items = [];
+      hasTodo = false;
+      continue;
+    }
+    for (const update of todoUpdatesFromMessage(message)) {
+      items = applyTodoUpdate(items, update);
+      hasTodo = true;
+    }
+  }
+  return hasTodo ? items : [];
 }
 
 function cleanText(value: unknown, fallback = "", maxLength = 160): string {
@@ -1145,6 +1276,7 @@ function buildTaskViewModel(
   const completedAt = completedAtFrom(eventViews, session);
   const durationMs = durationFrom(eventViews, task, session, status);
   const statusText = statusLabel(status, copy);
+  const todoItems = latestTodoItemsFromMessages(events);
   return {
     artifactCount: artifacts.length,
     artifacts,
@@ -1174,6 +1306,7 @@ function buildTaskViewModel(
     statusLabel: statusText,
     testSummary: testSummary(eventViews, copy),
     title: displayTaskTitle(project, task, providerModel, copy),
+    todoItems,
     tokens,
     toolCalls,
     updatedAt,
@@ -1946,7 +2079,7 @@ function StatusSpecificDetails({
             ]}
           />
         </DetailSection>
-        <StageTimeline copy={copy} timeline={task.stageTimeline} />
+        <TaskProgressDetails copy={copy} task={task} />
       </>
     );
   }
@@ -1980,7 +2113,7 @@ function StatusSpecificDetails({
             <div className="text-xs text-muted-foreground">{copy.noRecentArtifacts}</div>
           )}
         </DetailSection>
-        <StageTimeline copy={copy} timeline={task.stageTimeline} />
+        <TaskProgressDetails copy={copy} task={task} />
       </>
     );
   }
@@ -1995,7 +2128,7 @@ function StatusSpecificDetails({
             [copy.recentEvent, formatRelativeTime(task.updatedAt, locale)],
           ]}
         />
-        <StageTimeline copy={copy} timeline={task.stageTimeline} />
+        <TaskProgressDetails copy={copy} task={task} />
       </>
     );
   }
@@ -2011,7 +2144,7 @@ function StatusSpecificDetails({
             [copy.currentCommand, task.currentCommand],
           ]}
         />
-        <StageTimeline copy={copy} timeline={task.stageTimeline} />
+        <TaskProgressDetails copy={copy} task={task} />
       </>
     );
   }
@@ -2027,8 +2160,74 @@ function StatusSpecificDetails({
           [copy.modelName, task.model],
         ]}
       />
-      <StageTimeline copy={copy} timeline={task.stageTimeline} />
+      <TaskProgressDetails copy={copy} task={task} />
     </>
+  );
+}
+
+function TaskProgressDetails({
+  copy,
+  task,
+}: {
+  copy: WorkspaceCopy;
+  task: TaskViewModel;
+}) {
+  return (
+    <>
+      <StageTimeline copy={copy} timeline={task.stageTimeline} />
+      {task.todoItems.length > 0 && <TaskTodoList copy={copy} items={task.todoItems} />}
+    </>
+  );
+}
+
+function TaskTodoList({
+  copy,
+  items,
+}: {
+  copy: WorkspaceCopy;
+  items: TodoItem[];
+}) {
+  return (
+    <DetailSection title={copy.taskList}>
+      <ol className="space-y-1.5">
+        {items.map((item, index) => (
+          <li
+            key={`${item.id}-${index}`}
+            className={cn(
+              "grid grid-cols-[1rem_1.5rem_1fr] items-start gap-2 rounded-md px-1.5 py-1 text-xs leading-5",
+              item.status === "in_progress" && "bg-warning/5 text-midground",
+              item.status === "completed" && "text-muted-foreground",
+              item.status === "pending" && "text-muted-foreground",
+              item.status === "cancelled" && "text-muted-foreground/60",
+            )}
+          >
+            <span
+              className={cn(
+                "mt-0.5 inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full border",
+                item.status === "completed" && "border-success/35 bg-success/10",
+                item.status === "in_progress" && "border-warning/35 bg-warning/15",
+                item.status === "cancelled" && "border-muted-foreground/35",
+                item.status === "pending" && "border-muted-foreground/35",
+              )}
+              aria-label={item.status}
+            />
+            <span className="pt-px text-[11px] tabular-nums text-muted-foreground/70">
+              {index + 1}
+            </span>
+            <span
+              className={cn(
+                "min-w-0 break-words",
+                item.status === "in_progress" && "font-medium",
+                (item.status === "completed" || item.status === "cancelled") &&
+                  "line-through decoration-current/35",
+              )}
+            >
+              {item.content}
+            </span>
+          </li>
+        ))}
+      </ol>
+    </DetailSection>
   );
 }
 
