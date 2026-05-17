@@ -77,6 +77,20 @@ def test_redou_context_filters_queued_guides_and_raw_events(tmp_path, monkeypatc
         },
         {
             "role": "event",
+            "content": "run_stage must not leak as history",
+            "metadata": {
+                "eventType": "run_stage",
+                "event": {
+                    "type": "run_stage",
+                    "stage": "inspecting",
+                    "label": "检查项目",
+                    "status": "running",
+                    "source": "hermes",
+                },
+            },
+        },
+        {
+            "role": "event",
             "content": "guide only must not leak",
             "metadata": {
                 "eventType": "control_event",
@@ -95,6 +109,7 @@ def test_redou_context_filters_queued_guides_and_raw_events(tmp_path, monkeypatc
     assert "queued future request must not leak" not in built.text
     assert "guide only must not leak" not in built.text
     assert "command_start" not in built.text
+    assert "run_stage" not in built.text
     assert built.text.count("current active request") == 1
 
 

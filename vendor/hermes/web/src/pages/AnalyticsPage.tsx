@@ -441,6 +441,14 @@ function TaskRow({ task, nowMs }: { task: AnalysisBenchmarkTaskResult; nowMs: nu
   const [open, setOpen] = useState(false);
   const tokenTotal =
     task.inputTokens + task.outputTokens + task.cacheReadTokens + task.reasoningTokens;
+  const artifacts = task.artifacts;
+  const hasArtifacts = Boolean(
+    artifacts?.rootPath ||
+    artifacts?.batchLogPath ||
+    artifacts?.reports?.length ||
+    artifacts?.logs?.length ||
+    artifacts?.modelResults?.length,
+  );
 
   return (
     <div className="border-t border-border/60 first:border-t-0">
@@ -482,6 +490,51 @@ function TaskRow({ task, nowMs }: { task: AnalysisBenchmarkTaskResult; nowMs: nu
                 {copy.error}
               </div>
               <p className="whitespace-pre-wrap">{task.error}</p>
+            </div>
+          )}
+          {hasArtifacts && (
+            <div className="mb-3 border border-border/60 bg-background/25 p-3 text-xs">
+              <div className="mb-2 flex items-center gap-2 font-medium text-foreground">
+                <FileText className="h-3.5 w-3.5" />
+                Artifacts
+              </div>
+              {artifacts?.rootPath && (
+                <div className="mb-2 truncate font-mono-ui text-[11px] text-muted-foreground" title={artifacts.rootPath}>
+                  {artifacts.rootPath}
+                </div>
+              )}
+              {artifacts?.batchLogPath && (
+                <div className="mb-2">
+                  <div className="truncate font-mono-ui text-[11px] text-muted-foreground" title={artifacts.batchLogPath}>
+                    Batch log: {artifacts.batchLogPath}
+                  </div>
+                  {artifacts.batchLogPreview && (
+                    <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap border border-border/50 bg-background/30 p-2 font-mono-ui text-[11px] leading-4 text-muted-foreground">
+                      {artifacts.batchLogPreview}
+                    </pre>
+                  )}
+                </div>
+              )}
+              {[
+                ["Reports", artifacts?.reports],
+                ["Logs", artifacts?.logs],
+                ["Model results", artifacts?.modelResults],
+              ].map(([label, files]) =>
+                Array.isArray(files) && files.length > 0 ? (
+                  <div key={label as string} className="mt-2">
+                    <div className="mb-1 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+                      {label as string}
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {files.map((file) => (
+                        <span key={file} className="border border-border/50 bg-background/30 px-2 py-1 font-mono-ui text-[11px] text-muted-foreground">
+                          {file}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null,
+              )}
             </div>
           )}
           <div className="grid gap-2 md:grid-cols-2">

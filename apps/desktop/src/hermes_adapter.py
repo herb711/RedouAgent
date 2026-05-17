@@ -32,6 +32,26 @@ from typing import Any, Dict
 EVENT_OUT = sys.stdout
 RISK_CONFIRMED = False
 EVENT_LOCK = threading.Lock()
+RUN_STAGE_STAGES = {
+    "understanding",
+    "inspecting",
+    "planning",
+    "editing",
+    "testing",
+    "packaging",
+    "summarizing",
+    "blocked",
+    "done",
+    "failed",
+}
+RUN_STAGE_STATUSES = {
+    "started",
+    "running",
+    "completed",
+    "skipped",
+    "blocked",
+    "failed",
+}
 
 
 def _project_root() -> Path:
@@ -64,6 +84,47 @@ def _safe_json(value: Any) -> Any:
         return value
     except Exception:
         return str(value)
+
+
+def _run_stage_object(value: Any) -> Dict[str, Any] | None:
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw or not raw.startswith("{"):
+            return None
+        try:
+            value = json.loads(raw)
+        except Exception:
+            return None
+    if not isinstance(value, dict) or value.get("type") != "run_stage":
+        return None
+    stage = str(value.get("stage") or "").strip()
+    if stage not in RUN_STAGE_STAGES:
+        return None
+    status = str(value.get("status") or "running").strip()
+    if status not in RUN_STAGE_STATUSES:
+        status = "running"
+    return {
+        **value,
+        "type": "run_stage",
+        "stage": stage,
+        "status": status,
+        "source": "hermes",
+        "timestamp": str(value.get("timestamp") or _utc_iso()),
+    }
+
+
+def _strip_run_stage_json_lines(text: str) -> str:
+    if _run_stage_object(text) is not None:
+        return ""
+    lines = str(text or "").splitlines()
+    if not lines:
+        return ""
+    kept: list[str] = []
+    for line in lines:
+        if _run_stage_object(line) is not None:
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
 
 
 def _is_image_attachment(attachment: Dict[str, Any]) -> bool:
@@ -289,6 +350,10 @@ def _configure_approval_environment() -> None:
     # requires a separate notify callback and would bypass the callback above.
     os.environ["HERMES_INTERACTIVE"] = "1"
     os.environ.pop("HERMES_EXEC_ASK", None)
+    os.environ.pop("HERMES_GATEWAY_SESSION", None)
+    os.environ.pop("HERMES_SESSION_PLATFORM", None)
+    if RISK_CONFIRMED:
+        os.environ["HERMES_YOLO_MODE"] = "1"
 
 
 def main() -> int:
@@ -432,6 +497,25 @@ def main() -> int:
         if delta:
             _emit({"type": "assistant_delta", "content": delta, "metadata": metadata})
 
+    def status_update(kind: str, value: Any = None) -> None:
+        if str(kind or "") != "run_stage":
+            return
+        event = _run_stage_object(value)
+        if event is None:
+            return
+        event.setdefault("taskId", str(payload.get("taskId") or ""))
+        if os.getenv("REDOU_RUN_ID"):
+            event.setdefault("runId", os.getenv("REDOU_RUN_ID"))
+        if payload.get("projectId"):
+            event.setdefault("projectId", str(payload.get("projectId")))
+        if metadata.get("currentTurnId"):
+            event.setdefault("turnId", str(metadata.get("currentTurnId")))
+        event["metadata"] = {
+            **metadata,
+            **(event.get("metadata") if isinstance(event.get("metadata"), dict) else {}),
+        }
+        _emit(event)
+
     def tool_started(tool_call_id: str, name: str, args: Any) -> None:
         _emit(
             {
@@ -531,6 +615,7 @@ def main() -> int:
             tool_progress_callback=tool_progress,
             tool_start_callback=tool_started,
             tool_complete_callback=tool_completed,
+            status_callback=status_update,
             pass_session_id=True,
         )
         with pending_lock:
@@ -548,7 +633,9 @@ def main() -> int:
                 stream_callback=stream_delta,
                 persist_user_message=user_context if not isinstance(run_message, str) else None,
             )
-        final_response = str((result or {}).get("final_response") or "").strip()
+        final_response = _strip_run_stage_json_lines(
+            str((result or {}).get("final_response") or "").strip()
+        )
         if not final_response and last_reasoning_preview:
             final_response = last_reasoning_preview
         if final_response:
@@ -573,6 +660,18 @@ def main() -> int:
                 }
             )
         elif (result or {}).get("failed") or (result or {}).get("error"):
+            _emit(
+                {
+                    "type": "run_stage",
+                    "stage": "failed",
+                    "label": "失败",
+                    "status": "failed",
+                    "source": "hermes",
+                    "timestamp": _utc_iso(),
+                    "details": _compact_text((result or {}).get("error") or "Hermes runtime failed."),
+                    "metadata": metadata,
+                }
+            )
             _emit(
                 {
                     "type": "error",
@@ -614,6 +713,18 @@ def main() -> int:
         close_session_db()
         return 0
     except Exception as exc:
+        _emit(
+            {
+                "type": "run_stage",
+                "stage": "failed",
+                "label": "失败",
+                "status": "failed",
+                "source": "hermes",
+                "timestamp": _utc_iso(),
+                "details": str(exc),
+                "metadata": metadata,
+            }
+        )
         _emit(
             {
                 "type": "error",

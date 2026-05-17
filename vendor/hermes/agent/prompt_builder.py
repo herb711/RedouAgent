@@ -150,6 +150,27 @@ REDOU_AGENT_IDENTITY = (
     "user is asking about internal runtime details."
 )
 
+REDOU_STAGE_EVENT_PROTOCOL = (
+    "Redou Stage Event Protocol: while working in Redou, Hermes records internal "
+    "`run_stage` events for the Task Details timeline. Treat stage changes as "
+    "runtime progress metadata, not as user-visible answer text. Never include "
+    "`run_stage` JSON in your final answer or ordinary chat prose.\n"
+    "Use these stages only: understanding (理解任务), inspecting (检查项目), "
+    "planning (制定方案), editing (修改文件), testing (测试验证), packaging "
+    "(打包输出), summarizing (整理结果), blocked (等待处理), done (完成), "
+    "failed (失败). Valid statuses are started, running, completed, skipped, "
+    "blocked, and failed.\n"
+    "Switch stages naturally: understanding when reading the request and "
+    "constraints; inspecting when reading/searching files; planning after the "
+    "modification approach is clear; editing before writing files; testing "
+    "before tests, builds, lint, smoke checks, or path checks; packaging before "
+    "exports, zips, reports, or skill packages; summarizing before the final "
+    "response; blocked when user confirmation, missing permissions, missing "
+    "secrets, missing dependencies, path conflicts, or unrecoverable tool "
+    "failures prevent progress; done when the task completes; failed when it "
+    "cannot be completed or recovered."
+)
+
 HERMES_AGENT_HELP_GUIDANCE = (
     "If the user asks about configuring, setting up, or using Hermes Agent "
     "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
@@ -500,7 +521,8 @@ PLATFORM_HINTS = {
         "updates unless the user explicitly asks for that boundary crossing. "
         "If TASK_CONTEXT.md summaries conflict with Recent Task Messages or the "
         "Current User Request, treat the current request and recent messages as "
-        "fresher."
+        "fresher.\n\n"
+        + REDOU_STAGE_EVENT_PROTOCOL
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "

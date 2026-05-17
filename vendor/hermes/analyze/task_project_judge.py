@@ -26,7 +26,11 @@ def parse_pytest_counts(text: str, total_hint: int) -> tuple[int, int, int, int]
     if match:
         errors = int(match.group(1))
     total_run = passed + failed + errors
-    return passed, failed, errors, total_hint or total_run
+    # Prefer the configured hidden-suite size, but never let a stale hint make
+    # a run with failures score above 100%. This happened for task8 after the
+    # pytest suite grew beyond the task metadata.
+    total = max(total_hint or 0, total_run)
+    return passed, failed, errors, total
 
 
 def run_project_tests(workspace: Path, task_num: str) -> dict:
@@ -70,13 +74,14 @@ def run_project_tests(workspace: Path, task_num: str) -> dict:
         output,
         int(cfg["total_tests"]),
     )
-    pass_threshold = int(cfg["pass_threshold"])
-    passed = passed_count >= pass_threshold
+    total = total or int(cfg["total_tests"])
+    metric = round(passed_count / total, 6) if total else 0.0
+    passed = proc.returncode == 0 and failed_count == 0 and error_count == 0
     failed_lines = [
         line for line in output.splitlines()
         if "FAILED" in line or "ERROR" in line or "Traceback" in line
     ][:20]
-    detail = f"passed {passed_count}/{total}; threshold {pass_threshold}/{total}"
+    detail = f"passed {passed_count}/{total}; score {round(metric * 100, 2)}/100"
     if failed_lines:
         detail += "\n" + "\n".join(failed_lines)
     return {
@@ -85,8 +90,7 @@ def run_project_tests(workspace: Path, task_num: str) -> dict:
         "failed_count": failed_count,
         "error_count": error_count,
         "total": total,
-        "threshold": pass_threshold,
-        "metric": round(passed_count / total, 6) if total else 0.0,
+        "metric": metric,
         "detail": detail,
         "returncode": proc.returncode,
         "output": output,

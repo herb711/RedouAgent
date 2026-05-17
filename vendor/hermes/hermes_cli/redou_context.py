@@ -57,6 +57,7 @@ _RAW_EVENT_TYPES = frozenset({
     "raw_log",
     "queue_update",
     "control_event",
+    "run_stage",
 })
 
 
@@ -1158,7 +1159,7 @@ def _validate_context_messages(messages: List[Dict[str, Any]], current_request_t
     if not last_user or current not in str(last_user.get("content") or "") or (messages and messages[-1] is not last_user):
         errors.append("Current User Request is not the final user message.")
     non_current_text = _flatten_context_messages(messages[:-1]) if messages else ""
-    if re.search(r"\b(command_start|tool_start|tool_end|queue_update|raw_log)\b", non_current_text):
+    if re.search(r"\b(command_start|tool_start|tool_end|queue_update|raw_log|run_stage)\b", non_current_text):
         errors.append("Prompt contains raw run event labels.")
     for message in messages:
         kind = (message.get("metadata") or {}).get("redouContextKind")

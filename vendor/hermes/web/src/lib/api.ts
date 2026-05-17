@@ -714,6 +714,7 @@ export interface SessionInfo {
   queue_depth?: number;
   last_event_type?: string | null;
   run_started_at?: number | null;
+  api_calls?: number;
 }
 
 export interface ChatTask {
@@ -721,6 +722,11 @@ export interface ChatTask {
   projectId: string;
   title: string;
   path?: string;
+  kind?: string;
+  analysisKey?: string;
+  analysisRunId?: string;
+  analysisProvider?: string;
+  analysisModel?: string;
   session_id: string | null;
   hermesSessionId: string | null;
   model_provider: string;
@@ -926,6 +932,7 @@ export type AgentEvent =
   | { type: "tool_end"; name: string; success: boolean; metadata?: Record<string, unknown> }
   | { type: "file_changed"; path: string; changeType?: string; summary?: string; metadata?: Record<string, unknown> }
   | { type: "queue_update"; queued: number; message?: string; metadata?: Record<string, unknown> }
+  | { type: "run_stage"; stage?: string; label?: string; status?: string; details?: string; metadata?: Record<string, unknown> }
   | { type: "error"; message: string; details?: string; metadata?: Record<string, unknown> }
   | { type: "done"; metadata?: Record<string, unknown> }
   | { type: "raw_log"; content: string; metadata?: Record<string, unknown> };
@@ -1069,6 +1076,7 @@ export interface AnalyticsDailyEntry {
   actual_cost: number;
   sessions: number;
   api_calls: number;
+  tool_calls?: number;
 }
 
 export interface AnalyticsModelEntry {
@@ -1108,6 +1116,7 @@ export interface AnalyticsResponse {
     total_actual_cost: number;
     total_sessions: number;
     total_api_calls: number;
+    total_tool_calls?: number;
   };
   skills: {
     summary: AnalyticsSkillsSummary;
@@ -1197,6 +1206,14 @@ export interface AnalysisBenchmarkTaskResult {
   sections: AnalysisBenchmarkSection[];
   error: string | null;
   summary: string;
+  artifacts?: {
+    rootPath: string;
+    batchLogPath: string;
+    batchLogPreview: string;
+    reports: string[];
+    logs: string[];
+    modelResults: string[];
+  };
 }
 
 export interface AnalysisBenchmarkResult {

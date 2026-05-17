@@ -13,7 +13,6 @@ test_files:
   - tests/
 
 total_tests: 950
-pass_threshold: 940
 test_command: "python -m pytest .judge/tests/ --tb=short -q"
 
 requires:

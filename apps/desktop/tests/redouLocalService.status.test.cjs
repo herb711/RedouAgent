@@ -185,6 +185,8 @@ test("desktop analytics and session messages use local task logs", () => {
   assert.equal(analytics.totals.total_cache_read, 7);
   assert.equal(analytics.totals.total_reasoning, 3);
   assert.equal(analytics.totals.total_api_calls, 2);
+  assert.equal(analytics.totals.total_tool_calls, 1);
+  assert.equal(analytics.daily.at(-1).tool_calls, 1);
 
   const messages = service.getSessionMessages(sessions.sessions[0].id);
   assert.equal(messages.messages.some((message) => message.role === "user"), true);
@@ -192,6 +194,54 @@ test("desktop analytics and session messages use local task logs", () => {
     messages.messages.some((message) => message.tool_calls?.[0]?.function?.name === "terminal"),
     true,
   );
+});
+
+test("run_stage events persist as events without entering prompt history", () => {
+  const { service, project, task } = makeService();
+
+  service.appendTaskMessage(project.id, task.id, "user", "Inspect the project.", {
+    inputEnvelope: {
+      id: "completed-user",
+      text: "Inspect the project.",
+      turnId: "turn-completed",
+      deliveryMode: "new_turn",
+      status: "completed",
+      runId: "run-stage",
+    },
+  });
+  service.appendTaskMessage(project.id, task.id, "event", "检查项目: running", {
+    eventType: "run_stage",
+    event: {
+      type: "run_stage",
+      stage: "inspecting",
+      label: "检查项目",
+      status: "running",
+      source: "hermes",
+      timestamp: "2026-05-16T10:21:00Z",
+      details: "正在读取项目目录和关键文件",
+      metadata: { runId: "run-stage" },
+    },
+  });
+  service.appendTaskMessage(project.id, task.id, "assistant", "Done.", {
+    eventType: "assistant_message",
+    event: { type: "assistant_message", content: "Done.", metadata: { runId: "run-stage" } },
+  });
+  service.appendTaskMessage(project.id, task.id, "event", "done", {
+    eventType: "done",
+    event: { type: "done", metadata: { runId: "run-stage", completed: true } },
+  });
+
+  const events = service.readTaskEvents(task);
+  assert.equal(events.some((entry) => entry.metadata?.event?.type === "run_stage"), true);
+
+  const built = service.buildTaskContext({
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "Continue without leaking stage JSON.",
+  });
+  assert.equal(built.metadata.contextValidation.ok, true);
+  assert.equal(built.contextMessages.some((message) => message.role === "assistant" && /run_stage/.test(String(message.content || ""))), false);
+  assert.equal(/run_stage/.test(built.userContext), false);
 });
 
 test("analysis benchmarks expose live duration for active runs", () => {

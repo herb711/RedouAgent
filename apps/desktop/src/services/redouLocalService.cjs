@@ -33,6 +33,10 @@ const DELIVERY_MODES = new Set(["new_turn", "queue", "guide", "interrupt_replace
 const USER_INPUT_STATUSES = new Set(["pending", "consumed", "completed", "cancelled"]);
 const ANALYSIS_RESULTS_FILE = "model-benchmarks.json";
 const ANALYSIS_DEFAULT_MAX_ITERATIONS = 1000;
+const ANALYSIS_DOCKER_WORKSPACE = "/workspace";
+const ANALYSIS_WORKSPACE_PROJECT_ID = "model-benchmarks";
+const ANALYSIS_WORKSPACE_PROJECT_NAME = "Model Benchmarks";
+const ANALYSIS_WORKSPACE_TASK_KIND = "analysis_benchmark";
 const ANALYSIS_ABILITY_KEYS = [
   "environmentConstraints",
   "projectDelivery",
@@ -837,6 +841,14 @@ function readText(file) {
   }
 }
 
+function readTextFirst(files) {
+  for (const file of files || []) {
+    const text = readText(file);
+    if (text) return text;
+  }
+  return "";
+}
+
 function readJson(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, "utf8"));
@@ -1056,7 +1068,7 @@ function isControlEventMessage(message = {}) {
 function isPromptHistoryMessage(message, completedRunIds, currentRequestId = "") {
   if (!message || !["user", "assistant", "tool"].includes(message.role)) return false;
   const { combined, eventType } = mergeMetadata(message);
-  if (["command_start", "command_output", "command_end", "tool_start", "tool_output", "tool_end", "done", "raw_log", "queue_update"].includes(eventType)) {
+  if (["command_start", "command_output", "command_end", "tool_start", "tool_output", "tool_end", "done", "raw_log", "queue_update", "run_stage"].includes(eventType)) {
     return false;
   }
   if (isControlEventMessage(message)) return false;
@@ -1255,7 +1267,7 @@ class ContextValidator {
       if (kind === "history" && envelope?.deliveryMode === "guide") {
         errors.push(`Guide/control event appears as user history ${envelope.id}.`);
       }
-      if (kind === "history" && ["command_start", "command_output", "command_end", "tool_start", "tool_output", "tool_end", "done", "raw_log"].includes(eventType)) {
+      if (kind === "history" && ["command_start", "command_output", "command_end", "tool_start", "tool_output", "tool_end", "done", "raw_log", "run_stage"].includes(eventType)) {
         errors.push(`Raw run event ${eventType} appears in conversation history.`);
       }
     }
@@ -1263,7 +1275,7 @@ class ContextValidator {
     const nonCurrentPromptText = promptTextFromMessages(
       lastUser ? messages.slice(0, messages.lastIndexOf(lastUser)) : messages,
     );
-    if (/\b(command_start|tool_start|tool_end|queue_update|raw_log)\b/.test(nonCurrentPromptText)) {
+    if (/\b(command_start|tool_start|tool_end|queue_update|raw_log|run_stage)\b/.test(nonCurrentPromptText)) {
       errors.push("Prompt contains raw run event labels.");
     }
     if (SecretRedactor.containsUnredactedSecret(promptText)) {
@@ -1403,6 +1415,173 @@ function averageScore(items) {
   return clampScore(scores.reduce((sum, score) => sum + score, 0) / scores.length);
 }
 
+function analysisTestCounts(summary) {
+  const judge = summary?.judge_result || {};
+  const passedCount = Number(judge.passed_count);
+  const total = Number(judge.total);
+  const failedCount = Number(judge.failed_count || 0);
+  const errorCount = Number(judge.error_count || 0);
+  if (Number.isFinite(passedCount) && Number.isFinite(total) && total > 0) {
+    const executedTotal = passedCount +
+      (Number.isFinite(failedCount) ? failedCount : 0) +
+      (Number.isFinite(errorCount) ? errorCount : 0);
+    const adjustedTotal = Math.max(total, executedTotal);
+    return { passedCount, total, adjustedTotal, failedCount, errorCount };
+  }
+  return null;
+}
+
+function analysisTestPassRatio(summary) {
+  const counts = analysisTestCounts(summary);
+  if (counts) {
+    const { passedCount, adjustedTotal } = counts;
+    return Math.max(0, Math.min(1, passedCount / adjustedTotal));
+  }
+  const judge = summary?.judge_result || {};
+  const metric = Number(summary?.current_metric ?? judge.metric ?? 0);
+  return Number.isFinite(metric) ? Math.max(0, Math.min(1, metric)) : 0;
+}
+
+function analysisTaskGradeLogText(workspacePath, taskId) {
+  const id = String(taskId || "").trim();
+  if (!workspacePath || !id) return "";
+  const logName = `${id}_grade_all.log`;
+  return readTextFirst([
+    path.join(analysisDisplayResultsDir(workspacePath), id, logName),
+    path.join(workspacePath, "logs", logName),
+    path.join(workspacePath, "reports", logName),
+  ]);
+}
+
+function analysisFinalScoreFromLog(logText) {
+  const match = String(logText || "").match(/Final Score:\s*([0-9]+(?:\.[0-9]+)?)\s*\/\s*([0-9]+(?:\.[0-9]+)?)/i);
+  if (!match) return null;
+  const score = Number(match[1]);
+  const max = Number(match[2]);
+  if (!Number.isFinite(score) || !Number.isFinite(max) || max <= 0) return null;
+  return clampScore((score / max) * 100);
+}
+
+const ANALYSIS_GRADE_SECTION_MAP = {
+  task1: {
+    "Task1 Phase 1: Files": [{ id: "workspace_structure", label: "Workspace structure" }],
+    "Task1 Phase 2: Compose Service": [{ id: "compose_contract", label: "Docker compose contract" }],
+    "Task1 Phase 3: Toolchain": [{ id: "environment_verification", label: "Environment verification" }],
+    "Task1 Phase 4: Workspace Mount": [{ id: "mount_evidence", label: "Workspace mount evidence" }],
+    "Task1 Phase 5: Docs": [{ id: "documentation", label: "README and ENV report" }],
+  },
+  task2: {
+    "Phase 0: Environment": [{ id: "container_execution", label: "Container execution" }],
+    "Phase 1: Scaffold": [{ id: "project_created", label: "Project files" }],
+    "Phase 2: Data Logic": [{ id: "persistence", label: "Persistence and data logic" }],
+    "Phase 3: UI and Build": [{ id: "features", label: "Task board UI and build" }],
+    "Phase 4: Runtime Curl": [{ id: "verification", label: "Runtime verification" }],
+    "Phase 5: Report": [{ id: "report", label: "Delivery report" }],
+  },
+  task3: {
+    "Task3 Phase 0: Environment": [{ id: "container_execution", label: "Container-only commands" }],
+    "Task3 Phase 1: Scaffold": [{ id: "project_created", label: "Library project" }],
+    "Task3 Phase 2: Initial Failure": [{ id: "tests_created", label: "Tests and initial failure" }],
+    "Task3 Phase 3: Final Pass": [{ id: "bug_loop", label: "Failing-to-passing loop" }],
+    "Task3 Phase 4: Behavior": [{ id: "function_coverage", label: "Required utility coverage" }],
+    "Task3 Phase 5: Report": [{ id: "log_report", label: "Log and report" }],
+  },
+  task4: {
+    "Task4 Phase 0: Environment": [{ id: "environment", label: "Environment" }],
+    "Task4 Phase 1: Sources and Notes": [{ id: "sources", label: "Sources and notes" }],
+    "Task4 Phase 2: Report and Comparison": [{ id: "comparison", label: "Report and comparison" }],
+    "Task4 Phase 3: Product Design": [{ id: "product_plan", label: "Product plan" }],
+    "Task4 Phase 4: Citation Quality": [{ id: "citation_quality", label: "Citation quality" }],
+    "Task4 Phase 5: Delivery": [
+      { id: "report_saved", label: "Research report saved" },
+      { id: "container_check", label: "Container file check" },
+    ],
+  },
+};
+
+function analysisPhaseScoresFromLog(logText) {
+  const phases = [];
+  let current = null;
+  for (const line of String(logText || "").split(/\r?\n/)) {
+    const running = line.match(/^Running\s+(.+?)\s+\(([0-9]+(?:\.[0-9]+)?)\s+pts\)\s*$/i);
+    if (running) {
+      current = {
+        name: running[1].trim(),
+        points: Number(running[2]),
+        awarded: null,
+        status: "",
+      };
+      phases.push(current);
+      continue;
+    }
+    const result = line.match(/^(.+?)\s+(PASS|FAIL|PARTIAL):\s*\+([0-9]+(?:\.[0-9]+)?)\s*$/i);
+    if (!result) continue;
+    const name = result[1].trim();
+    const phase = [...phases].reverse().find((item) => item.name === name && item.awarded == null) ||
+      (current?.awarded == null ? current : null);
+    if (!phase) continue;
+    phase.awarded = Number(result[3]);
+    phase.status = result[2].toUpperCase();
+  }
+  return phases.filter((phase) => phase.awarded != null && phase.points > 0);
+}
+
+function analysisTaskSectionsFromGradeLog(taskId, logText) {
+  const map = ANALYSIS_GRADE_SECTION_MAP[taskId];
+  if (!map) return [];
+  const sections = [];
+  for (const phase of analysisPhaseScoresFromLog(logText)) {
+    const mapped = map[phase.name];
+    if (!mapped) continue;
+    const score = (Number(phase.awarded) / Number(phase.points)) * 100;
+    for (const section of mapped) {
+      sections.push(sectionScore(
+        section.id,
+        section.label,
+        score,
+        `${phase.name}: ${phase.status} +${phase.awarded}/${phase.points}`,
+      ));
+    }
+  }
+  return sections;
+}
+
+function analysisLatestMigratedTaskSummary(workspacePath, modelRunName, taskId) {
+  const migratedMatch = /^task([5-9])$/.exec(String(taskId || ""));
+  if (!workspacePath || !modelRunName || !migratedMatch) return null;
+  const taskNumber = migratedMatch[1];
+  const resultsRel = `model_runs/${modelRunName}/results`;
+  for (const index of [3, 2, 1]) {
+    const summary = readRelativeJson(workspacePath, `${resultsRel}/task${taskNumber}_submit_${index}_summary.json`);
+    if (summary) return summary;
+  }
+  return null;
+}
+
+function analysisMigratedTaskSectionsFromSummary(taskId, workspacePath, modelRunName, summary) {
+  const migratedMatch = /^task([5-9])$/.exec(String(taskId || ""));
+  if (!workspacePath || !modelRunName || !migratedMatch || !summary) return [];
+  const taskNumber = migratedMatch[1];
+  const runRel = `model_runs/${modelRunName}/task${taskNumber}`;
+  const resultsRel = `model_runs/${modelRunName}/results`;
+  const testRatio = analysisTestPassRatio(summary);
+  const testScore = testRatio * 100;
+  const testCounts = analysisTestCounts(summary);
+  const testEvidence = testCounts
+    ? `${testCounts.passedCount}/${testCounts.adjustedTotal} passed`
+    : `metric=${testRatio}`;
+  const report = readRelativeText(workspacePath, `${resultsRel}/task${taskNumber}_report.md`);
+  const runFiles = listFilesRecursive(path.join(workspacePath, "model_runs", modelRunName, `task${taskNumber}`), 220);
+  return [
+    sectionScore("working_copy", "Isolated working copy", runFiles.length > 0 ? 100 : 0, `${runFiles.length} files in ${runRel}`),
+    sectionScore("automated_tests", "Automated hidden tests", testScore, testEvidence),
+    sectionScore("official_submission", "Official evaluator run", 100, "task_project_evaluate.py summary"),
+    sectionScore("source_integrity", "Original source untouched", summary?.original_source_unchanged === true ? 100 : 20, "original source checksum"),
+    sectionScore("container_execution", "Container-only commands", 100, "task_project_evaluate.py summary"),
+    sectionScore("report", "Delivery report", report.length > 1000 ? 100 : report ? 55 : 0, `task${taskNumber}_report.md`),
+  ];
+}
+
 function countHttpLinks(text) {
   const matches = String(text || "").match(/https?:\/\/[^\s)>\]]+/g);
   return matches ? matches.length : 0;
@@ -1452,6 +1631,98 @@ function replaceAnalysisDockerEnvironment(prompt, envName) {
   const target = String(envName || "").trim();
   if (!target || target === "agent-lab") return String(prompt || "");
   return String(prompt || "").replace(/(^|[^A-Za-z0-9_-])agent-lab(?![A-Za-z0-9_-])/g, `$1${target}`);
+}
+
+function normalizeAnalysisWorkspaceScript(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/^SERVICE="agent-lab"$/gm, 'SERVICE="${DOCKER_SERVICE:-agent-lab}"')
+    .replace(/\bdocker compose exec(?!\s+-T)\s+"\$SERVICE"/g, 'docker compose exec -T "$SERVICE"');
+}
+
+function normalizeAnalysisWorkspaceScriptsInPlace(workspacePath) {
+  if (!workspacePath || !fs.existsSync(workspacePath)) return;
+  let entries = [];
+  try {
+    entries = fs.readdirSync(workspacePath, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !/\.sh$/i.test(entry.name)) continue;
+    const file = path.join(workspacePath, entry.name);
+    const current = readText(file);
+    const normalized = normalizeAnalysisWorkspaceScript(current);
+    if (normalized !== current) {
+      fs.writeFileSync(file, normalized, "utf8");
+    }
+  }
+}
+
+function analysisTaskNumber(taskId) {
+  const match = /^task(\d+)$/.exec(String(taskId || "").trim());
+  return match ? match[1] : "";
+}
+
+function analysisTaskBatchScript(taskId) {
+  const number = analysisTaskNumber(taskId);
+  return number ? `task${number}_grade_all.sh` : "";
+}
+
+function analysisDisplayResultsDir(workspacePath) {
+  return path.join(workspacePath, REDOU_CONTEXT_DIR, REDOU_ANALYSIS_DIR, "results");
+}
+
+function listRelativeFiles(root, limit = 20) {
+  return listFilesRecursive(root, limit)
+    .map((file) => path.relative(root, file).replace(/\\/g, "/"))
+    .filter(Boolean);
+}
+
+function analysisTaskDisplayArtifacts(workspacePath, taskId) {
+  const workspace = String(workspacePath || "").trim();
+  const id = String(taskId || "").trim();
+  const empty = {
+    rootPath: "",
+    batchLogPath: "",
+    batchLogPreview: "",
+    reports: [],
+    logs: [],
+    modelResults: [],
+  };
+  if (!workspace || !id) return empty;
+  const rootPath = path.join(analysisDisplayResultsDir(workspace), id);
+  const batchLogName = `${id}_grade_all.log`;
+  const batchLogCandidates = [
+    path.join(rootPath, batchLogName),
+    path.join(workspace, "logs", batchLogName),
+    path.join(workspace, "reports", batchLogName),
+  ];
+  const batchLogPath = batchLogCandidates.find((candidate) => fs.existsSync(candidate)) || "";
+  const hasRoot = fs.existsSync(rootPath);
+  return {
+    rootPath: hasRoot ? rootPath : "",
+    batchLogPath,
+    batchLogPreview: batchLogPath ? compactMultiline(readText(batchLogPath), 2400) : "",
+    reports: hasRoot ? listRelativeFiles(path.join(rootPath, "reports"), 20) : [],
+    logs: hasRoot ? listRelativeFiles(path.join(rootPath, "logs"), 20) : [],
+    modelResults: hasRoot ? listRelativeFiles(path.join(rootPath, "model_results"), 20) : [],
+  };
+}
+
+function shellQuoteSingle(value) {
+  return `'${String(value || "").replace(/'/g, "'\"'\"'")}'`;
+}
+
+function analysisComposeHasService(composeText, serviceName) {
+  const escaped = regexEscape(serviceName);
+  return new RegExp(`(^|\\n)\\s{2}["']?${escaped}["']?\\s*:`, "m").test(String(composeText || ""));
+}
+
+function analysisComposeHasWorkspaceMount(composeText) {
+  return /\/workspace\b/i.test(String(composeText || "")) &&
+    /(?:-\s*["']?(?:\.\/?|\$\{PWD\})["']?\s*:\s*["']?\/workspace\b|target:\s*["']?\/workspace\b)/i.test(String(composeText || ""));
 }
 
 function positiveIntegerOrNull(value) {
@@ -1789,6 +2060,8 @@ function eventContent(event) {
       return event.summary || event.path || "";
     case "queue_update":
       return event.message || `${Number(event.queued || 0)} queued`;
+    case "run_stage":
+      return [event.label || event.stage || "stage", event.status].filter(Boolean).join(": ");
     case "error":
       return event.message || "error";
     case "done":
@@ -2416,7 +2689,7 @@ class RedouLocalService {
 
   markAnalysisInterrupted(item, reason = "Stopped because Redou Agent is closing.") {
     if (!item?.key) return;
-    this.updateAnalysisResult(item.key, (result) => ({
+    const interruptedResult = this.updateAnalysisResult(item.key, (result) => ({
       ...result,
       status: "interrupted",
       completedAt: result.completedAt || isoNow(),
@@ -2434,6 +2707,7 @@ class RedouLocalService {
         };
       }),
     }));
+    this.syncAnalysisWorkspaceFinished(item, "interrupted", reason, interruptedResult);
     this.emitAnalysisEvent(item.webContents, { type: "changed", runId: item.runId });
   }
 
@@ -2524,6 +2798,7 @@ class RedouLocalService {
       if (run.projectId !== projectId) continue;
       if (!taskId || run.taskId === taskId) return true;
     }
+    if (this.hasAnalysisRunForTask(projectId, taskId)) return true;
     return false;
   }
 
@@ -2677,6 +2952,11 @@ class RedouLocalService {
       session_id: hermesSessionId || null,
       model_provider: task.model_provider || "",
       model: task.model || "",
+      ...(task.kind ? { kind: compact(task.kind, 80) } : {}),
+      ...(task.analysisKey ? { analysisKey: compact(task.analysisKey, 180) } : {}),
+      ...(task.analysisRunId ? { analysisRunId: compact(task.analysisRunId, 180) } : {}),
+      ...(task.analysisProvider ? { analysisProvider: compact(task.analysisProvider, 120) } : {}),
+      ...(task.analysisModel ? { analysisModel: compact(task.analysisModel, 180) } : {}),
       createdAt,
       updatedAt,
       created_at: task.created_at || Math.floor(new Date(createdAt).getTime() / 1000),
@@ -3023,8 +3303,55 @@ class RedouLocalService {
     return null;
   }
 
+  analysisRunForTaskSnapshot(projectId, taskId) {
+    for (const item of this.activeAnalysisItems()) {
+      if (item.projectId === projectId && item.taskId === taskId) {
+        const nowMs = Date.now();
+        return {
+          state: "running",
+          item,
+          startedAtMs: Number(item.analysisStartedAtMs || item.startedAtMs || nowMs),
+          lastActiveAtMs: Number(item.analysisLastActiveAtMs || item.analysisStartedAtMs || nowMs),
+        };
+      }
+    }
+    for (const item of this.analysisQueue) {
+      if (item.projectId === projectId && item.taskId === taskId) {
+        const queuedAtMs = timestampMs(item.queuedAt) || Date.now();
+        return {
+          state: "queued",
+          item,
+          startedAtMs: queuedAtMs,
+          lastActiveAtMs: queuedAtMs,
+        };
+      }
+    }
+    return null;
+  }
+
+  hasAnalysisRunForTask(projectId, taskId = null) {
+    const matches = (item) => {
+      if (!item || item.projectId !== projectId) return false;
+      return !taskId || item.taskId === taskId;
+    };
+    return this.activeAnalysisItems().some(matches) || this.analysisQueue.some(matches);
+  }
+
   taskRuntimeSnapshot(projectId, taskId) {
     const activeRun = this.activeRunForTaskSnapshot(projectId, taskId);
+    const analysisRun = this.analysisRunForTaskSnapshot(projectId, taskId);
+    if (analysisRun) {
+      return {
+        is_active: analysisRun.state === "running",
+        active_run_id: analysisRun.item.runId || null,
+        queue_depth: analysisRun.state === "queued" ? 1 : 0,
+        run_started_at: analysisRun.state === "running"
+          ? timestampSeconds(analysisRun.startedAtMs, nowSeconds())
+          : null,
+        last_active: timestampSeconds(analysisRun.lastActiveAtMs, nowSeconds()),
+        current_stage: analysisRun.item.currentTaskId || null,
+      };
+    }
     const queueDepth = this.queueDepth(projectId, taskId);
     const lastActiveMs = activeRun ? Number(activeRun.lastActiveAtMs || activeRun.startedAtMs || 0) : 0;
     return {
@@ -3035,6 +3362,7 @@ class RedouLocalService {
         ? timestampSeconds(activeRun.startedAtMs || activeRun.startedAt, nowSeconds())
         : null,
       last_active: activeRun && lastActiveMs ? timestampSeconds(lastActiveMs, nowSeconds()) : null,
+      current_stage: activeRun?.currentStage || null,
     };
   }
 
@@ -3132,6 +3460,15 @@ class RedouLocalService {
       run.outputEstimateTokens = estimateContextTokens(run.assistantDeltaText);
     } else if (event.type === "assistant_message" && event.content) {
       run.outputEstimateTokens = estimateContextTokens(event.content);
+    } else if (event.type === "run_stage") {
+      run.currentStage = {
+        stage: event.stage || "",
+        label: event.label || "",
+        status: event.status || "",
+        source: event.source || "hermes",
+        timestamp: event.timestamp || event.metadata?.timestamp || isoNow(),
+        details: event.details || "",
+      };
     }
   }
 
@@ -3288,6 +3625,7 @@ class RedouLocalService {
       queue_depth: record.queue_depth,
       last_event_type: record.last_event_type,
       run_started_at: record.run_started_at,
+      api_calls: record.api_calls,
     }));
     return {
       sessions,
@@ -3392,6 +3730,7 @@ class RedouLocalService {
         actual_cost: 0,
         sessions: 0,
         api_calls: 0,
+        tool_calls: 0,
       };
       daily.push(entry);
       dailyMap.set(day, entry);
@@ -3415,6 +3754,7 @@ class RedouLocalService {
       total_actual_cost: 0,
       total_sessions: 0,
       total_api_calls: 0,
+      total_tool_calls: 0,
     };
 
     for (const session of this.desktopSessionRecords()) {
@@ -3429,6 +3769,7 @@ class RedouLocalService {
         dailyEntry.estimated_cost += toNumber(session.estimated_cost);
         dailyEntry.sessions += 1;
         dailyEntry.api_calls += toInt(session.api_calls);
+        dailyEntry.tool_calls += toInt(session.tool_call_count);
       }
 
       const modelKey = session.model || "redou-desktop/default";
@@ -3457,6 +3798,7 @@ class RedouLocalService {
       totals.total_estimated_cost += toNumber(session.estimated_cost);
       totals.total_sessions += 1;
       totals.total_api_calls += toInt(session.api_calls);
+      totals.total_tool_calls += toInt(session.tool_call_count);
     }
 
     return {
@@ -3489,6 +3831,193 @@ class RedouLocalService {
     return path.join(this.analysisDir(), "workspaces");
   }
 
+  ensureAnalysisWorkspaceProject() {
+    const existing = this.readProject(ANALYSIS_WORKSPACE_PROJECT_ID);
+    if (existing) return existing;
+    const createdAt = isoNow();
+    return this.ensureProject({
+      id: ANALYSIS_WORKSPACE_PROJECT_ID,
+      name: ANALYSIS_WORKSPACE_PROJECT_NAME,
+      path: "",
+      workspace_path: "",
+      createdAt,
+      updatedAt: createdAt,
+      tasks: [],
+    });
+  }
+
+  createAnalysisWorkspaceTask(model, runId, maxIterations) {
+    const project = this.ensureAnalysisWorkspaceProject();
+    const createdAt = isoNow();
+    const provider = String(model.provider || "").trim();
+    const modelName = String(model.model || "").trim();
+    const key = String(model.key || modelBenchmarkKey(provider, modelName));
+    const title = `Benchmark: ${provider || "auto"} / ${modelName || "default"}`;
+    const id = safeSegment(`benchmark-${key}-${runId}`, `benchmark-${Date.now().toString(36)}`);
+    const existing = (project.tasks || []).find((task) => task.id === id);
+    const task = existing || this.ensureTask(project, {
+      id,
+      projectId: project.id,
+      title,
+      createdAt,
+      updatedAt: createdAt,
+      kind: ANALYSIS_WORKSPACE_TASK_KIND,
+      analysisKey: key,
+      analysisRunId: runId,
+      analysisProvider: provider,
+      analysisModel: modelName,
+      model_provider: provider,
+      model: modelName,
+    });
+    const saved = this.writeProject({
+      ...project,
+      updatedAt: createdAt,
+      tasks: existing ? project.tasks : [...project.tasks, task],
+    });
+    const savedTask = saved.tasks.find((item) => item.id === id) || task;
+    if (!existing) {
+      this.appendTaskMessage(
+        saved.id,
+        savedTask.id,
+        "user",
+        `Run model capability benchmark for ${provider || "auto"} / ${modelName || "default"}.`,
+        {
+          analysisRunId: runId,
+          analysisKey: key,
+          modelProvider: provider,
+          model: modelName,
+          maxIterations,
+        },
+      );
+    }
+    return { project: saved, task: savedTask };
+  }
+
+  analysisWorkspaceEventMetadata(item, extra = {}) {
+    return {
+      runId: item.runId,
+      analysisRunId: item.runId,
+      analysisKey: item.key,
+      modelProvider: item.provider,
+      model: item.model,
+      hermesProfile: "analysis",
+      ...extra,
+    };
+  }
+
+  persistAnalysisWorkspaceEvent(item, event) {
+    if (!item?.projectId || !item?.taskId) return null;
+    item.analysisLastActiveAtMs = Date.now();
+    const metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
+    const payload = {
+      ...event,
+      metadata: this.analysisWorkspaceEventMetadata(item, metadata),
+    };
+    try {
+      return this.persistEvent(item.projectId, item.taskId, payload);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log(`Could not persist analysis workspace event runId=${item.runId || ""}: ${message}`);
+      return null;
+    }
+  }
+
+  syncAnalysisWorkspaceQueued(item) {
+    this.persistAnalysisWorkspaceEvent(item, {
+      type: "queue_update",
+      queued: 1,
+      message: "Queued for model capability analysis.",
+      metadata: { queuedAt: item.queuedAt },
+    });
+  }
+
+  syncAnalysisWorkspaceTaskPlan(item) {
+    ANALYSIS_TASKS.forEach((task, index) => {
+      this.syncAnalysisWorkspaceTaskStage(item, task, "pending", "Waiting", {
+        planIndex: index + 1,
+        planTotal: ANALYSIS_TASKS.length,
+      });
+    });
+  }
+
+  syncAnalysisWorkspaceStarted(item, workspacePath, analysisEnvName) {
+    this.persistAnalysisWorkspaceEvent(item, {
+      type: "raw_log",
+      content: "Model capability benchmark started.",
+      metadata: {
+        workspacePath,
+        analysisEnvName,
+      },
+    });
+  }
+
+  syncAnalysisWorkspaceTaskStage(item, task, status, summary = "", extra = {}) {
+    const cleanStatus = String(status || "running").toLowerCase();
+    const stageStatus =
+      cleanStatus === "completed" || cleanStatus === "done"
+        ? "completed"
+        : cleanStatus === "failed" || cleanStatus === "error"
+          ? "failed"
+          : cleanStatus === "interrupted" || cleanStatus === "cancelled"
+            ? "failed"
+            : cleanStatus === "pending"
+              ? "pending"
+              : "running";
+    this.persistAnalysisWorkspaceEvent(item, {
+      type: "run_stage",
+      stage: task.id,
+      label: `${task.id}: ${task.title}`,
+      status: stageStatus,
+      details: compact(summary || stageStatus, 600),
+      metadata: {
+        analysisTaskId: task.id,
+        analysisTaskTitle: task.title,
+        capability: task.capability,
+        score: extra.score,
+        durationMs: extra.durationMs,
+        planIndex: extra.planIndex,
+        planTotal: extra.planTotal,
+      },
+    });
+  }
+
+  syncAnalysisWorkspaceFinished(item, status, summary, result = null) {
+    const cleanStatus = String(status || "").toLowerCase();
+    const completed = cleanStatus === "completed";
+    const interrupted = cleanStatus === "interrupted";
+    if (!completed) {
+      this.persistAnalysisWorkspaceEvent(item, {
+        type: "error",
+        message: summary || (interrupted ? "Benchmark interrupted." : "Benchmark failed."),
+        metadata: { status: cleanStatus || "failed" },
+      });
+    } else if (summary) {
+      this.persistAnalysisWorkspaceEvent(item, {
+        type: "raw_log",
+        content: summary,
+        metadata: { status: cleanStatus },
+      });
+    }
+    const totals = result?.totals || {};
+    this.persistAnalysisWorkspaceEvent(item, {
+      type: "done",
+      metadata: {
+        completed,
+        interrupted,
+        status: cleanStatus || (completed ? "completed" : "failed"),
+        exitCode: completed ? 0 : 1,
+        summary: summary || "",
+        durationMs: toInt(totals.durationMs),
+        inputTokens: toInt(totals.inputTokens),
+        outputTokens: toInt(totals.outputTokens),
+        cacheReadTokens: toInt(totals.cacheReadTokens),
+        reasoningTokens: toInt(totals.reasoningTokens),
+        apiCalls: toInt(totals.apiCalls),
+        estimatedCostUsd: Number(totals.estimatedCostUsd || 0),
+      },
+    });
+  }
+
   readAnalysisStore() {
     const store = readJson(this.analysisStorePath(), null);
     const fallback = { version: 1, updatedAt: isoNow(), results: [] };
@@ -3518,33 +4047,49 @@ class RedouLocalService {
     const provider = String(result.provider || "").trim();
     const model = String(result.model || "").trim();
     const key = String(result.key || modelBenchmarkKey(provider, model));
+    const modelRunName = analysisModelRunName(provider, model, key);
+    const workspacePath = String(result.workspacePath || "");
     const tasks = Array.isArray(result.tasks) ? result.tasks : [];
-    const normalizedTasks = tasks.map((task) => ({
-      id: String(task.id || ""),
-      title: String(task.title || ""),
-      capability: String(task.capability || ""),
-      status: String(task.status || "pending"),
-      startedAt: task.startedAt || null,
-      completedAt: task.completedAt || null,
-      durationMs: toInt(task.durationMs),
-      inputTokens: toInt(task.inputTokens),
-      outputTokens: toInt(task.outputTokens),
-      cacheReadTokens: toInt(task.cacheReadTokens),
-      reasoningTokens: toInt(task.reasoningTokens),
-      apiCalls: toInt(task.apiCalls),
-      estimatedCostUsd: Number(task.estimatedCostUsd || 0),
-      score: clampScore(task.score),
-      sections: Array.isArray(task.sections)
+    const normalizedTasks = tasks.map((task) => {
+      const taskId = String(task.id || "");
+      const gradeLogText = analysisTaskGradeLogText(workspacePath, taskId);
+      const gradeLogSections = analysisTaskSectionsFromGradeLog(taskId, gradeLogText);
+      const migratedSummary = analysisLatestMigratedTaskSummary(workspacePath, modelRunName, taskId);
+      const migratedSections = analysisMigratedTaskSectionsFromSummary(taskId, workspacePath, modelRunName, migratedSummary);
+      const migratedScore = migratedSummary ? clampScore(analysisTestPassRatio(migratedSummary) * 100) : null;
+      const rawSections = Array.isArray(task.sections)
         ? task.sections.map((section) => ({
             id: String(section.id || ""),
             label: String(section.label || ""),
             score: clampScore(section.score),
             evidence: String(section.evidence || ""),
           }))
-        : [],
-      error: task.error ? String(task.error) : null,
-      summary: String(task.summary || ""),
-    }));
+        : [];
+      return {
+        id: taskId,
+        title: String(task.title || ""),
+        capability: String(task.capability || ""),
+        status: String(task.status || "pending"),
+        startedAt: task.startedAt || null,
+        completedAt: task.completedAt || null,
+        durationMs: toInt(task.durationMs),
+        inputTokens: toInt(task.inputTokens),
+        outputTokens: toInt(task.outputTokens),
+        cacheReadTokens: toInt(task.cacheReadTokens),
+        reasoningTokens: toInt(task.reasoningTokens),
+        apiCalls: toInt(task.apiCalls),
+        estimatedCostUsd: Number(task.estimatedCostUsd || 0),
+        score: migratedScore ?? analysisFinalScoreFromLog(gradeLogText) ?? clampScore(task.score),
+        sections: migratedSections.length > 0
+          ? migratedSections
+          : gradeLogSections.length > 0
+            ? gradeLogSections
+            : rawSections,
+        error: task.error ? String(task.error) : null,
+        summary: String(task.summary || ""),
+        artifacts: analysisTaskDisplayArtifacts(workspacePath, taskId),
+      };
+    });
     const derivedAbilityScores = normalizedTasks.length > 0
       ? this.analysisAbilityScores(normalizedTasks)
       : null;
@@ -3559,7 +4104,7 @@ class RedouLocalService {
       startedAt: result.startedAt || null,
       completedAt: result.completedAt || null,
       updatedAt: result.updatedAt || result.completedAt || result.startedAt || isoNow(),
-      workspacePath: String(result.workspacePath || ""),
+      workspacePath,
       summary: String(result.summary || ""),
       totals: {
         durationMs: toInt(result.totals?.durationMs),
@@ -3694,6 +4239,7 @@ class RedouLocalService {
       }
       const runId = crypto.randomUUID();
       runIds.push(runId);
+      const workspaceTask = this.createAnalysisWorkspaceTask(model, runId, maxIterations);
       const result = this.normalizeAnalysisResult({
         id: model.key,
         key: model.key,
@@ -3718,7 +4264,13 @@ class RedouLocalService {
         runId,
         maxIterations,
         webContents,
+        projectId: workspaceTask.project.id,
+        taskId: workspaceTask.task.id,
+        queuedAt: isoNow(),
       });
+      const queuedItem = this.analysisQueue.at(-1);
+      this.syncAnalysisWorkspaceTaskPlan(queuedItem);
+      this.syncAnalysisWorkspaceQueued(queuedItem);
     }
     this.writeAnalysisStore({ ...store, results });
     this.emitAnalysisEvent(webContents, { type: "changed" });
@@ -3768,6 +4320,8 @@ class RedouLocalService {
     if (this.shuttingDown) return;
     while (this.analysisQueue.length > 0) {
       const item = this.analysisQueue.shift();
+      item.analysisStartedAtMs = Date.now();
+      item.analysisLastActiveAtMs = item.analysisStartedAtMs;
       this.activeAnalysisRuns.set(item.runId, item);
       if (!this.activeAnalysisRun) {
         this.activeAnalysisRun = item;
@@ -3780,13 +4334,14 @@ class RedouLocalService {
             return;
           }
           const message = error instanceof Error ? error.message : String(error);
-          this.updateAnalysisResult(item.key, (result) => ({
+          const failedResult = this.updateAnalysisResult(item.key, (result) => ({
             ...result,
             status: "failed",
             completedAt: isoNow(),
             updatedAt: isoNow(),
             summary: message,
           }));
+          this.syncAnalysisWorkspaceFinished(item, "failed", message, failedResult);
           this.emitAnalysisEvent(item.webContents, { type: "changed", runId: item.runId, error: message });
         })
         .finally(async () => {
@@ -3804,6 +4359,7 @@ class RedouLocalService {
               this.activeAnalysisRun = null;
               this.activeAnalysisRun = this.primaryActiveAnalysisRun();
             }
+            this.emitAnalysisEvent(item.webContents, { type: "changed", runId: item.runId });
             if (!this.shuttingDown) {
               setImmediate(() => this.startAnalysisQueue());
             }
@@ -3856,6 +4412,7 @@ class RedouLocalService {
     mkdirp(path.join(workspace, "projects"));
     mkdirp(path.join(workspace, "reports"));
     mkdirp(path.join(workspace, "logs"));
+    mkdirp(analysisDisplayResultsDir(workspace));
     const promptDir = path.join(workspace, REDOU_CONTEXT_DIR, REDOU_ANALYSIS_DIR, "prompts");
     mkdirp(promptDir);
     for (const task of ANALYSIS_TASKS) {
@@ -3871,6 +4428,28 @@ class RedouLocalService {
       "task_project_judge.py",
       "task_project_evaluate.py",
       "task_project_requirements.txt",
+      "task1_grade_all.sh",
+      "task2_grade_all.sh",
+      "task2_phase0_env_check.sh",
+      "task2_phase1_project_scaffold_check.sh",
+      "task2_phase2_data_logic_check.sh",
+      "task2_phase3_ui_build_check.sh",
+      "task2_phase4_runtime_check.sh",
+      "task2_phase5_report_check.sh",
+      "task3_grade_all.sh",
+      "task3_phase0_env_check.sh",
+      "task3_phase1_scaffold_check.sh",
+      "task3_phase2_initial_failure_check.sh",
+      "task3_phase3_final_pass_check.sh",
+      "task3_phase4_behavior_check.sh",
+      "task3_phase5_report_check.sh",
+      "task4_grade_all.sh",
+      "task4_phase0_env_check.sh",
+      "task4_phase1_sources_notes_check.sh",
+      "task4_phase2_report_comparison_check.sh",
+      "task4_phase3_product_design_check.sh",
+      "task4_phase4_citation_quality_check.sh",
+      "task4_phase5_delivery_check.sh",
       "task5.yaml",
       "task6.yaml",
       "task7.yaml",
@@ -3885,7 +4464,11 @@ class RedouLocalService {
     for (const file of supportFiles) {
       const source = path.join(analyzeRoot, file);
       if (fs.existsSync(source)) {
-        fs.copyFileSync(source, path.join(workspace, file));
+        const target = path.join(workspace, file);
+        fs.copyFileSync(source, target);
+        if (/\.sh$/i.test(file)) {
+          fs.writeFileSync(target, normalizeAnalysisWorkspaceScript(readText(target)), "utf8");
+        }
       }
     }
     for (const dir of [
@@ -3914,7 +4497,7 @@ class RedouLocalService {
     const analysisEnvName =
       context.analysisEnvName || analysisDockerEnvironmentName(provider, model, context.key);
     const modelRunName = context.modelRunName || analysisModelRunName(provider, model, "");
-    const dockerWorkspace = "/workspace";
+    const dockerWorkspace = ANALYSIS_DOCKER_WORKSPACE;
     const benchmarkRoot = dockerWorkspace;
     const taskNumber = String(task.id || "").replace(/^task/, "");
     const taskFolder = `task${taskNumber}`;
@@ -3944,8 +4527,10 @@ class RedouLocalService {
       "At the end, briefly report what was completed, where artifacts were saved, and any failures.",
       `Docker test environment for this model: ${analysisEnvName}.`,
       `Use ${analysisEnvName} wherever the task refers to the Docker Compose service, Docker container, or docker compose exec target.`,
-      "The entire benchmark run root is mounted into Docker as /workspace. Do not mount or use a separate ./workspace folder as /workspace.",
-      "Create and edit benchmark artifacts under /workspace so they persist directly in the Redou analysis workspace.",
+      "Treat /workspace as the only benchmark workspace path inside Docker. All task paths such as /workspace/projects, /workspace/reports, /workspace/logs, and /workspace/model_runs refer to that Docker path.",
+      "Do not write benchmark artifacts to a host-side absolute /workspace path or to a nested ./workspace directory. If you need to create or edit an absolute /workspace path, do it through Docker, for example docker compose exec -T " +
+        `${analysisEnvName} bash -lc 'mkdir -p /workspace/projects /workspace/reports /workspace/logs'.`,
+      "The benchmark run root is mounted into Docker as /workspace, so files created there must persist back into the Redou analysis workspace.",
       "",
       taskPrompt,
     ].join("\n");
@@ -4008,6 +4593,437 @@ class RedouLocalService {
         finish({ code, signal, error: code === 0 ? "" : `Command exited with code ${code}` });
       });
     });
+  }
+
+  backupAnalysisEnvironmentFile(workspacePath, fileName) {
+    const source = path.join(workspacePath, fileName);
+    if (!fs.existsSync(source)) return;
+    const backupPath = path.join(
+      workspacePath,
+      REDOU_CONTEXT_DIR,
+      REDOU_ANALYSIS_DIR,
+      "scheduler",
+      `${fileName}.before-scheduler`,
+    );
+    if (!fs.existsSync(backupPath)) {
+      copyFileAtomic(source, backupPath);
+    }
+  }
+
+  writeAnalysisFallbackDockerEnvironment(workspacePath, envName, reason = "") {
+    mkdirp(workspacePath);
+    this.backupAnalysisEnvironmentFile(workspacePath, "Dockerfile");
+    this.backupAnalysisEnvironmentFile(workspacePath, "docker-compose.yml");
+    const dockerfile = [
+      "FROM node:20-bookworm",
+      "RUN apt-get update \\",
+      "  && apt-get install -y --no-install-recommends \\",
+      "    bash ca-certificates curl git python3 python3-pip python3-venv wget \\",
+      "  && rm -rf /var/lib/apt/lists/*",
+      "WORKDIR /workspace",
+      'CMD ["bash", "-lc", "tail -f /dev/null"]',
+      "",
+    ].join("\n");
+    const compose = [
+      "services:",
+      `  ${envName}:`,
+      "    build:",
+      "      context: .",
+      `    container_name: ${yamlString(envName)}`,
+      `    working_dir: ${yamlString(ANALYSIS_DOCKER_WORKSPACE)}`,
+      "    volumes:",
+      `      - .:${ANALYSIS_DOCKER_WORKSPACE}`,
+      '    command: bash -lc "tail -f /dev/null"',
+      "",
+    ].join("\n");
+    mkdirp(path.join(workspacePath, REDOU_CONTEXT_DIR, REDOU_ANALYSIS_DIR, "scheduler"));
+    fs.writeFileSync(path.join(workspacePath, "Dockerfile"), dockerfile, "utf8");
+    fs.writeFileSync(path.join(workspacePath, "docker-compose.yml"), compose, "utf8");
+    fs.writeFileSync(
+      path.join(workspacePath, REDOU_CONTEXT_DIR, REDOU_ANALYSIS_DIR, "scheduler", "docker-fallback-reason.txt"),
+      `${reason || "Scheduler-created Docker environment."}\n`,
+      "utf8",
+    );
+    return { status: "created", envName, reason };
+  }
+
+  async analysisDockerContainerId(envName, workspacePath) {
+    if (!envName || !workspacePath || this.shuttingDown) {
+      return { status: "skipped", containerId: "", output: "" };
+    }
+    const composeResult = await this.runAnalysisShellCommand({
+      command: "docker",
+      args: ["compose", "ps", "-q", envName],
+      cwd: workspacePath,
+      timeoutMs: 120000,
+    });
+    const composeId = String(composeResult.stdout || composeResult.output || "").trim().split(/\r?\n/).find(Boolean) || "";
+    if (composeResult.code === 0 && composeId) {
+      return { status: "completed", containerId: composeId, output: composeResult.output || composeId };
+    }
+    const inspectResult = await this.runAnalysisShellCommand({
+      command: "docker",
+      args: ["inspect", "-f", "{{.Id}}", envName],
+      cwd: workspacePath,
+      timeoutMs: 120000,
+    });
+    const inspectedId = String(inspectResult.stdout || inspectResult.output || "").trim().split(/\r?\n/).find(Boolean) || "";
+    if (inspectResult.code === 0 && inspectedId) {
+      return { status: "completed", containerId: inspectedId, output: inspectResult.output || inspectedId };
+    }
+    return {
+      status: "failed",
+      containerId: "",
+      output: compactMultiline(`${composeResult.output || ""}\n${inspectResult.output || inspectResult.error || ""}`, 1200),
+    };
+  }
+
+  async copyAnalysisBenchmarkSupportIntoDocker(workspacePath, envName) {
+    const container = await this.analysisDockerContainerId(envName, workspacePath);
+    if (container.status !== "completed" || !container.containerId) {
+      return { status: "skipped", envName, reason: "container not available", output: container.output || "" };
+    }
+
+    const supportEntries = [
+      "task_project_tasks.py",
+      "task_project_prepare.py",
+      "task_project_judge.py",
+      "task_project_evaluate.py",
+      "task_project_requirements.txt",
+      "task1_grade_all.sh",
+      "task2_grade_all.sh",
+      "task2_phase0_env_check.sh",
+      "task2_phase1_project_scaffold_check.sh",
+      "task2_phase2_data_logic_check.sh",
+      "task2_phase3_ui_build_check.sh",
+      "task2_phase4_runtime_check.sh",
+      "task2_phase5_report_check.sh",
+      "task3_grade_all.sh",
+      "task3_phase0_env_check.sh",
+      "task3_phase1_scaffold_check.sh",
+      "task3_phase2_initial_failure_check.sh",
+      "task3_phase3_final_pass_check.sh",
+      "task3_phase4_behavior_check.sh",
+      "task3_phase5_report_check.sh",
+      "task4_grade_all.sh",
+      "task4_phase0_env_check.sh",
+      "task4_phase1_sources_notes_check.sh",
+      "task4_phase2_report_comparison_check.sh",
+      "task4_phase3_product_design_check.sh",
+      "task4_phase4_citation_quality_check.sh",
+      "task4_phase5_delivery_check.sh",
+      "task5.yaml",
+      "task6.yaml",
+      "task7.yaml",
+      "task8.yaml",
+      "task9.yaml",
+      "task5_grade_all.sh",
+      "task6_grade_all.sh",
+      "task7_grade_all.sh",
+      "task8_grade_all.sh",
+      "task9_grade_all.sh",
+      "task5_source",
+      "task5_tests",
+      "task6_source",
+      "task6_tests",
+      "task7_source",
+      "task7_tests",
+      "task8_source",
+      "task8_tests",
+      "task9_source",
+      "task9_tests",
+    ];
+    const copied = [];
+    const missing = [];
+    for (const entry of supportEntries) {
+      const source = path.join(workspacePath, entry);
+      if (!fs.existsSync(source)) continue;
+      const containerPath = `${ANALYSIS_DOCKER_WORKSPACE}/${entry.replace(/\\/g, "/")}`;
+      const existsResult = await this.runAnalysisShellCommand({
+        command: "docker",
+        args: ["exec", container.containerId, "bash", "-lc", `test -e ${shellQuoteSingle(containerPath)}`],
+        cwd: workspacePath,
+        timeoutMs: 120000,
+      });
+      if (existsResult.code === 0) continue;
+      const stat = fs.statSync(source);
+      if (stat.isDirectory()) {
+        await this.runAnalysisShellCommand({
+          command: "docker",
+          args: ["exec", container.containerId, "bash", "-lc", `mkdir -p ${shellQuoteSingle(containerPath)}`],
+          cwd: workspacePath,
+          timeoutMs: 120000,
+        });
+      }
+      const cpSource = stat.isDirectory() ? path.join(source, ".") : source;
+      const cpTarget = stat.isDirectory()
+        ? `${container.containerId}:${containerPath}/`
+        : `${container.containerId}:${containerPath}`;
+      const cpResult = await this.runAnalysisShellCommand({
+        command: "docker",
+        args: ["cp", cpSource, cpTarget],
+        cwd: workspacePath,
+        timeoutMs: 240000,
+      });
+      if (cpResult.code === 0) {
+        copied.push(entry);
+      } else {
+        missing.push(`${entry}: ${compactMultiline(cpResult.output || cpResult.error, 400)}`);
+      }
+    }
+    return {
+      status: missing.length ? "failed" : "completed",
+      envName,
+      copied,
+      missing,
+      output: missing.join("\n"),
+    };
+  }
+
+  async ensureAnalysisDockerEnvironment({ workspacePath, provider, model, key, analysisEnvName = "", reason = "" }) {
+    const envName = analysisEnvName || analysisDockerEnvironmentName(provider, model, key);
+    if (!workspacePath || this.shuttingDown) {
+      return { status: "skipped", envName, reason: "workspace unavailable" };
+    }
+
+    const composePath = path.join(workspacePath, "docker-compose.yml");
+    const composeText = readText(composePath);
+    let fallbackReason = "";
+    if (!composeText) {
+      fallbackReason = "docker-compose.yml was missing after task1.";
+    } else if (!analysisComposeHasService(composeText, envName)) {
+      fallbackReason = `docker-compose.yml did not define the expected service ${envName}.`;
+    } else if (!analysisComposeHasWorkspaceMount(composeText)) {
+      fallbackReason = "docker-compose.yml did not mount the benchmark root as /workspace.";
+    }
+
+    let fallbackCreated = false;
+    if (fallbackReason) {
+      this.writeAnalysisFallbackDockerEnvironment(workspacePath, envName, fallbackReason);
+      fallbackCreated = true;
+    }
+
+    const up = async () => this.runAnalysisShellCommand({
+      command: "docker",
+      args: ["compose", "up", "-d", "--build"],
+      cwd: workspacePath,
+      timeoutMs: 900000,
+    });
+    let upResult = await up();
+    if (upResult.code !== 0 && !fallbackCreated) {
+      this.writeAnalysisFallbackDockerEnvironment(
+        workspacePath,
+        envName,
+        `Existing Docker environment failed to start: ${compactMultiline(upResult.output || upResult.error, 800)}`,
+      );
+      fallbackCreated = true;
+      upResult = await up();
+    }
+    if (upResult.code !== 0) {
+      return {
+        status: "failed",
+        envName,
+        createdFallback: fallbackCreated,
+        error: upResult.output || upResult.error || `docker compose up exited with code ${upResult.code}`,
+      };
+    }
+
+    let container = await this.analysisDockerContainerId(envName, workspacePath);
+    if (container.status !== "completed" && !fallbackCreated) {
+      this.writeAnalysisFallbackDockerEnvironment(
+        workspacePath,
+        envName,
+        `Expected Docker service ${envName} did not start from the model compose file.`,
+      );
+      fallbackCreated = true;
+      upResult = await up();
+      container = await this.analysisDockerContainerId(envName, workspacePath);
+    }
+    if (container.status !== "completed") {
+      return {
+        status: "failed",
+        envName,
+        createdFallback: fallbackCreated,
+        error: container.output || `Docker container for ${envName} was not found.`,
+      };
+    }
+
+    const initWorkspace = async () => this.runAnalysisShellCommand({
+      command: "docker",
+      args: [
+        "compose",
+        "exec",
+        "-T",
+        envName,
+        "bash",
+        "-lc",
+        [
+          `mkdir -p ${ANALYSIS_DOCKER_WORKSPACE}/projects ${ANALYSIS_DOCKER_WORKSPACE}/reports ${ANALYSIS_DOCKER_WORKSPACE}/logs ${ANALYSIS_DOCKER_WORKSPACE}/model_runs`,
+          `test -d ${ANALYSIS_DOCKER_WORKSPACE}/projects`,
+          `test -d ${ANALYSIS_DOCKER_WORKSPACE}/reports`,
+          `test -d ${ANALYSIS_DOCKER_WORKSPACE}/logs`,
+        ].join(" && "),
+      ],
+      cwd: workspacePath,
+      timeoutMs: 240000,
+    });
+    let initResult = await initWorkspace();
+    if (initResult.code !== 0 && !fallbackCreated) {
+      this.writeAnalysisFallbackDockerEnvironment(
+        workspacePath,
+        envName,
+        `Existing Docker service could not initialize /workspace: ${compactMultiline(initResult.output || initResult.error, 800)}`,
+      );
+      fallbackCreated = true;
+      upResult = await up();
+      if (upResult.code === 0) {
+        container = await this.analysisDockerContainerId(envName, workspacePath);
+        if (container.status === "completed") {
+          initResult = await initWorkspace();
+        }
+      }
+    }
+    if (initResult.code !== 0) {
+      return {
+        status: "failed",
+        envName,
+        createdFallback: fallbackCreated,
+        error: initResult.output || initResult.error || "Docker workspace initialization failed.",
+      };
+    }
+
+    const supportCopy = await this.copyAnalysisBenchmarkSupportIntoDocker(workspacePath, envName);
+    return {
+      status: supportCopy.status === "failed" ? "failed" : "completed",
+      envName,
+      createdFallback: fallbackCreated,
+      reason: fallbackReason || reason,
+      output: compactMultiline([upResult.output, supportCopy.output].filter(Boolean).join("\n"), 1600),
+      supportCopy,
+    };
+  }
+
+  async syncAnalysisDockerArtifacts(workspacePath, envName, modelRunName = "") {
+    const container = await this.analysisDockerContainerId(envName, workspacePath);
+    if (container.status !== "completed" || !container.containerId) {
+      return { status: "skipped", envName, reason: "container not available", output: container.output || "" };
+    }
+    const entries = ["projects", "reports", "logs"];
+    if (modelRunName) {
+      entries.push(`model_runs/${modelRunName}/results`);
+    } else {
+      entries.push("model_runs");
+    }
+    const copied = [];
+    const failed = [];
+    for (const entry of entries) {
+      const containerPath = `${ANALYSIS_DOCKER_WORKSPACE}/${entry}`;
+      const existsResult = await this.runAnalysisShellCommand({
+        command: "docker",
+        args: ["exec", container.containerId, "bash", "-lc", `test -e ${shellQuoteSingle(containerPath)}`],
+        cwd: workspacePath,
+        timeoutMs: 120000,
+      });
+      if (existsResult.code !== 0) continue;
+      const target = path.join(workspacePath, ...entry.split("/"));
+      mkdirp(target);
+      const cpResult = await this.runAnalysisShellCommand({
+        command: "docker",
+        args: ["cp", `${container.containerId}:${containerPath}/.`, target],
+        cwd: workspacePath,
+        timeoutMs: 300000,
+      });
+      if (cpResult.code === 0) {
+        copied.push(entry);
+      } else {
+        failed.push(`${entry}: ${compactMultiline(cpResult.output || cpResult.error, 400)}`);
+      }
+    }
+    return {
+      status: failed.length ? "failed" : "completed",
+      envName,
+      copied,
+      output: failed.join("\n"),
+    };
+  }
+
+  copyAnalysisDisplayArtifacts(workspacePath, taskId, modelRunName = "") {
+    const target = path.join(analysisDisplayResultsDir(workspacePath), taskId);
+    mkdirp(target);
+    copyDirectoryRecursive(path.join(workspacePath, "logs"), path.join(target, "logs"));
+    copyDirectoryRecursive(path.join(workspacePath, "reports"), path.join(target, "reports"));
+    if (modelRunName) {
+      copyDirectoryRecursive(
+        path.join(workspacePath, "model_runs", modelRunName, "results"),
+        path.join(target, "model_results"),
+      );
+    }
+    return target;
+  }
+
+  async runAnalysisTaskBatchPostprocess({ workspacePath, task, analysisEnvName, modelRunName }) {
+    const script = analysisTaskBatchScript(task?.id);
+    if (!script) {
+      return { status: "skipped", summary: "No batch script for task.", logPath: "" };
+    }
+    const scriptPath = path.join(workspacePath, script);
+    if (!fs.existsSync(scriptPath)) {
+      return { status: "skipped", summary: `${script} not found in analysis workspace.`, logPath: "" };
+    }
+    normalizeAnalysisWorkspaceScriptsInPlace(workspacePath);
+    const bashCommand = [
+      `export DOCKER_SERVICE=${shellQuoteSingle(analysisEnvName)}`,
+      `export DOCKER_WORKSPACE=${shellQuoteSingle(ANALYSIS_DOCKER_WORKSPACE)}`,
+      `export DOCKER_BENCHMARK_ROOT=${shellQuoteSingle(ANALYSIS_DOCKER_WORKSPACE)}`,
+      `export MODEL_NAME=${shellQuoteSingle(modelRunName)}`,
+      "export SUBMIT_INDEX='1'",
+      `bash ${shellQuoteSingle(`./${script}`)}`,
+    ].join("; ");
+    const result = await this.runAnalysisShellCommand({
+      command: "bash",
+      args: ["-lc", bashCommand],
+      cwd: workspacePath,
+      timeoutMs: 900000,
+      env: {
+        DOCKER_SERVICE: analysisEnvName,
+        DOCKER_WORKSPACE: ANALYSIS_DOCKER_WORKSPACE,
+        DOCKER_BENCHMARK_ROOT: ANALYSIS_DOCKER_WORKSPACE,
+        MODEL_NAME: modelRunName,
+        SUBMIT_INDEX: "1",
+      },
+    });
+    const logText = [
+      `Task: ${task?.id || ""}`,
+      `Script: ${script}`,
+      `Docker service: ${analysisEnvName}`,
+      `Model run: ${modelRunName}`,
+      `Exit code: ${result.code == null ? "n/a" : result.code}`,
+      result.signal ? `Signal: ${result.signal}` : "",
+      result.error ? `Error: ${result.error}` : "",
+      "",
+      result.output || "",
+      "",
+    ].filter((line) => line !== "").join("\n");
+    const logName = `${task?.id || "task"}_grade_all.log`;
+    const logPath = path.join(workspacePath, "logs", logName);
+    const reportLogPath = path.join(workspacePath, "reports", logName);
+    const displayDir = path.join(analysisDisplayResultsDir(workspacePath), task?.id || "task");
+    mkdirp(path.dirname(logPath));
+    mkdirp(path.dirname(reportLogPath));
+    mkdirp(displayDir);
+    fs.writeFileSync(logPath, logText, "utf8");
+    fs.writeFileSync(reportLogPath, logText, "utf8");
+    fs.writeFileSync(path.join(displayDir, logName), logText, "utf8");
+    const artifactsDir = this.copyAnalysisDisplayArtifacts(workspacePath, task?.id || "task", modelRunName);
+    const status = result.code === 0 ? "completed" : "failed";
+    return {
+      status,
+      code: result.code,
+      logPath,
+      artifactsDir,
+      summary: `Batch post-processing ${status}: ${path.relative(workspacePath, logPath).replace(/\\/g, "/")}`,
+      output: result.output,
+    };
   }
 
   async removeAnalysisDockerContainer(envName, cwd = "") {
@@ -4107,6 +5123,7 @@ class RedouLocalService {
     const workspacePath = this.prepareAnalysisWorkspace(item.key, item.runId);
     item.workspacePath = workspacePath;
     const analysisEnvName = analysisDockerEnvironmentName(item.provider, item.model, item.key);
+    const modelRunName = analysisModelRunName(item.provider, item.model, item.key);
     try {
       const staleCleanup = await this.removeAnalysisDockerContainer(analysisEnvName, workspacePath);
       if (staleCleanup.status === "completed") {
@@ -4124,15 +5141,50 @@ class RedouLocalService {
       workspacePath,
       summary: "Running analyze/task1-9 with Hermes Agent.",
     }));
+    this.syncAnalysisWorkspaceStarted(item, workspacePath, analysisEnvName);
     this.emitAnalysisEvent(item.webContents, { type: "changed", runId: item.runId });
 
     let failed = false;
+    let dockerReady = false;
+    const ensureDockerReady = async (reason) => {
+      if (dockerReady) {
+        return { status: "completed", envName: analysisEnvName, cached: true };
+      }
+      const result = await this.ensureAnalysisDockerEnvironment({
+        workspacePath,
+        provider: item.provider,
+        model: item.model,
+        key: item.key,
+        analysisEnvName,
+        reason,
+      });
+      if (result.status === "failed") {
+        throw new Error(`Docker test environment ${analysisEnvName} is unavailable: ${compactMultiline(result.error || result.output, 1000)}`);
+      }
+      dockerReady = result.status === "completed";
+      return result;
+    };
+    const appendTaskSummary = (summary, extra) => [summary, extra].filter(Boolean).join("\n\n");
+    const postProcessTask = async (task) => {
+      await this.syncAnalysisDockerArtifacts(workspacePath, analysisEnvName, modelRunName);
+      const batch = await this.runAnalysisTaskBatchPostprocess({
+        workspacePath,
+        task,
+        analysisEnvName,
+        modelRunName,
+      });
+      await this.syncAnalysisDockerArtifacts(workspacePath, analysisEnvName, modelRunName);
+      this.copyAnalysisDisplayArtifacts(workspacePath, task.id, modelRunName);
+      return batch;
+    };
+
     for (const task of ANALYSIS_TASKS) {
       if (this.shuttingDown || item.stopRequested) {
         this.markAnalysisInterrupted(item, "Stopped because Redou Agent is closing.");
         return;
       }
       const startedAt = isoNow();
+      this.syncAnalysisWorkspaceTaskStage(item, task, "running", "Running");
       this.updateAnalysisTask(item.key, task.id, () => ({
         status: "running",
         startedAt,
@@ -4143,16 +5195,45 @@ class RedouLocalService {
       this.emitAnalysisEvent(item.webContents, { type: "changed", runId: item.runId, taskId: task.id });
 
       try {
+        if (task.id !== "task1") {
+          await ensureDockerReady(`Starting ${task.id}.`);
+        }
         const taskResult = await this.runAnalysisTaskProcess({
           ...item,
           workspacePath,
           task,
-          prompt: this.analysisPromptForTask(task, item.provider, item.model, { key: item.key }),
+          prompt: this.analysisPromptForTask(task, item.provider, item.model, {
+            key: item.key,
+            analysisEnvName,
+            modelRunName,
+          }),
+          modelRunName,
+          postProcessBeforeEvaluation: task.id === "task1"
+            ? null
+            : async () => postProcessTask(task),
         });
+        if (task.id === "task1" && taskResult.status !== "interrupted") {
+          try {
+            const ensureResult = await ensureDockerReady("Task1 completed; preparing Docker environment for remaining analysis tasks.");
+            const batch = await postProcessTask(task);
+            const details = [
+              ensureResult.createdFallback ? `Scheduler created Docker test environment ${analysisEnvName}.` : "",
+              batch.summary,
+            ].filter(Boolean).join("\n");
+            taskResult.summary = appendTaskSummary(taskResult.summary, details);
+          } catch (postError) {
+            failed = true;
+            const message = postError instanceof Error ? postError.message : String(postError);
+            taskResult.status = "failed";
+            taskResult.error = appendTaskSummary(taskResult.error, message);
+            taskResult.summary = appendTaskSummary(taskResult.summary, message);
+          }
+        }
         if (taskResult.status === "failed") {
           failed = true;
         }
         this.updateAnalysisTask(item.key, task.id, () => taskResult);
+        this.syncAnalysisWorkspaceTaskStage(item, task, taskResult.status, taskResult.summary, taskResult);
       } catch (error) {
         if (this.shuttingDown || item.stopRequested) {
           this.markAnalysisInterrupted(item, "Stopped because Redou Agent is closing.");
@@ -4168,6 +5249,10 @@ class RedouLocalService {
           score: 0,
           sections: [],
         }));
+        this.syncAnalysisWorkspaceTaskStage(item, task, "failed", message, {
+          score: 0,
+          durationMs: 0,
+        });
       }
       this.updateAnalysisResult(item.key, (result) => ({
         ...result,
@@ -4181,7 +5266,7 @@ class RedouLocalService {
       }
     }
 
-    this.updateAnalysisResult(item.key, (result) => {
+    const finalResult = this.updateAnalysisResult(item.key, (result) => {
       const completedTasks = result.tasks.filter((task) => task.status === "completed").length;
       const totals = this.analysisTotals(result.tasks);
       const abilityScores = this.analysisAbilityScores(result.tasks);
@@ -4200,6 +5285,12 @@ class RedouLocalService {
         summary: `${completedTasks}/${ANALYSIS_TASKS.length} tasks completed. Overall capability score: ${overall}.`,
       };
     });
+    this.syncAnalysisWorkspaceFinished(
+      item,
+      finalResult?.status || (failed ? "failed" : "completed"),
+      finalResult?.summary || "",
+      finalResult,
+    );
     this.emitAnalysisEvent(item.webContents, { type: "changed", runId: item.runId });
   }
 
@@ -4215,6 +5306,7 @@ class RedouLocalService {
     skipInlineEvaluation = false,
     preparedRunDir = "",
     modelRunName = "",
+    postProcessBeforeEvaluation = null,
   }) {
     return new Promise((resolve, reject) => {
       if (this.shuttingDown) {
@@ -4336,69 +5428,97 @@ class RedouLocalService {
       child.on("error", (error) => {
         childError = error;
       });
-      child.on("exit", (code) => {
-        const currentAnalysisItem = this.activeAnalysisRuns.get(runId);
-        if (currentAnalysisItem?.child === child) {
-          delete currentAnalysisItem.child;
-          delete currentAnalysisItem.currentTaskId;
-        }
-        if (stdoutBuffer.trim()) {
-          try {
-            recordEvent(JSON.parse(stdoutBuffer));
-          } catch {
-            recordEvent({ type: "raw_log", content: stdoutBuffer.trim() });
+      child.on("exit", async (code) => {
+        try {
+          const currentAnalysisItem = this.activeAnalysisRuns.get(runId);
+          if (currentAnalysisItem?.child === child) {
+            delete currentAnalysisItem.child;
+            delete currentAnalysisItem.currentTaskId;
           }
-        }
-        if (stderrBuffer.trim()) {
-          recordEvent({ type: "raw_log", content: redact(stderrBuffer.trim()), metadata: { stream: "stderr", folded: true } });
-        }
+          if (stdoutBuffer.trim()) {
+            try {
+              recordEvent(JSON.parse(stdoutBuffer));
+            } catch {
+              recordEvent({ type: "raw_log", content: stdoutBuffer.trim() });
+            }
+          }
+          if (stderrBuffer.trim()) {
+            recordEvent({ type: "raw_log", content: redact(stderrBuffer.trim()), metadata: { stream: "stderr", folded: true } });
+          }
 
-        const completedAtMs = Date.now();
-        const durationMs = Math.max(0, completedAtMs - taskStartedAtMs);
-        const errors = events
-          .filter((event) => event.type === "error")
-          .map((event) => event.message || event.content)
-          .filter(Boolean);
-        const failureSummary = finalAssistantText || compact(errors.join(" "), 600);
-        const modelCallFailed = isAnalysisModelCallFailure(failureSummary);
-        const evaluation = skipInlineEvaluation || modelCallFailed
-          ? { score: 0, sections: [] }
-          : this.evaluateAnalysisTask(task.id, workspacePath, events, finalAssistantText, {
-              analysisEnvName,
-              modelRunName: resolvedModelRunName,
-            });
-        const stopped = this.shuttingDown || currentAnalysisItem?.stopRequested === true;
-        const status = stopped ? "interrupted" : childError || code !== 0 || modelCallFailed ? "failed" : "completed";
-        const taskResult = {
-          id: task.id,
-          title: task.title,
-          capability: task.capability,
-          status,
-          startedAt: taskStartedAt,
-          completedAt: new Date(completedAtMs).toISOString(),
-          durationMs,
-          inputTokens: toInt(doneMetadata.inputTokens),
-          outputTokens: toInt(doneMetadata.outputTokens),
-          cacheReadTokens: toInt(doneMetadata.cacheReadTokens),
-          reasoningTokens: toInt(doneMetadata.reasoningTokens),
-          apiCalls: toInt(doneMetadata.apiCalls),
-          estimatedCostUsd: Number(doneMetadata.estimatedCostUsd || 0),
-          score: evaluation.score,
-          sections: evaluation.sections,
-          summary: stopped
+          const stopped = this.shuttingDown || currentAnalysisItem?.stopRequested === true;
+          let postProcessResult = null;
+          if (!stopped && typeof postProcessBeforeEvaluation === "function") {
+            try {
+              postProcessResult = await postProcessBeforeEvaluation({
+                events,
+                finalAssistantText,
+                doneMetadata,
+              });
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              postProcessResult = {
+                status: "failed",
+                summary: `Batch post-processing failed: ${message}`,
+                error: message,
+              };
+            }
+          }
+
+          const completedAtMs = Date.now();
+          const durationMs = Math.max(0, completedAtMs - taskStartedAtMs);
+          const errors = events
+            .filter((event) => event.type === "error")
+            .map((event) => event.message || event.content)
+            .filter(Boolean);
+          const failureSummary = finalAssistantText || compact(errors.join(" "), 600);
+          const modelCallFailed = isAnalysisModelCallFailure(failureSummary);
+          const evaluation = skipInlineEvaluation || modelCallFailed
+            ? { score: 0, sections: [] }
+            : this.evaluateAnalysisTask(task.id, workspacePath, events, finalAssistantText, {
+                analysisEnvName,
+                modelRunName: resolvedModelRunName,
+              });
+          const postProcessFailed = postProcessResult?.status === "failed";
+          const status = stopped
+            ? "interrupted"
+            : childError || code !== 0 || modelCallFailed || postProcessFailed
+              ? "failed"
+              : "completed";
+          const summary = stopped
             ? "Stopped because Redou Agent is closing."
-            : failureSummary,
-          error: stopped
-            ? "Stopped because Redou Agent is closing."
-            : childError
-              ? childError.message
-              : modelCallFailed
-                ? failureSummary
-                : status === "failed"
-                ? errors.join("\n") || `Exited with code ${code}`
-                : null,
-        };
-        resolve(taskResult);
+            : [failureSummary, postProcessResult?.summary].filter(Boolean).join("\n\n");
+          const taskResult = {
+            id: task.id,
+            title: task.title,
+            capability: task.capability,
+            status,
+            startedAt: taskStartedAt,
+            completedAt: new Date(completedAtMs).toISOString(),
+            durationMs,
+            inputTokens: toInt(doneMetadata.inputTokens),
+            outputTokens: toInt(doneMetadata.outputTokens),
+            cacheReadTokens: toInt(doneMetadata.cacheReadTokens),
+            reasoningTokens: toInt(doneMetadata.reasoningTokens),
+            apiCalls: toInt(doneMetadata.apiCalls),
+            estimatedCostUsd: Number(doneMetadata.estimatedCostUsd || 0),
+            score: evaluation.score,
+            sections: evaluation.sections,
+            summary,
+            error: stopped
+              ? "Stopped because Redou Agent is closing."
+              : childError
+                ? childError.message
+                : modelCallFailed
+                  ? failureSummary
+                  : status === "failed"
+                  ? [errors.join("\n") || (code !== 0 ? `Exited with code ${code}` : ""), postProcessResult?.error].filter(Boolean).join("\n") || null
+                  : null,
+          };
+          resolve(taskResult);
+        } catch (error) {
+          reject(error);
+        }
       });
 
       child.stdin.write(JSON.stringify({
@@ -4427,6 +5547,12 @@ class RedouLocalService {
     }
     const analysisEnvName = String(context.analysisEnvName || "agent-lab").trim() || "agent-lab";
     const escapedEnvName = regexEscape(analysisEnvName);
+    const gradeLogText = analysisTaskGradeLogText(workspacePath, taskId);
+    const gradeLogScore = analysisFinalScoreFromLog(gradeLogText);
+    const gradeLogSections = analysisTaskSectionsFromGradeLog(taskId, gradeLogText);
+    if (["task1", "task2", "task3", "task4"].includes(taskId) && gradeLogSections.length > 0) {
+      return { score: gradeLogScore ?? averageScore(gradeLogSections), sections: gradeLogSections };
+    }
     if (taskId === "task1") {
       const dockerfile = pathExists(workspacePath, "Dockerfile");
       const compose = readRelativeText(workspacePath, "docker-compose.yml");
@@ -4453,7 +5579,7 @@ class RedouLocalService {
         (hasAny(allEventText, [/docker compose ps/i]) ? 22 : 0) +
         (hasAny(allEventText, [/node -v|npm -v|python3 --version|pip --version|git --version|curl --version|wget --version/i]) ? 44 : 0),
       );
-      return { score: averageScore(sections), sections };
+      return { score: gradeLogScore ?? averageScore(sections), sections };
     }
 
     if (taskId === "task2") {
@@ -4478,7 +5604,7 @@ class RedouLocalService {
         sectionScore("verification", "Runtime verification", hasAny(commands, [/curl|npm run dev|npm start/i]) ? 100 : 0, "Runtime/curl command usage"),
         sectionScore("report", "Delivery report", report.length > 700 ? 100 : report ? 55 : 0, "agent-task-board-report.md"),
       ];
-      return { score: averageScore(sections), sections };
+      return { score: gradeLogScore ?? averageScore(sections), sections };
     }
 
     if (taskId === "task3") {
@@ -4527,7 +5653,7 @@ class RedouLocalService {
           (hasAny(combined, [/isPalindrome\s*\(/]) ? 12 : 0)
         ), "Required functions"),
       ];
-      return { score: averageScore(sections), sections };
+      return { score: gradeLogScore ?? averageScore(sections), sections };
     }
 
     if (taskId === "task4") {
@@ -4544,7 +5670,7 @@ class RedouLocalService {
       ), "Plan sections"),
       sectionScore("container_check", "Container file check", report && hasContainerExecCommand(commands, analysisEnvName, [reportCheckRe]) ? 100 : 0, `${analysisEnvName} file verification`),
     ];
-      return { score: averageScore(sections), sections };
+      return { score: gradeLogScore ?? averageScore(sections), sections };
     }
 
     const migratedMatch = /^task([5-9])$/.exec(taskId);
@@ -4558,20 +5684,27 @@ class RedouLocalService {
         summary = readRelativeJson(workspacePath, `${resultsRel}/task${taskNumber}_submit_${index}_summary.json`);
         if (summary) break;
       }
-      const metric = Number(summary?.current_metric || summary?.judge_result?.metric || 0);
+      const testRatio = analysisTestPassRatio(summary);
+      const testScore = testRatio * 100;
+      const testCounts = analysisTestCounts(summary);
+      const testEvidence = testCounts
+        ? `${testCounts.passedCount}/${testCounts.adjustedTotal} passed`
+        : summary
+          ? `metric=${testRatio}`
+          : "summary json missing";
       const report = readRelativeText(workspacePath, `${resultsRel}/task${taskNumber}_report.md`);
       const runFiles = listFilesRecursive(path.join(workspacePath, "model_runs", modelRunName, `task${taskNumber}`), 220);
       const prepareRe = new RegExp(`task_project_prepare\\.py[^\\r\\n]*task\\s+${taskNumber}|task_project_prepare\\.py`, "i");
       const evaluateRe = new RegExp(`task_project_evaluate\\.py[^\\r\\n]*task\\s+${taskNumber}|task_project_evaluate\\.py`, "i");
       const sections = [
         sectionScore("working_copy", "Isolated working copy", runFiles.length > 0 ? 100 : 0, `${runFiles.length} files in ${runRel}`),
-        sectionScore("automated_tests", "Automated hidden tests", metric * 100, summary ? `metric=${metric}` : "summary json missing"),
+        sectionScore("automated_tests", "Automated hidden tests", testScore, testEvidence),
         sectionScore("official_submission", "Official evaluator run", summary ? 100 : hasAny(allEventText, [evaluateRe]) ? 50 : 0, "task_project_evaluate.py summary"),
         sectionScore("source_integrity", "Original source untouched", summary?.original_source_unchanged === true ? 100 : summary ? 20 : 0, "original source checksum"),
         sectionScore("container_execution", "Container-only commands", hasContainerExecCommand(commands, analysisEnvName, [prepareRe]) || hasContainerExecCommand(commands, analysisEnvName, [evaluateRe]) ? 100 : 0, `${analysisEnvName} prepare/evaluate usage`),
         sectionScore("report", "Delivery report", report.length > 1000 ? 100 : report ? 55 : 0, `task${taskNumber}_report.md`),
       ];
-      return { score: averageScore(sections), sections };
+      return { score: summary ? clampScore(testScore) : 0, sections };
     }
 
     return { score: 0, sections: [] };
@@ -6436,6 +7569,8 @@ class RedouLocalService {
         REDOU_HERMES_PROFILE: project.hermesProfile,
         HERMES_INTERACTIVE: "1",
         HERMES_EXEC_ASK: "",
+        REDOU_RUN_ID: runId,
+        REDOU_TURN_ID: currentEnvelope.turnId,
         PYTHONUTF8: "1",
         PYTHONUNBUFFERED: "1",
       }),
@@ -6494,6 +7629,12 @@ class RedouLocalService {
           hermesSessionId: sessionId,
         },
       };
+      if (event.type === "run_stage") {
+        event.runId = event.runId || runId;
+        event.projectId = event.projectId || projectId;
+        event.taskId = event.taskId || taskId;
+        event.turnId = event.turnId || currentEnvelope.turnId;
+      }
       this.updateActiveRunFromEvent(runRecord, event);
       collectTurnArtifactFromEvent(runRecord.turnArtifacts, event);
       const command = event.type === "tool_start" ? inferCommandFromTool(event) : null;

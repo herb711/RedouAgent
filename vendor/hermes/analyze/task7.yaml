@@ -13,7 +13,6 @@ test_files:
   - tests/
 
 total_tests: 108
-pass_threshold: 90
 test_command: "python .judge/tests/run_all.py"
 
 requires:

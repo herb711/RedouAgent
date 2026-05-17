@@ -51,6 +51,153 @@ test("analysis prompts replace the fixed docker environment per model", () => {
   assert.match(prompt, /\bagent-lab-openai-gpt-test\b/);
   assert.doesNotMatch(prompt, /agent-lab(?!-[a-z0-9])/);
   assert.match(prompt, /docker compose exec agent-lab-openai-gpt-test/);
+  assert.match(prompt, /Treat \/workspace as the only benchmark workspace path inside Docker/);
+  assert.match(prompt, /Do not write benchmark artifacts to a host-side absolute \/workspace path/);
+  assert.equal(
+    fs.readFileSync(path.join(root, "vendor", "hermes", "analyze", "task2.md"), "utf8"),
+    [
+      "Docker Compose service: agent-lab",
+      "Docker container: agent-lab",
+      'Run: docker compose exec agent-lab bash -lc "npm test"',
+    ].join("\n"),
+  );
+});
+
+test("analysis workspace copies and rewrites docker batch scripts without changing sources", () => {
+  const { root, service } = makeService();
+  const analyzeRoot = path.join(root, "vendor", "hermes", "analyze");
+  fs.mkdirSync(analyzeRoot, { recursive: true });
+  fs.writeFileSync(path.join(analyzeRoot, "task1.md"), "Task 1\n", "utf8");
+  fs.writeFileSync(path.join(analyzeRoot, "task1_grade_all.sh"), "docker compose exec \"$SERVICE\" bash -lc \"pwd\"\n", "utf8");
+  fs.writeFileSync(
+    path.join(analyzeRoot, "task2_phase0_env_check.sh"),
+    [
+      "#!/usr/bin/env bash",
+      'SERVICE="agent-lab"',
+      'docker compose exec "$SERVICE" bash -lc "pwd"',
+      "",
+    ].join("\r\n"),
+    "utf8",
+  );
+
+  const workspace = service.prepareAnalysisWorkspace("openai--gpt-test", "run-scripts");
+
+  assert.equal(fs.existsSync(path.join(workspace, "task1_grade_all.sh")), true);
+  const copiedPhase = fs.readFileSync(path.join(workspace, "task2_phase0_env_check.sh"), "utf8");
+  assert.doesNotMatch(copiedPhase, /\r/);
+  assert.match(copiedPhase, /SERVICE="\$\{DOCKER_SERVICE:-agent-lab\}"/);
+  assert.match(copiedPhase, /docker compose exec -T "\$SERVICE"/);
+  const sourcePhase = fs.readFileSync(path.join(analyzeRoot, "task2_phase0_env_check.sh"), "utf8");
+  assert.match(sourcePhase, /^SERVICE="agent-lab"$/m);
+  assert.doesNotMatch(sourcePhase, /exec -T/);
+});
+
+test("analysis scheduler creates a fallback docker environment when task1 did not", async () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  const calls = [];
+  service.runAnalysisShellCommand = async (input) => {
+    calls.push(input);
+    if (input.args.join(" ") === "compose ps -q agent-lab-openai-gpt-test") {
+      return { code: 0, stdout: "container-id\n", output: "container-id" };
+    }
+    return { code: 0, stdout: "", output: "ok" };
+  };
+
+  const result = await service.ensureAnalysisDockerEnvironment({
+    workspacePath: workspace,
+    provider: "openai",
+    model: "gpt-test",
+    key: "openai--gpt-test",
+    analysisEnvName: "agent-lab-openai-gpt-test",
+    reason: "test",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.createdFallback, true);
+  const compose = fs.readFileSync(path.join(workspace, "docker-compose.yml"), "utf8");
+  assert.match(compose, /agent-lab-openai-gpt-test:/);
+  assert.match(compose, /\.:\/workspace/);
+  assert.ok(calls.some((call) => call.args.join(" ") === "compose up -d --build"));
+  assert.ok(calls.some((call) => call.args.includes("exec") && call.args.includes("-T")));
+});
+
+test("analysis batch postprocess writes display logs with docker environment variables", async () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.writeFileSync(path.join(workspace, "task5_grade_all.sh"), "#!/usr/bin/env bash\necho ok\n", "utf8");
+  let captured = null;
+  service.runAnalysisShellCommand = async (input) => {
+    captured = input;
+    return { code: 0, output: "grade output" };
+  };
+
+  const result = await service.runAnalysisTaskBatchPostprocess({
+    workspacePath: workspace,
+    task: { id: "task5", title: "Task 5" },
+    analysisEnvName: "agent-lab-openai-gpt-test",
+    modelRunName: "gpt-test",
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(captured.args[0], "-lc");
+  assert.match(captured.args[1], /export DOCKER_SERVICE='agent-lab-openai-gpt-test'/);
+  assert.match(captured.args[1], /bash '.\/task5_grade_all\.sh'/);
+  assert.doesNotMatch(captured.args[1], /[A-Za-z]:\\/);
+  assert.equal(captured.env.DOCKER_SERVICE, "agent-lab-openai-gpt-test");
+  assert.equal(captured.env.DOCKER_BENCHMARK_ROOT, "/workspace");
+  assert.equal(captured.env.MODEL_NAME, "gpt-test");
+  assert.equal(fs.existsSync(path.join(workspace, "logs", "task5_grade_all.log")), true);
+  assert.equal(fs.existsSync(path.join(workspace, "reports", "task5_grade_all.log")), true);
+  assert.equal(
+    fs.existsSync(path.join(workspace, ".redou", "analysis", "results", "task5", "task5_grade_all.log")),
+    true,
+  );
+});
+
+test("analysis benchmark response exposes display artifacts for the UI", () => {
+  const { root, service } = makeService();
+  const key = "openai--gpt-test";
+  const workspace = path.join(root, "workspace");
+  const displayDir = path.join(workspace, ".redou", "analysis", "results", "task5");
+  fs.mkdirSync(path.join(displayDir, "reports"), { recursive: true });
+  fs.mkdirSync(path.join(displayDir, "logs"), { recursive: true });
+  fs.writeFileSync(path.join(displayDir, "task5_grade_all.log"), "Final Score: 100 / 100\n", "utf8");
+  fs.writeFileSync(path.join(displayDir, "reports", "task5_report.md"), "report\n", "utf8");
+  fs.writeFileSync(path.join(displayDir, "logs", "task5.log"), "log\n", "utf8");
+  service.writeAnalysisStore({
+    version: 1,
+    results: [
+      {
+        key,
+        runId: "run-artifacts",
+        provider: "openai",
+        model: "gpt-test",
+        status: "completed",
+        workspacePath: workspace,
+        tasks: [
+          {
+            id: "task5",
+            title: "Task 5",
+            capability: "debugging",
+            status: "completed",
+            score: 100,
+            sections: [],
+          },
+        ],
+      },
+    ],
+  });
+
+  const result = service.getAnalysisBenchmarks().results[0];
+  const artifacts = result.tasks[0].artifacts;
+  assert.equal(artifacts.rootPath, displayDir);
+  assert.equal(artifacts.batchLogPath, path.join(displayDir, "task5_grade_all.log"));
+  assert.match(artifacts.batchLogPreview, /Final Score: 100/);
+  assert.deepEqual(artifacts.reports, ["task5_report.md"]);
+  assert.deepEqual(artifacts.logs, ["task5.log"]);
 });
 
 test("analysis workspace falls back when the previous workspace is locked", () => {
@@ -291,6 +438,238 @@ test("analysis task4 container check requires the delivered report and an in-con
   assert.equal(deliveredReport.sections.find((section) => section.id === "container_check").score, 100);
 });
 
+test("analysis task4 preserves partial score from the batch grade log", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(path.join(workspace, "logs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(workspace, "logs", "task4_grade_all.log"),
+    [
+      "Task: task4",
+      "==============================",
+      "Running Task4 Phase 0: Environment (10 pts)",
+      "==============================",
+      "Task4 Phase 0: Environment PASS: +10",
+      "==============================",
+      "Running Task4 Phase 1: Sources and Notes (20 pts)",
+      "==============================",
+      "Task4 Phase 1: Sources and Notes PASS: +20",
+      "==============================",
+      "Running Task4 Phase 2: Report and Comparison (25 pts)",
+      "==============================",
+      "Task4 Phase 2: Report and Comparison FAIL: +0",
+      "==============================",
+      "Final Score: 30 / 100",
+      "==============================",
+      "Result: Failed",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const evaluation = service.evaluateAnalysisTask("task4", workspace, [], "", {
+    analysisEnvName: "agent-lab-openai-gpt-test",
+  });
+
+  assert.equal(evaluation.score, 30);
+
+  service.writeAnalysisStore({
+    version: 1,
+    results: [
+      {
+        key: "openai--gpt-test",
+        provider: "openai",
+        model: "gpt-test",
+        workspacePath: workspace,
+        tasks: [
+          {
+            id: "task4",
+            title: "Research and product plan",
+            status: "failed",
+            score: 0,
+            sections: [],
+          },
+        ],
+      },
+    ],
+  });
+  const storedTask = service.getAnalysisBenchmarks().results[0].tasks[0];
+  assert.equal(storedTask.score, 30);
+});
+
+test("analysis task1-4 sections come from batch grade logs", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(path.join(workspace, "logs"), { recursive: true });
+  fs.writeFileSync(
+    path.join(workspace, "logs", "task2_grade_all.log"),
+    [
+      "Task: task2",
+      "==============================",
+      "Running Phase 0: Environment (10 pts)",
+      "==============================",
+      "Phase 0: Environment PASS: +10",
+      "==============================",
+      "Running Phase 1: Scaffold (15 pts)",
+      "==============================",
+      "Phase 1: Scaffold FAIL: +0",
+      "==============================",
+      "Running Phase 2: Data Logic (20 pts)",
+      "==============================",
+      "Phase 2: Data Logic FAIL: +0",
+      "==============================",
+      "Running Phase 3: UI and Build (20 pts)",
+      "==============================",
+      "Phase 3: UI and Build PASS: +20",
+      "==============================",
+      "Running Phase 4: Runtime Curl (20 pts)",
+      "==============================",
+      "Phase 4: Runtime Curl PASS: +20",
+      "==============================",
+      "Running Phase 5: Report (15 pts)",
+      "==============================",
+      "Phase 5: Report FAIL: +0",
+      "==============================",
+      "Final Score: 50 / 100",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const evaluation = service.evaluateAnalysisTask(
+    "task2",
+    workspace,
+    [],
+    "All phases passed and the report is complete.",
+    { analysisEnvName: "agent-lab-openai-gpt-test" },
+  );
+
+  assert.equal(evaluation.score, 50);
+  assert.equal(evaluation.sections.find((section) => section.id === "project_created").score, 0);
+  assert.equal(evaluation.sections.find((section) => section.id === "persistence").score, 0);
+  assert.equal(evaluation.sections.find((section) => section.id === "features").score, 100);
+  assert.equal(evaluation.sections.find((section) => section.id === "report").score, 0);
+});
+
+test("analysis migrated project tasks score by pass ratio instead of threshold", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  const modelRun = "mimo-v2-pro";
+  const runDir = path.join(workspace, "model_runs", modelRun, "task6");
+  const resultsDir = path.join(workspace, "model_runs", modelRun, "results");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(resultsDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, "bottle_plugins.py"), "# plugins\n", "utf8");
+  fs.writeFileSync(path.join(resultsDir, "task6_report.md"), `${"report ".repeat(220)}\n`, "utf8");
+  fs.writeFileSync(
+    path.join(resultsDir, "task6_submit_1_summary.json"),
+    JSON.stringify(
+      {
+        current_metric: 1,
+        original_source_unchanged: true,
+        judge_result: {
+          passed: true,
+          passed_count: 421,
+          total: 429,
+          metric: 1,
+          detail: "passed 421/429; old threshold would have passed",
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+
+  const evaluation = service.evaluateAnalysisTask(
+    "task6",
+    workspace,
+    [
+      {
+        type: "command_start",
+        command: "docker compose exec -T agent-lab-xiaomi-mimo-v2-pro bash -lc 'python task_project_evaluate.py --task 6'",
+      },
+    ],
+    "",
+    { analysisEnvName: "agent-lab-xiaomi-mimo-v2-pro", modelRunName: modelRun },
+  );
+
+  const automated = evaluation.sections.find((section) => section.id === "automated_tests");
+  assert.equal(evaluation.score, 98);
+  assert.equal(automated.score, 98);
+  assert.match(automated.evidence, /421\/429 passed/);
+});
+
+test("analysis migrated project scoring uses actual failed test totals", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  const modelRun = "mimo-v2.5-pro";
+  const runDir = path.join(workspace, "model_runs", modelRun, "task8");
+  const resultsDir = path.join(workspace, "model_runs", modelRun, "results");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(resultsDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, "click.py"), "# click\n", "utf8");
+  fs.writeFileSync(path.join(resultsDir, "task8_report.md"), `${"report ".repeat(220)}\n`, "utf8");
+  fs.writeFileSync(
+    path.join(resultsDir, "task8_submit_1_summary.json"),
+    JSON.stringify(
+      {
+        current_metric: 1.020139,
+        original_source_unchanged: true,
+        judge_result: {
+          passed: false,
+          passed_count: 1469,
+          failed_count: 25,
+          error_count: 0,
+          total: 1440,
+          metric: 1.020139,
+          detail: "passed 1469/1440; score 102.01/100",
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+
+  const evaluation = service.evaluateAnalysisTask(
+    "task8",
+    workspace,
+    [],
+    "",
+    { analysisEnvName: "agent-lab-xiaomi-mimo-v2-5-pro", modelRunName: modelRun },
+  );
+
+  const automated = evaluation.sections.find((section) => section.id === "automated_tests");
+  assert.equal(evaluation.score, 98);
+  assert.equal(automated.score, 98);
+  assert.match(automated.evidence, /1469\/1494 passed/);
+
+  service.writeAnalysisStore({
+    version: 1,
+    results: [
+      {
+        key: "xiaomi--mimo-v2.5-pro",
+        provider: "xiaomi",
+        model: "mimo-v2.5-pro",
+        workspacePath: workspace,
+        tasks: [
+          {
+            id: "task8",
+            title: "Click CLI framework bug fixing",
+            status: "completed",
+            score: 100,
+            sections: [],
+          },
+        ],
+      },
+    ],
+  });
+  const storedTask = service.getAnalysisBenchmarks().results[0].tasks[0];
+  assert.equal(storedTask.score, 98);
+  const storedAutomated = storedTask.sections.find((section) => section.id === "automated_tests");
+  assert.equal(storedAutomated.score, 98);
+  assert.match(storedAutomated.evidence, /1469\/1494 passed/);
+});
+
 test("analysis cleanup tears down the model-specific docker compose environment", async () => {
   const { root, service } = makeService();
   const key = "openai--gpt-test";
@@ -442,6 +821,99 @@ test("analysis benchmark scheduling uses agent max turns and does not cap explic
   assert.equal(service.analysisQueue.at(-1).maxIterations, 5000);
 });
 
+test("analysis benchmark scheduling creates a workspace task for each run", () => {
+  const { service } = makeService();
+  const webContents = {
+    isDestroyed: () => false,
+    send: () => {},
+  };
+  service.startAnalysisQueue = () => {};
+
+  const response = service.startAnalysisBenchmarks(webContents, {
+    models: [{ provider: "openai", model: "gpt-console" }],
+  });
+
+  assert.equal(response.queued, 1);
+  const project = service.getChatProjects().projects.find((item) => item.id === "model-benchmarks");
+  assert.ok(project);
+  assert.equal(project.name, "Model Benchmarks");
+  assert.equal(project.tasks.length, 1);
+
+  const task = project.tasks[0];
+  assert.equal(task.title, "Benchmark: openai / gpt-console");
+  assert.equal(task.kind, "analysis_benchmark");
+  assert.equal(task.analysisRunId, response.runIds[0]);
+  assert.equal(task.analysisKey, "openai--gpt-console");
+  assert.equal(task.model_provider, "openai");
+  assert.equal(task.model, "gpt-console");
+  assert.equal(task.runtime_status, "queued");
+  assert.equal(task.queue_depth, 1);
+
+  const messages = service.getChatTaskMessages(project.id, task.id).messages;
+  assert.equal(messages[0].role, "user");
+  assert.match(messages[0].content, /Run model capability benchmark/);
+  const plannedStages = messages.filter(
+    (message) =>
+      message.metadata.eventType === "run_stage" &&
+      message.metadata.event.status === "pending",
+  );
+  assert.equal(plannedStages.length, 9);
+  assert.equal(plannedStages[0].metadata.event.stage, "task1");
+  assert.equal(plannedStages.at(-1).metadata.event.stage, "task9");
+  assert.equal(messages.at(-1).metadata.eventType, "queue_update");
+});
+
+test("analysis workspace task records benchmark stages and final status", () => {
+  const { service } = makeService();
+  const webContents = {
+    isDestroyed: () => false,
+    send: () => {},
+  };
+  service.startAnalysisQueue = () => {};
+
+  service.startAnalysisBenchmarks(webContents, {
+    models: [{ provider: "openai", model: "gpt-stages" }],
+  });
+  const item = service.analysisQueue[0];
+  const project = service.readProject(item.projectId);
+  const task = project.tasks.find((candidate) => candidate.id === item.taskId);
+
+  service.syncAnalysisWorkspaceTaskStage(item, { id: "task1", title: "Docker environment lab", capability: "environment" }, "running", "Running");
+  service.syncAnalysisWorkspaceTaskStage(item, { id: "task1", title: "Docker environment lab", capability: "environment" }, "completed", "Score 90", {
+    score: 90,
+    durationMs: 1200,
+  });
+  service.syncAnalysisWorkspaceFinished(item, "completed", "1/9 tasks completed.", {
+    totals: {
+      durationMs: 1200,
+      inputTokens: 10,
+      outputTokens: 20,
+      cacheReadTokens: 0,
+      reasoningTokens: 3,
+      apiCalls: 1,
+      estimatedCostUsd: 0.01,
+    },
+  });
+
+  const messages = service.getChatTaskMessages(project.id, task.id).messages;
+  const stageMessages = messages.filter((message) => message.metadata.eventType === "run_stage");
+  assert.equal(stageMessages.length, 11);
+  assert.equal(stageMessages.filter((message) => message.metadata.event.status === "pending").length, 9);
+  const activeStageMessages = stageMessages.filter((message) => message.metadata.event.status !== "pending");
+  assert.equal(activeStageMessages.length, 2);
+  assert.equal(activeStageMessages[0].metadata.event.status, "running");
+  assert.equal(activeStageMessages[1].metadata.event.status, "completed");
+  assert.equal(messages.at(-1).metadata.eventType, "done");
+  assert.equal(messages.at(-1).metadata.event.metadata.completed, true);
+  assert.equal(messages.at(-1).metadata.event.metadata.inputTokens, 10);
+
+  service.analysisQueue = [];
+  const refreshedTask = service.getChatProjects()
+    .projects.find((candidate) => candidate.id === project.id)
+    .tasks.find((candidate) => candidate.id === task.id);
+  assert.equal(refreshedTask.runtime_status, "completed");
+});
+
 test("analysis benchmarks start selected models in parallel", async () => {
   const { service } = makeService();
   const launched = [];
@@ -472,6 +944,13 @@ test("analysis benchmarks start selected models in parallel", async () => {
   assert.equal(service.analysisQueue.length, 0);
   assert.equal(service.activeAnalysisRuns.size, 2);
   assert.deepEqual(new Set(launched), new Set(["openai--gpt-a", "anthropic--claude-b"]));
+
+  const benchmarkProject = service.getChatProjects().projects.find((project) => project.id === "model-benchmarks");
+  assert.ok(benchmarkProject);
+  assert.deepEqual(
+    new Set(benchmarkProject.tasks.map((task) => task.runtime_status)),
+    new Set(["running"]),
+  );
 
   const benchmarks = service.getAnalysisBenchmarks();
   assert.equal(benchmarks.queueDepth, 0);

@@ -60,5 +60,5 @@ You may submit up to three times.
 ## Final report
 
 Create `@@RESULTS_DIR@@/task7_report.md` with implementation notes, commands
-run, official evaluation results, best metric, whether the `90 / 108` threshold
-was reached, and confirmation that the original `task7_source/` was not edited.
+run, official evaluation results, best pass count and proportional score, and
+confirmation that the original `task7_source/` was not edited.

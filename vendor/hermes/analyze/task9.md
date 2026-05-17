@@ -58,6 +58,6 @@ You may submit up to three times.
 ## Final report
 
 Create `@@RESULTS_DIR@@/task9_report.md` with changed files, implemented
-extension behavior, commands run, official evaluation results, best metric,
-whether the `940 / 950` threshold was reached, and confirmation that the original
-`task9_source/` was not edited.
+extension behavior, commands run, official evaluation results, best pass count
+and proportional score, and confirmation that the original `task9_source/` was
+not edited.

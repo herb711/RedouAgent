@@ -187,6 +187,7 @@ from agent.trajectory import (
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
 from hermes_cli.config import cfg_get
+from hermes_cli.run_stage import RunStageEmitter, infer_run_stage_from_tool
 
 
 
@@ -1315,6 +1316,10 @@ class AIAgent:
         self.interim_assistant_callback = interim_assistant_callback
         self.status_callback = status_callback
         self.tool_gen_callback = tool_gen_callback
+        self._run_stage_emitter = RunStageEmitter(self._emit_run_stage_event)
+        self._run_stage_task_id: str | None = None
+        self._run_stage_run_id: str | None = None
+        self._run_stage_turn_id: str | None = None
 
         
         # Tool execution state — allows _vprint during tool execution
@@ -2827,6 +2832,51 @@ class AIAgent:
                 self.status_callback("warn", message)
             except Exception:
                 logger.debug("status_callback error in _emit_warning", exc_info=True)
+
+    def _emit_run_stage_event(self, event: Dict[str, Any]) -> None:
+        """Bridge a structured run-stage event into the existing status stream."""
+        if (getattr(self, "platform", "") or "").lower().strip() != "redou":
+            return
+        if not self.status_callback:
+            return
+        try:
+            self.status_callback("run_stage", event)
+        except Exception:
+            logger.debug("status_callback error in _emit_run_stage_event", exc_info=True)
+
+    def _emit_run_stage(
+        self,
+        stage: str,
+        label: Optional[str] = None,
+        status: str = "running",
+        details: Optional[str] = None,
+    ) -> None:
+        """Emit a best-effort Redou run-stage event without affecting execution."""
+        try:
+            self._run_stage_emitter.emit(
+                stage,
+                label,
+                status,
+                details,
+                task_id=getattr(self, "_run_stage_task_id", None),
+                run_id=getattr(self, "_run_stage_run_id", None),
+                turn_id=getattr(self, "_run_stage_turn_id", None),
+            )
+        except Exception:
+            logger.debug("run_stage emission failed", exc_info=True)
+
+    def _emit_run_stage_for_tool(self, tool_name: str, args: Optional[Dict[str, Any]]) -> None:
+        if str(tool_name or "").strip().lower() == "clarify":
+            self._emit_run_stage(
+                "blocked",
+                status="blocked",
+                details="需要用户提供补充信息",
+            )
+            return
+        inferred = infer_run_stage_from_tool(tool_name, args)
+        if inferred:
+            stage, details = inferred
+            self._emit_run_stage(stage, details=details)
 
     # Headers we capture from the dying stream's HTTP response so post-mortem
     # diagnosis can answer "which CF edge / which OpenRouter downstream
@@ -10503,7 +10553,13 @@ class AIAgent:
 
         for tc, name, args, block_result, blocked_by_guardrail in parsed_calls:
             if block_result is not None:
+                self._emit_run_stage(
+                    "blocked",
+                    status="blocked",
+                    details=f"{name} 被策略或工具护栏阻止",
+                )
                 continue
+            self._emit_run_stage_for_tool(name, args)
             if self.tool_progress_callback:
                 try:
                     preview = _build_tool_preview(name, args)
@@ -10890,6 +10946,15 @@ class AIAgent:
                     set_activity_callback(self._touch_activity)
                 except Exception:
                     pass
+
+            if _execution_blocked:
+                self._emit_run_stage(
+                    "blocked",
+                    status="blocked",
+                    details=f"{function_name} 被策略或工具护栏阻止",
+                )
+            else:
+                self._emit_run_stage_for_tool(function_name, function_args)
 
             if not _execution_blocked and self.tool_progress_callback:
                 try:
@@ -11538,6 +11603,18 @@ class AIAgent:
         self._persist_user_message_override = persist_user_message
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
+        try:
+            self._run_stage_emitter.reset()
+            self._run_stage_task_id = os.getenv("REDOU_TASK_ID") or None
+            self._run_stage_run_id = os.getenv("REDOU_RUN_ID") or None
+            self._run_stage_turn_id = os.getenv("REDOU_TURN_ID") or None
+        except Exception:
+            pass
+        self._emit_run_stage(
+            "understanding",
+            status="started",
+            details="正在读取用户请求、目标和约束",
+        )
         # Expose the active task_id so tools running mid-turn (e.g. delegate_task
         # in delegate_tool.py) can identify this agent for the cross-agent file
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at
@@ -11831,6 +11908,12 @@ class AIAgent:
                 _plugin_user_context = "\n\n".join(_ctx_parts)
         except Exception as exc:
             logger.warning("pre_llm_call hook failed: %s", exc)
+
+        self._emit_run_stage(
+            "planning",
+            status="completed",
+            details="已准备执行上下文、工具边界和验证策略",
+        )
 
         # Main conversation loop
         api_call_count = 0
@@ -12244,6 +12327,11 @@ class AIAgent:
                                 continue
                             # No fallback available — return with clear message
                             self._persist_session(messages, conversation_history)
+                            self._emit_run_stage(
+                                "failed",
+                                status="failed",
+                                details=f"Invalid API response after {max_retries} retries: {_failure_hint}",
+                            )
                             return {
                                 "final_response": (
                                     f"⏳ {_nous_msg}\n\n"
@@ -12558,6 +12646,11 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}⚡ Interrupt detected during retry wait, aborting.", force=True)
                                 self._persist_session(messages, conversation_history)
                                 self.clear_interrupt()
+                                self._emit_run_stage(
+                                    "blocked",
+                                    status="blocked",
+                                    details="任务在重试等待期间被中断",
+                                )
                                 return {
                                     "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
                                     "messages": messages,
@@ -14916,6 +15009,10 @@ class AIAgent:
                         length_continue_retries = 0
                     
                     final_response = self._strip_think_blocks(final_response).strip()
+                    self._emit_run_stage(
+                        "summarizing",
+                        details="正在整理最终回复、测试结果和交付说明",
+                    )
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 
@@ -15009,10 +15106,26 @@ class AIAgent:
                     f"\n⚠️  Iteration budget exhausted ({api_call_count}/{self.max_iterations}) "
                     "— requesting summary..."
                 )
+            self._emit_run_stage(
+                "summarizing",
+                details="迭代预算耗尽，正在请求模型总结当前结果",
+            )
             final_response = self._handle_max_iterations(messages, api_call_count)
         
         # Determine if conversation completed successfully
         completed = final_response is not None and api_call_count < self.max_iterations
+        if completed and not interrupted:
+            self._emit_run_stage(
+                "done",
+                status="completed",
+                details="任务已完成并生成交付说明",
+            )
+        elif not interrupted:
+            self._emit_run_stage(
+                "failed",
+                status="failed",
+                details="任务未能正常完成",
+            )
 
         # Save trajectory if enabled.  ``user_message`` may be a multimodal
         # list of parts; the trajectory format wants a plain string.

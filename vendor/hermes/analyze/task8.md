@@ -62,6 +62,5 @@ You may submit up to three times.
 ## Final report
 
 Create `@@RESULTS_DIR@@/task8_report.md` with changed files, bugs fixed, commands
-run, official evaluation results, best metric, whether the `1400 / 1440`
-threshold was reached, and confirmation that the original `task8_source/` was not
-edited.
+run, official evaluation results, best pass count and proportional score, and
+confirmation that the original `task8_source/` was not edited.

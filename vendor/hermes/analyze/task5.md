@@ -72,6 +72,5 @@ Create `@@RESULTS_DIR@@/task5_report.md` with:
 3. Bugs fixed.
 4. Commands actually run.
 5. Official evaluation results for each submit.
-6. Best pass count or metric.
-7. Whether the `720 / 801` threshold was reached.
-8. Confirmation that the original `task5_source/` tree was not edited.
+6. Best pass count and proportional score.
+7. Confirmation that the original `task5_source/` tree was not edited.

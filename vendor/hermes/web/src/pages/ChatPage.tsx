@@ -451,8 +451,41 @@ function todoUpdatesFromRawLog(content: string, updatedAt?: string): TodoPlanUpd
   return updates;
 }
 
+function todoStatusFromRunStageStatus(value: unknown): TodoPlanStatus {
+  const status = String(value || "").trim().toLowerCase();
+  if (status === "completed" || status === "done" || status === "success") return "completed";
+  if (status === "running" || status === "active" || status === "in_progress") return "in_progress";
+  if (["failed", "error", "interrupted", "cancelled", "canceled"].includes(status)) return "cancelled";
+  return "pending";
+}
+
+function todoUpdateFromRunStage(
+  event: Extract<AgentEvent, { type: "run_stage" }>,
+  updatedAt?: string,
+): TodoPlanUpdate | null {
+  const metadata = eventMetadata(event);
+  const id = String(event.stage || metadata.analysisTaskId || event.label || "").trim();
+  const content = String(event.label || metadata.analysisTaskTitle || id).trim();
+  if (!id || !content) return null;
+  return {
+    items: [
+      {
+        id,
+        content,
+        status: todoStatusFromRunStageStatus(event.status),
+      },
+    ],
+    updatedAt,
+    merge: true,
+  };
+}
+
 function todoUpdatesFromMessage(message: ChatTaskMessage): TodoPlanUpdate[] {
   const event = eventFromMessage(message);
+  if (event?.type === "run_stage") {
+    const update = todoUpdateFromRunStage(event, message.createdAt);
+    return update ? [update] : [];
+  }
   if (event?.type === "tool_start" && event.name === "todo") {
     const update = todoUpdateFromPayload(event.input, message.createdAt);
     return update ? [update] : [];
@@ -677,6 +710,10 @@ function formatEventForRawLog(event: AgentEvent, message: ChatTaskMessage): stri
         .join("\n");
     case "queue_update":
       return event.message || `[queue] ${event.queued} queued`;
+    case "run_stage":
+      return [`[run_stage] ${event.label || event.stage || "stage"}`, event.status ? `status: ${event.status}` : "", event.details || ""]
+        .filter(Boolean)
+        .join("\n");
     case "error":
       return [`[error] ${event.message}`, event.details || ""].filter(Boolean).join("\n");
     case "done":
@@ -810,6 +847,11 @@ function normalizeChatMessages(messages: ChatTaskMessage[]): ChatTaskMessage[] {
     }
 
     if (event) {
+      if (event.type === "run_stage") {
+        normalized.push(message);
+        return;
+      }
+
       if (event.type === "done") {
         const runKey = eventRunKey(event, message);
         const displayEvent = withDurationFallback(event, message, runStartedAtByRun.get(runKey));
@@ -1987,6 +2029,7 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
 function EventCard({ event }: { event: AgentEvent }) {
   const { locale } = useI18n();
   const copy = CHAT_COPY[locale];
+  if (event.type === "run_stage") return null;
   const content = event.type === "raw_log" ? event.content : formatEventForRawLog(event, eventMessage(event));
   const usage = turnUsageSummary(eventMetadata(event), copy);
   if (usage) {

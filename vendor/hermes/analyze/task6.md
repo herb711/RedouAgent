@@ -59,6 +59,5 @@ You may submit up to three times by incrementing `--submit-index`.
 ## Final report
 
 Create `@@RESULTS_DIR@@/task6_report.md` with changed files, implemented plugin
-behavior, commands run, official evaluation results, best metric, whether the
-`400 / 429` threshold was reached, and confirmation that `task6_source/` was not
-edited.
+behavior, commands run, official evaluation results, best pass count and
+proportional score, and confirmation that `task6_source/` was not edited.

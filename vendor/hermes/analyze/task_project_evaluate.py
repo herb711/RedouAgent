@@ -63,6 +63,15 @@ def print_phase(name: str, points: int, score: float, detail: str) -> None:
         print(detail)
 
 
+def print_check(name: str, detail: str) -> None:
+    print()
+    print("==============================")
+    print(f"Checking {name}")
+    print("==============================")
+    if detail:
+        print(detail)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Evaluate a migrated task5-task9 run.")
     parser.add_argument("--model", required=True)
@@ -134,7 +143,7 @@ def main() -> int:
     log_path.write_text(combined, encoding="utf-8")
 
     metric = float(judge_result.get("metric") or 0.0)
-    test_score = max(0.0, min(metric, 1.0)) * 75.0
+    test_score = max(0.0, min(metric, 1.0)) * 100.0
     report_text = report_path.read_text(encoding="utf-8", errors="replace") if report_path.exists() else ""
     report_score = 0.0
     if len(report_text) > 1000:
@@ -142,26 +151,22 @@ def main() -> int:
     elif len(report_text) > 300:
         report_score = 8.0
 
-    print_phase(
-        f"Task{task_num} Phase 1: Working Copy",
-        10,
-        working_copy_score,
+    print_check(
+        f"Task{task_num} Working Copy",
         f"run_dir={run_dir}; original_source_unchanged={source_unchanged}",
     )
     print_phase(
-        f"Task{task_num} Phase 2: Automated Tests",
-        75,
+        f"Task{task_num} Automated Tests",
+        100,
         test_score,
         judge_result.get("detail", "tests did not run"),
     )
-    print_phase(
-        f"Task{task_num} Phase 3: Report",
-        15,
-        report_score,
+    print_check(
+        f"Task{task_num} Report",
         f"report={report_path}; bytes={len(report_text.encode('utf-8')) if report_text else 0}",
     )
 
-    total = round(working_copy_score + test_score + report_score, 2)
+    total = round(test_score, 2)
     summary = {
         "task_number": task_num,
         "task_id": cfg["id"],

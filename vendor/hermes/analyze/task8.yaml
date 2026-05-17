@@ -13,7 +13,6 @@ test_files:
   - tests/
 
 total_tests: 1440
-pass_threshold: 1400
 test_command: "python -m pytest .judge/tests/ --tb=short -q -m 'not stress'"
 
 requires:

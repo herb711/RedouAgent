@@ -4,19 +4,17 @@ import {
   Activity,
   AlertCircle,
   ArrowRight,
-  Bot,
   CheckCircle2,
-  Circle,
-  Clock3,
+  Copy,
+  Eye,
   FileCode2,
+  FileText,
+  FolderOpen,
   GitBranch,
-  HardDrive,
   ListChecks,
-  MessageSquare,
-  Play,
+  PackageCheck,
   RefreshCw,
-  RotateCw,
-  Sparkles,
+  Search,
   Terminal,
 } from "lucide-react";
 import {
@@ -24,455 +22,1265 @@ import {
   useEffect,
   useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ComponentType,
   type ReactNode,
 } from "react";
 import { useNavigate } from "react-router-dom";
 import { usePageHeader } from "@/contexts/usePageHeader";
-import { useSystemActions } from "@/contexts/useSystemActions";
 import { useI18n } from "@/i18n";
+import { Input } from "@/components/ui/input";
 import { api } from "@/lib/api";
 import type {
   AnalyticsResponse,
   ChatProject,
   ChatTask,
-  ModelInfoResponse,
-  SessionMessage,
+  ChatTaskMessage,
   SessionInfo,
-  StatusResponse,
 } from "@/lib/api";
 import { formatTokenCount } from "@/lib/format";
-import { cn, timeAgo } from "@/lib/utils";
-
-const CHAT_DRAFT_KEY = "redou-agent-chat-draft";
+import { cn } from "@/lib/utils";
 
 const COPY = {
   zh: {
-    active: "活跃",
-    apiConnected: "API 已连接",
-    apiUnavailable: "API 不可用",
-    chat: "工作",
-    codeCanvas: "代码画布",
-    config: "配置",
-    defaultDraft: "请查看这个项目，解释当前架构。\n建议一个安全的下一步修改。",
-    draft: "草稿",
-    draftHandoff: "带草稿进入",
-    failed: "失败",
-    files: "文件",
-    fileStates: {
-      added: "新增",
-      draft: "草稿",
-      route: "路由",
-    },
-    gateway: "网关",
-    gatewayIdle: "空闲",
-    gatewayRunning: "运行中",
-    idle: "空闲",
-    last7Days: "最近 7 天",
-    local: "本地",
-    messages: "消息",
-    missionControl: "任务控制台",
-    modelNotLoaded: "未加载",
-    modelUnset: "模型未设置",
-    noRecentRuns: "暂无最近运行",
     pageTitle: "Redou 控制台",
-    patchPreview: "补丁预览",
-    recentRuns: "最近运行",
     refresh: "刷新",
-    refreshWorkspace: "刷新控制台",
-    restartGateway: "重启AGENT服务",
-    runs: "运行",
-    startChat: "开始工作",
-    stored: "已保存",
-    sync: "同步",
-    taskDraft: "任务草稿",
-    taskDraftPlaceholder: "让 Redou Agent 检查、编辑、测试或解释...",
-    terminal: "终端",
-    tokens: "Token",
+    refreshConsole: "刷新控制台",
+    sections: {
+      runOverview: "运行概览",
+      taskOverview: "任务总览",
+      taskDetail: "任务详情",
+      needsAttention: "需要处理",
+      artifacts: "交付物",
+      changePreview: "变更预览",
+      diagnostics: "诊断日志",
+    },
+    metrics: {
+      active: "活跃任务数",
+      queued: "排队任务数",
+      needsAttention: "需处理任务数",
+      failed: "失败任务数",
+      completed: "已完成任务数",
+      todayTokens: "今日 tokens",
+      todayTools: "今日工具调用次数",
+    },
+    currentTask: "当前任务",
+    enterTask: "进入任务",
+    selectTaskPrompt: "请在任务总览中选择一个任务",
+    selectDetailPrompt: "请选择一个任务查看详情",
+    noNeedsAttention: "暂无需要处理的事项",
+    noArtifacts: "暂无交付物",
+    noChanges: "暂无变更记录",
+    noDiagnostics: "暂无诊断日志",
+    searchPlaceholder: "搜索任务、状态、动作或模型",
+    visibleTasks: "可见任务",
+    allTasks: "全部任务",
+    selected: "已选中",
+    openFullChanges: "查看完整变更",
+    expandRawLogs: "展开原始日志",
+    loadingTask: "正在读取任务事件...",
+    enterFailed: "无法进入任务",
+    copyPath: "复制路径",
+    copiedPath: "路径已复制",
+    open: "打开",
+    locate: "定位",
+    viewLog: "查看日志",
+    retry: "重试",
+    ignore: "忽略",
+    unavailable: "未记录",
+    noCommand: "—",
+    waitingStart: "等待开始",
+    inferred: "推断",
+    model: "模型",
     tools: "工具",
-    visibleCalls: "可见调用",
-    visibleRuns: "可见运行",
-    waitingForSessions: "等待运行记录",
-    workspace: "控制台",
-    stage: {
-      brief: "简报",
-      plan: "计划",
-      patch: "修改",
-      verify: "验证",
-      captured: "已捕获",
-      waiting: "等待中",
-      updated: "已更新",
-      ready: "就绪",
-      checked: "已检查",
-      error: "错误",
-      active: "活跃",
-      briefEmpty: "还没有任务简报",
-      briefStart: "开始工作以捕获任务简报",
-      latestAssistant: "最新助手回复",
-      draftReady: "草稿已准备发送",
-      noRunSelected: "未选择运行",
-      openChatPlan: "打开工作以生成计划",
-      toolsLatest: "最近运行使用的工具",
-      noPatchCalls: "还没有修改类工具调用",
-      waitingEdits: "等待编辑",
-      toolCalls: "工具调用",
+    time: "时间",
+    stages: "阶段",
+    status: "状态",
+    stage: "阶段",
+    currentTool: "当前工具",
+    currentAction: "当前动作",
+    currentCommand: "当前命令",
+    provider: "Provider",
+    modelName: "Model",
+    llmCalls: "LLM 调用",
+    toolCalls: "工具调用",
+    tokens: "Tokens",
+    duration: "运行",
+    totalDuration: "总耗时",
+    recentEvent: "最近事件",
+    recentResult: "最近结果",
+    artifactCount: "产物数量",
+    completedAt: "完成时间",
+    createdAt: "创建时间",
+    queuePosition: "排队位置",
+    entryHint: "预计执行入口",
+    blockingReason: "阻塞原因",
+    waitingConfirmation: "等待确认内容",
+    errorSummary: "错误摘要",
+    failedStage: "失败阶段",
+    testSummary: "测试结果摘要",
+    recentArtifacts: "最近产物",
+    severity: "严重程度",
+    recentTime: "最近时间",
+    noRecentArtifacts: "暂无最近产物",
+    noTestSummary: "未记录测试结果",
+    analysisProjectName: "模型评测",
+    analysisTaskTitlePrefix: "模型评测",
+    analysisTasks: {
+      task1: "Docker 环境实验",
+      task2: "小型项目构建",
+      task3: "调试修复循环",
+      task4: "调研与产品方案",
+      task5: "Peewee ORM 工业缺陷修复",
+      task6: "Bottle 插件扩展",
+      task7: "Markdown 解析器实现",
+      task8: "Click CLI 框架缺陷修复",
+      task9: "Jinja2 自定义扩展开发",
     },
-    run: {
-      live: "在线",
-      msgs: "消息",
-      stored: "已保存",
-      tools: "工具",
-      untitled: "未命名运行",
+    changes: {
+      recent: "最近变更",
+      added: "新增",
+      modified: "修改",
+      deleted: "删除",
+      important: "重要变更摘要",
     },
-    taskBoard: {
-      active: "运行中",
-      activeProgress: "活跃进展",
-      allClear: "当前没有需要处理的任务",
-      allTasks: "全部任务",
-      attention: "需要处理",
-      attentionHint: "错误、停滞或等待确认的任务会出现在这里",
-      done: "已完成",
-      idle: "空闲",
-      more: (count: number) => `还有 ${count} 个任务`,
-      noActive: "暂无活跃任务",
-      noOutput: "还没有最近产出",
-      noTasks: "暂无任务",
-      output: "最近产出",
-      overview: "任务总览",
-      projectLegend: "项目颜色",
-      queued: "排队",
-      recently: "最近",
-      stale: "可能停滞",
-      status: "状态",
-      waiting: "等待开始",
-      waitingConfirm: "等待确认",
+    statuses: {
+      not_started: "未开始",
+      queued: "排队中",
+      running: "运行中",
+      needs_attention: "需处理",
+      failed: "失败",
+      completed: "已完成",
+      cancelled: "已取消",
+      paused: "暂停",
+    },
+    stageLabels: {
+      analysis: "分析项目",
+      editing: "修改代码",
+      testing: "测试验证",
+      packaging: "打包输出",
+      finalizing: "整理结果",
+    },
+    stageStates: {
+      completed: "✓",
+      running: "→",
+      pending: "○",
+      failed: "×",
+    },
+    artifactTypes: {
+      modifiedFile: "修改文件",
+      document: "文档",
+      skill: "Skill",
+      testReport: "测试报告",
+      archive: "导出包",
+      runReport: "运行报告",
+      pathReport: "路径契约报告",
+      smokeReport: "冒烟测试报告",
+      file: "文件",
+    },
+    severityLevels: {
+      high: "高",
+      medium: "中",
+      low: "低",
     },
   },
   en: {
-    active: "Active",
-    apiConnected: "API connected",
-    apiUnavailable: "API unavailable",
-    chat: "Work",
-    codeCanvas: "Code Canvas",
-    config: "config",
-    defaultDraft: "Review this project, explain the current architecture.\nSuggest a safe next patch.",
-    draft: "draft",
-    draftHandoff: "draft handoff",
-    failed: "Failed",
-    files: "Files",
-    fileStates: {
-      added: "added",
-      draft: "draft",
-      route: "route",
-    },
-    gateway: "gateway",
-    gatewayIdle: "Idle",
-    gatewayRunning: "Running",
-    idle: "Idle",
-    last7Days: "last 7 days",
-    local: "local",
-    messages: "Messages",
-    missionControl: "Mission Control",
-    modelNotLoaded: "not loaded",
-    modelUnset: "model unset",
-    noRecentRuns: "No recent runs",
     pageTitle: "Redou Console",
-    patchPreview: "Patch Preview",
-    recentRuns: "recent runs",
     refresh: "Refresh",
-    refreshWorkspace: "Refresh console",
-    restartGateway: "Restart gateway",
-    runs: "Runs",
-    startChat: "Start work",
-    stored: "stored",
-    sync: "sync",
-    taskDraft: "Task draft",
-    taskDraftPlaceholder: "Ask Redou Agent to inspect, edit, test, or explain...",
-    terminal: "Terminal",
-    tokens: "Tokens",
+    refreshConsole: "Refresh console",
+    sections: {
+      runOverview: "Run Overview",
+      taskOverview: "Task Overview",
+      taskDetail: "Task Detail",
+      needsAttention: "Needs Attention",
+      artifacts: "Artifacts",
+      changePreview: "Change Preview",
+      diagnostics: "Diagnostic Logs",
+    },
+    metrics: {
+      active: "Active tasks",
+      queued: "Queued tasks",
+      needsAttention: "Needs attention",
+      failed: "Failed tasks",
+      completed: "Completed tasks",
+      todayTokens: "Today tokens",
+      todayTools: "Today tool calls",
+    },
+    currentTask: "Current task",
+    enterTask: "进入任务",
+    selectTaskPrompt: "Select a task in Task Overview",
+    selectDetailPrompt: "Select a task to view details",
+    noNeedsAttention: "No items need attention",
+    noArtifacts: "No artifacts yet",
+    noChanges: "No changes yet",
+    noDiagnostics: "No diagnostic logs yet",
+    searchPlaceholder: "Search tasks, status, action, or model",
+    visibleTasks: "visible tasks",
+    allTasks: "all tasks",
+    selected: "selected",
+    openFullChanges: "View full changes",
+    expandRawLogs: "Expand raw logs",
+    loadingTask: "Loading task events...",
+    enterFailed: "Could not enter task",
+    copyPath: "Copy path",
+    copiedPath: "Path copied",
+    open: "Open",
+    locate: "Locate",
+    viewLog: "View log",
+    retry: "Retry",
+    ignore: "Ignore",
+    unavailable: "Not recorded",
+    noCommand: "—",
+    waitingStart: "Waiting to start",
+    inferred: "inferred",
+    model: "Model",
     tools: "Tools",
-    visibleCalls: "visible calls",
-    visibleRuns: "visible runs",
-    waitingForSessions: "Waiting for runs",
-    workspace: "console",
-    stage: {
-      brief: "Brief",
-      plan: "Plan",
-      patch: "Patch",
-      verify: "Verify",
-      captured: "captured",
-      waiting: "waiting",
-      updated: "updated",
-      ready: "ready",
-      checked: "checked",
-      error: "error",
-      active: "active",
-      briefEmpty: "No task brief yet",
-      briefStart: "Start work to capture the task brief",
-      latestAssistant: "Latest assistant response",
-      draftReady: "Draft is ready to send",
-      noRunSelected: "No run selected",
-      openChatPlan: "Open Work to generate a plan",
-      toolsLatest: "Tools used in latest run",
-      noPatchCalls: "No patch tool calls yet",
-      waitingEdits: "waiting for edits",
-      toolCalls: "Tool calls",
+    time: "Time",
+    stages: "Stages",
+    status: "Status",
+    stage: "Stage",
+    currentTool: "Current tool",
+    currentAction: "Current action",
+    currentCommand: "Current command",
+    provider: "Provider",
+    modelName: "Model",
+    llmCalls: "LLM calls",
+    toolCalls: "Tool calls",
+    tokens: "Tokens",
+    duration: "Running",
+    totalDuration: "Total duration",
+    recentEvent: "Recent event",
+    recentResult: "Recent result",
+    artifactCount: "Artifacts",
+    completedAt: "Completed at",
+    createdAt: "Created at",
+    queuePosition: "Queue position",
+    entryHint: "Execution entry",
+    blockingReason: "Blocking reason",
+    waitingConfirmation: "Waiting confirmation",
+    errorSummary: "Error summary",
+    failedStage: "Failed stage",
+    testSummary: "Test summary",
+    recentArtifacts: "Recent artifacts",
+    severity: "Severity",
+    recentTime: "Recent time",
+    noRecentArtifacts: "No recent artifacts",
+    noTestSummary: "No test summary recorded",
+    analysisProjectName: "Model Benchmarks",
+    analysisTaskTitlePrefix: "Model benchmark",
+    analysisTasks: {
+      task1: "Docker environment lab",
+      task2: "Small project build",
+      task3: "Debug and repair loop",
+      task4: "Research and product plan",
+      task5: "Peewee ORM industrial bug fixing",
+      task6: "Bottle plugin extension",
+      task7: "Markdown parser implementation",
+      task8: "Click CLI framework bug fixing",
+      task9: "Jinja2 custom extension development",
     },
-    run: {
-      live: "live",
-      msgs: "msgs",
-      stored: "stored",
-      tools: "tools",
-      untitled: "Untitled run",
+    changes: {
+      recent: "Recent changes",
+      added: "Added",
+      modified: "Modified",
+      deleted: "Deleted",
+      important: "Important changes",
     },
-    taskBoard: {
-      active: "Running",
-      activeProgress: "Active Progress",
-      allClear: "No tasks need attention right now",
-      allTasks: "All tasks",
-      attention: "Needs Attention",
-      attentionHint: "Errors, stale runs, and confirmation waits appear here",
-      done: "Completed",
-      idle: "Idle",
-      more: (count: number) => `${count} more task${count === 1 ? "" : "s"}`,
-      noActive: "No active tasks",
-      noOutput: "No recent output yet",
-      noTasks: "No tasks yet",
-      output: "Recent Output",
-      overview: "Task Overview",
-      projectLegend: "Project colors",
+    statuses: {
+      not_started: "Not Started",
       queued: "Queued",
-      recently: "Recently",
-      stale: "Possibly stale",
-      status: "Status",
-      waiting: "Waiting to start",
-      waitingConfirm: "Waiting for confirmation",
+      running: "Running",
+      needs_attention: "Needs Attention",
+      failed: "Failed",
+      completed: "Completed",
+      cancelled: "Cancelled",
+      paused: "Paused",
+    },
+    stageLabels: {
+      analysis: "Analyze Project",
+      editing: "Edit Code",
+      testing: "Test Verification",
+      packaging: "Package Output",
+      finalizing: "Finalize Result",
+    },
+    stageStates: {
+      completed: "✓",
+      running: "→",
+      pending: "○",
+      failed: "×",
+    },
+    artifactTypes: {
+      modifiedFile: "Modified file",
+      document: "Document",
+      skill: "Skill",
+      testReport: "Test report",
+      archive: "Archive",
+      runReport: "Run report",
+      pathReport: "Path contract report",
+      smokeReport: "Smoke report",
+      file: "File",
+    },
+    severityLevels: {
+      high: "High",
+      medium: "Medium",
+      low: "Low",
     },
   },
 } as const;
 
-type WorkspaceCopy = (typeof COPY)["zh"] | (typeof COPY)["en"];
+type WorkspaceCopy = (typeof COPY)[keyof typeof COPY];
+type Tone = "default" | "success" | "warning" | "danger";
+type NormalizedTaskStatus =
+  | "not_started"
+  | "queued"
+  | "running"
+  | "needs_attention"
+  | "failed"
+  | "completed"
+  | "cancelled"
+  | "paused";
+type StageKey = "analysis" | "editing" | "testing" | "packaging" | "finalizing";
+type StageEventStatus = "completed" | "running" | "pending" | "failed";
+type ArtifactType =
+  | "modifiedFile"
+  | "document"
+  | "skill"
+  | "testReport"
+  | "archive"
+  | "runReport"
+  | "pathReport"
+  | "smokeReport"
+  | "file";
 
 type LoadState = {
   analytics: AnalyticsResponse | null;
+  currentProjectId: string;
+  currentTaskId: string;
   error: string | null;
   loading: boolean;
-  model: ModelInfoResponse | null;
-  latestMessages: SessionMessage[];
   projects: ChatProject[];
   sessions: SessionInfo[];
-  status: StatusResponse | null;
 };
 
-type Tone = "default" | "success" | "warning" | "danger";
-type TaskStatus = "running" | "queued" | "attention" | "done" | "idle";
+type TaskEventView = {
+  command: string;
+  id: string;
+  label: string;
+  raw: Record<string, unknown> | null;
+  summary: string;
+  timestampMs: number;
+  tool: string;
+  type: string;
+  success?: boolean;
+};
 
-type TaskSummary = {
-  color: string;
-  lastActive: number;
-  messageCount: number;
-  phase: string;
-  preview: string | null;
-  project: ChatProject;
+type StageTimelineItem = {
+  key: StageKey;
+  label: string;
+  status: StageEventStatus;
+  timestampMs?: number;
+};
+
+type ArtifactView = {
+  changeType: "added" | "modified" | "deleted" | "unknown";
+  generatedAtMs: number;
+  id: string;
+  name: string;
+  path: string;
+  taskId: string;
+  taskTitle: string;
+  type: ArtifactType;
+};
+
+type TaskViewModel = {
+  artifactCount: number;
+  artifacts: ArtifactView[];
+  completedAt: number | null;
+  createdAt: number;
+  currentAction: string;
+  currentCommand: string;
+  currentStage: string;
+  currentTool: string;
+  durationMs: number;
+  id: string;
+  inferredStage: boolean;
+  key: string;
+  lastError: string;
+  llmCalls: number;
+  model: string;
+  needsAttentionReason: string;
+  priorityRank: number;
+  projectId: string;
+  projectName: string;
+  provider: string;
   queueDepth: number;
-  session: SessionInfo | null;
-  status: TaskStatus;
+  recentEvents: TaskEventView[];
+  recentResult: string;
+  stageTimeline: StageTimelineItem[];
+  status: NormalizedTaskStatus;
   statusLabel: string;
-  task: ChatTask;
-  toolCount: number;
+  testSummary: string;
+  title: string;
+  tokens: number;
+  toolCalls: number;
+  updatedAt: number;
 };
 
-const PROJECT_PALETTE = [
-  "#22c55e",
-  "#38bdf8",
-  "#f59e0b",
-  "#ec4899",
-  "#8b5cf6",
-  "#14b8a6",
-  "#ef4444",
-  "#84cc16",
-] as const;
-
-const FILE_ROWS = [
-  {
-    path: "web/src/pages/WorkspacePage.tsx",
-    state: "added",
-    lines: "+362",
-    tone: "success",
-  },
-  {
-    path: "web/src/App.tsx",
-    state: "route",
-    lines: "+8",
-    tone: "warning",
-  },
-  {
-    path: "web/src/pages/ChatPage.tsx",
-    state: "draft",
-    lines: "+26",
-    tone: "default",
-  },
+const STAGE_ORDER: StageKey[] = [
+  "analysis",
+  "editing",
+  "testing",
+  "packaging",
+  "finalizing",
 ];
 
-const PATCH_LINES = [
-  { sign: "+", text: "const task = await redou.work.open(project);" },
-  { sign: "+", text: "task.plan('inspect, patch, verify');" },
-  { sign: "+", text: "task.surface({ messages, terminal, diff });" },
-  { sign: " ", text: "" },
-  { sign: "-", text: "return <Navigate to=\"/legacy\" replace />;" },
-  { sign: "+", text: "return <Navigate to=\"/workspace\" replace />;" },
-];
-
-function redactSecrets(text: string): string {
-  return text.replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "sk-...redacted");
-}
-
-function compactText(
-  value: string | null | undefined,
-  fallback: string,
-  maxLength = 120,
-): string {
-  const clean = redactSecrets(value ?? "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!clean) return fallback;
-  if (clean.length <= maxLength) return clean;
-  return `${clean.slice(0, maxLength - 1).trimEnd()}...`;
-}
-
-function stableIndex(value: string, modulo: number): number {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  }
-  return hash % modulo;
-}
-
-function projectColor(projectId: string): string {
-  return PROJECT_PALETTE[stableIndex(projectId, PROJECT_PALETTE.length)];
-}
-
-function sessionTaskKey(session: SessionInfo): string | null {
-  if (session.projectId && session.taskId) {
-    return `${session.projectId}:${session.taskId}`;
-  }
-  const match = /^redou:([^:]+):([^:]+)$/.exec(session.id);
-  return match ? `${match[1]}:${match[2]}` : null;
-}
+const ATTENTION_RE =
+  /confirm|confirmation|permission|overwrite|blocked|waiting|needs_attention|approval|api key|provider|model config|path|skill conflict|test failed|failed|failure|error|确认|权限|覆盖|阻塞|等待|路径|冲突|测试失败|失败|错误|异常/i;
+const ERROR_RE = /error|failed|failure|exception|traceback|timeout|退出|失败|错误|异常|超时/i;
+const TEST_RE = /\b(pytest|node --test|npm test|pnpm test|yarn test|tests? passed|tests? failed|52 tests passed)\b|测试|验证/i;
+const PACKAGE_RE = /\b(zip|export|archive|package|tar|7z)\b|打包|导出|归档/i;
+const EDIT_RE = /\b(write_file|edit_file|apply_patch|patch|file_changed|update_file|create_file|delete_file)\b|修改|写入|补丁/i;
+const ANALYSIS_RE = /\b(read_file|search|grep|list_dir|rg|find)\b|分析|读取|搜索/i;
+const FINAL_RE = /\b(final|done|summary|assistant_message)\b|总结|整理|完成/i;
 
 function taskKey(projectId: string, taskId: string): string {
   return `${projectId}:${taskId}`;
 }
 
-function includesAttentionCue(value: string | null | undefined): boolean {
-  return /error|failed|failure|exception|blocked|confirm|confirmation|permission|api key|错误|失败|异常|阻塞|确认|权限|密钥/i.test(
-    value ?? "",
+function isAnalysisBenchmarkTask(project: ChatProject, task: ChatTask): boolean {
+  return (
+    project.id === "model-benchmarks" ||
+    task.kind === "analysis_benchmark" ||
+    Boolean(task.analysisRunId || task.analysisKey)
   );
 }
 
-function eventPhase(
-  eventType: string | null | undefined,
+function analysisTaskId(value: unknown): string {
+  const match = String(value || "").match(/\btask[1-9]\b/i);
+  return match ? match[0].toLowerCase() : "";
+}
+
+function analysisTaskLabel(value: unknown, copy: WorkspaceCopy): string {
+  const id = analysisTaskId(value);
+  const title = id ? copy.analysisTasks[id as keyof typeof copy.analysisTasks] : "";
+  if (id && title) {
+    return `${id}${copy === COPY.zh ? "：" : ": "}${title}`;
+  }
+  return cleanText(value, copy.waitingStart, 160);
+}
+
+function analysisStageEventLabel(event: TaskEventView, copy: WorkspaceCopy): string {
+  const rawMetadata = isRecord(event.raw?.metadata) ? event.raw.metadata : {};
+  const stage = cleanText(
+    event.raw?.stage ?? rawMetadata.analysisTaskId ?? event.summary,
+    "",
+    120,
+  );
+  return analysisTaskLabel(stage || event.summary, copy);
+}
+
+function displayProjectName(project: ChatProject, task: ChatTask, copy: WorkspaceCopy): string {
+  return isAnalysisBenchmarkTask(project, task) ? copy.analysisProjectName : project.name;
+}
+
+function displayTaskTitle(
+  project: ChatProject,
+  task: ChatTask,
+  providerModel: { provider: string; model: string },
   copy: WorkspaceCopy,
 ): string {
-  switch (eventType) {
-    case "tool_start":
-    case "tool_output":
-    case "tool_end":
-    case "command_start":
-    case "command_output":
-    case "command_end":
-    case "file_changed":
-      return copy.stage.patch;
-    case "assistant_delta":
-    case "assistant_message":
-      return copy.stage.plan;
-    case "queue_update":
-      return copy.taskBoard.queued;
-    case "done":
-      return copy.taskBoard.done;
+  const rawTitle = cleanText(task.title, "", 220);
+  if (!isAnalysisBenchmarkTask(project, task)) return rawTitle || "Task";
+  if (rawTitle && !/^benchmark:/i.test(rawTitle)) return rawTitle;
+  const modelLabel = [providerModel.provider, providerModel.model]
+    .filter((item) => item && item !== copy.unavailable)
+    .join(" / ");
+  return `${copy.analysisTaskTitlePrefix}: ${modelLabel || copy.unavailable}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function cleanText(value: unknown, fallback = "", maxLength = 160): string {
+  const text = String(value ?? "")
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "sk-...redacted")
+    .replace(/\s+/g, " ")
+    .trim();
+  const safe = text || fallback;
+  if (safe.length <= maxLength) return safe;
+  return `${safe.slice(0, maxLength - 1).trimEnd()}...`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error || "");
+}
+
+function numberOrZero(value: unknown): number {
+  const n = Number(value ?? 0);
+  return Number.isFinite(n) ? Math.max(0, Math.round(n)) : 0;
+}
+
+function timestampMs(value: unknown, fallback = Date.now()): number {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 10_000_000_000 ? value : value * 1000;
+  }
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function taskCreatedMs(task: ChatTask): number {
+  return timestampMs(task.createdAt ?? task.created_at, Date.now());
+}
+
+function taskUpdatedMs(task: ChatTask): number {
+  return timestampMs(task.updatedAt ?? task.updated_at, taskCreatedMs(task));
+}
+
+function formatDuration(ms: number, detailed = false): string {
+  const safeMs = Math.max(0, Number.isFinite(ms) ? ms : 0);
+  const totalSeconds = Math.floor(safeMs / 1000);
+  const seconds = totalSeconds % 60;
+  const minutesTotal = Math.floor(totalSeconds / 60);
+  const minutes = minutesTotal % 60;
+  const hours = Math.floor(minutesTotal / 60);
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutesTotal > 0) return detailed ? `${minutesTotal}m ${seconds}s` : `${minutesTotal}m`;
+  return `${seconds}s`;
+}
+
+function formatRelativeTime(ms: number | null | undefined, locale: "zh" | "en"): string {
+  if (!ms || !Number.isFinite(ms)) return locale === "zh" ? "未知" : "unknown";
+  const deltaSeconds = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (locale === "zh") {
+    if (deltaSeconds < 60) return "刚刚";
+    if (deltaSeconds < 3600) return `${Math.floor(deltaSeconds / 60)} 分钟前`;
+    if (deltaSeconds < 86400) return `${Math.floor(deltaSeconds / 3600)} 小时前`;
+    if (deltaSeconds < 172800) return "昨天";
+    return `${Math.floor(deltaSeconds / 86400)} 天前`;
+  }
+  if (deltaSeconds < 60) return "just now";
+  if (deltaSeconds < 3600) return `${Math.floor(deltaSeconds / 60)}m ago`;
+  if (deltaSeconds < 86400) return `${Math.floor(deltaSeconds / 3600)}h ago`;
+  if (deltaSeconds < 172800) return "yesterday";
+  return `${Math.floor(deltaSeconds / 86400)}d ago`;
+}
+
+function formatDateTime(ms: number | null, locale: "zh" | "en"): string {
+  if (!ms || !Number.isFinite(ms)) return locale === "zh" ? "未记录" : "Not recorded";
+  return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(ms));
+}
+
+function formatClock(ms: number, locale: "zh" | "en"): string {
+  return new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(ms));
+}
+
+function isToday(ms: number): boolean {
+  const date = new Date(ms);
+  const now = new Date();
+  return (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  );
+}
+
+function statusLabel(status: NormalizedTaskStatus, copy: WorkspaceCopy): string {
+  return copy.statuses[status];
+}
+
+function statusTone(status: NormalizedTaskStatus): Tone {
+  if (status === "running" || status === "completed") return "success";
+  if (status === "queued" || status === "paused" || status === "not_started") return "warning";
+  if (status === "failed" || status === "needs_attention") return "danger";
+  return "default";
+}
+
+function badgeTone(status: NormalizedTaskStatus): "outline" | "secondary" | "success" | "warning" | "destructive" {
+  const tone = statusTone(status);
+  if (tone === "success") return "success";
+  if (tone === "warning") return "warning";
+  if (tone === "danger") return "destructive";
+  return "outline";
+}
+
+function statusSymbol(status: NormalizedTaskStatus): string {
+  switch (status) {
+    case "running":
+      return "●";
+    case "needs_attention":
+      return "!";
+    case "failed":
+      return "×";
+    case "completed":
+      return "✓";
+    case "queued":
+      return "○";
+    case "paused":
+      return "Ⅱ";
+    case "cancelled":
+      return "–";
+    case "not_started":
     default:
-      return copy.taskBoard.active;
+      return "○";
   }
 }
 
-function attentionPhase(
-  eventType: string | null | undefined,
-  preview: string | null,
-  copy: WorkspaceCopy,
+function normalizeTaskStatus(
+  rawStatus: unknown,
+  hints: {
+    hasCompleted?: boolean;
+    hasError?: boolean;
+    hasStarted?: boolean;
+    needsAttention?: boolean;
+    queueDepth?: number;
+    running?: boolean;
+  } = {},
+): NormalizedTaskStatus {
+  if (hints.running) return "running";
+  if ((hints.queueDepth ?? 0) > 0) return "queued";
+  if (hints.needsAttention) return "needs_attention";
+  if (hints.hasError) return "failed";
+
+  const raw = String(rawStatus || "").trim().toLowerCase();
+  if (["done", "completed", "success", "succeeded"].includes(raw)) return "completed";
+  if (["running", "active"].includes(raw)) return "running";
+  if (["queued", "pending"].includes(raw)) return "queued";
+  if (["blocked", "waiting", "needs_attention", "confirmation_required"].includes(raw)) {
+    return "needs_attention";
+  }
+  if (["failed", "error"].includes(raw)) return "failed";
+  if (["cancelled", "canceled", "interrupted", "stopped"].includes(raw)) return "cancelled";
+  if (raw === "paused") return "paused";
+  if (raw === "idle") {
+    if (hints.hasCompleted) return "completed";
+    if (!hints.hasStarted) return "not_started";
+    return "not_started";
+  }
+  if (hints.hasCompleted) return "completed";
+  return hints.hasStarted ? "not_started" : "not_started";
+}
+
+function overviewStatusForTask(task: ChatTask, session: SessionInfo | null): NormalizedTaskStatus {
+  const rawStatus = String(task.runtime_status || "").trim().toLowerCase();
+  const hasStarted =
+    numberOrZero(session?.message_count) > 0 ||
+    Boolean(task.hermesSessionId || task.session_id);
+  return normalizeTaskStatus(rawStatus, {
+    hasStarted,
+    needsAttention: ["blocked", "waiting", "needs_attention", "confirmation_required"].includes(rawStatus),
+    queueDepth: numberOrZero(task.queue_depth ?? session?.queue_depth),
+    running: Boolean(task.is_active ?? session?.is_active),
+  });
+}
+
+function messageEvent(message: ChatTaskMessage, index: number): TaskEventView | null {
+  const metadata = isRecord(message.metadata) ? message.metadata : {};
+  const rawEvent = isRecord(metadata.event) ? metadata.event : null;
+  const rawEventMetadata = rawEvent && isRecord(rawEvent.metadata) ? rawEvent.metadata : {};
+  const type = cleanText(metadata.eventType ?? rawEvent?.type ?? message.role, "", 80);
+  if (!type) return null;
+
+  const timestamp = timestampMs(
+    rawEvent?.timestamp ??
+      rawEvent?.createdAt ??
+      rawEventMetadata.timestamp ??
+      rawEventMetadata.createdAt ??
+      message.createdAt,
+    Date.now(),
+  );
+  const command = cleanText(
+    rawEvent?.command ?? rawEventMetadata.command ?? metadata.command,
+    "",
+    220,
+  );
+  const tool = cleanText(
+    rawEvent?.name ??
+      rawEventMetadata.tool ??
+      rawEventMetadata.toolName ??
+      (type.startsWith("command_") ? "terminal" : ""),
+    "",
+    80,
+  );
+  const successValue = rawEvent?.success ?? rawEventMetadata.success;
+  const success =
+    typeof successValue === "boolean"
+      ? successValue
+      : type === "command_end" || type === "tool_end"
+        ? !ERROR_RE.test(message.content)
+        : undefined;
+  const summary = summarizeEventMessage(type, message, rawEvent, command, tool);
+  return {
+    command,
+    id: cleanText(metadata.id ?? rawEventMetadata.id ?? `${message.createdAt}-${index}`, `${index}`),
+    label: eventLabel(type, tool, command),
+    raw: rawEvent,
+    summary,
+    timestampMs: timestamp,
+    tool,
+    type,
+    ...(success == null ? {} : { success }),
+  };
+}
+
+function summarizeEventMessage(
+  type: string,
+  message: ChatTaskMessage,
+  rawEvent: Record<string, unknown> | null,
+  command: string,
+  tool: string,
 ): string {
-  if (eventType === "error" || /error|failed|failure|exception|错误|失败|异常/i.test(preview ?? "")) {
-    return copy.stage.error;
+  if (type === "command_start") return command || cleanText(message.content, "terminal", 160);
+  if (type === "tool_start") return tool ? `tool started: ${tool}` : cleanText(message.content, "tool started", 160);
+  if (type === "file_changed") {
+    return cleanText(rawEvent?.summary ?? rawEvent?.path ?? message.content, "file changed", 180);
   }
-  if (/confirm|confirmation|确认/i.test(preview ?? "")) {
-    return copy.taskBoard.waitingConfirm;
+  if (type === "error") return cleanText(rawEvent?.message ?? rawEvent?.details ?? message.content, "error", 220);
+  if (type === "done") return cleanText(rawEvent?.summary ?? message.content, "done", 120);
+  if (type === "run_stage") {
+    return cleanText(rawEvent?.label ?? rawEvent?.stage ?? message.content, "stage event", 140);
   }
-  return copy.taskBoard.attention;
+  if (type === "skill_packaged") {
+    return cleanText(message.metadata.skillPath ?? message.content, "skill packaged", 180);
+  }
+  return cleanText(message.content, type, 180);
+}
+
+function eventLabel(type: string, tool: string, command: string): string {
+  if (type === "command_start") return command || "terminal";
+  if (type === "tool_start" || type === "tool_output" || type === "tool_end") return tool || "tool";
+  if (type === "file_changed") return "file";
+  if (type === "run_stage") return "stage";
+  return type.replace(/_/g, " ");
+}
+
+function usageFromMessages(messages: ChatTaskMessage[]) {
+  return messages.reduce(
+    (total, message) => {
+      const metadata = isRecord(message.metadata) ? message.metadata : {};
+      const event = isRecord(metadata.event) ? metadata.event : {};
+      const eventMetadata = isRecord(event.metadata) ? event.metadata : {};
+      const source = { ...metadata, ...eventMetadata };
+      total.input += numberOrZero(source.inputTokens ?? source.input_tokens);
+      total.output += numberOrZero(source.outputTokens ?? source.output_tokens);
+      total.apiCalls += numberOrZero(source.apiCalls ?? source.api_calls);
+      return total;
+    },
+    { apiCalls: 0, input: 0, output: 0 },
+  );
+}
+
+function providerModelFrom(task: ChatTask, session: SessionInfo | null, copy: WorkspaceCopy) {
+  const providerFromTask = cleanText(task.model_provider, "", 80);
+  const modelFromTask = cleanText(task.model, "", 120);
+  const sessionModel = cleanText(session?.model, "", 180);
+  if (providerFromTask || modelFromTask) {
+    return {
+      provider: providerFromTask || copy.unavailable,
+      model: modelFromTask || copy.unavailable,
+    };
+  }
+  if (sessionModel.includes("/")) {
+    const [provider, ...rest] = sessionModel.split("/");
+    return {
+      provider: cleanText(provider, copy.unavailable, 80),
+      model: cleanText(rest.join("/"), copy.unavailable, 120),
+    };
+  }
+  return {
+    provider: copy.unavailable,
+    model: sessionModel || copy.unavailable,
+  };
+}
+
+function hasCompletedEvent(events: TaskEventView[]): boolean {
+  return events.some((event) => event.type === "done" && event.success !== false);
+}
+
+function lastError(events: TaskEventView[]): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type === "error" || event.success === false || ERROR_RE.test(event.summary)) {
+      return cleanText(event.summary, "error", 220);
+    }
+  }
+  return "";
+}
+
+function latestResult(events: TaskEventView[]): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (
+      event.type === "command_end" ||
+      event.type === "tool_end" ||
+      event.type === "command_output" ||
+      event.type === "tool_output"
+    ) {
+      return cleanText(event.summary, event.success === false ? "failed" : "success", 160);
+    }
+  }
+  return "";
+}
+
+function currentEvent(events: TaskEventView[]): TaskEventView | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "raw_log" || event.summary) return event;
+  }
+  return null;
+}
+
+function currentActionFromEvent(event: TaskEventView | null, copy: WorkspaceCopy): string {
+  if (!event) return copy.waitingStart;
+  if (event.type === "command_start") return cleanText(event.summary, "运行命令", 160);
+  if (event.type === "tool_start") return cleanText(event.summary, "调用工具", 160);
+  if (event.type === "file_changed") return cleanText(event.summary, "更新文件", 160);
+  if (event.type === "assistant_message") return copy.stageLabels.finalizing;
+  if (event.type === "done") return copy.stageLabels.finalizing;
+  if (event.type === "error") return cleanText(event.summary, "处理错误", 160);
+  if (event.type === "run_stage") return analysisStageEventLabel(event, copy);
+  return cleanText(event.summary, copy.waitingStart, 160);
+}
+
+function currentToolFromEvent(event: TaskEventView | null, copy: WorkspaceCopy): string {
+  if (!event) return copy.noCommand;
+  if (event.type.startsWith("command_")) return "terminal";
+  if (event.tool) return event.tool;
+  if (event.type === "file_changed") return "file";
+  if (event.type === "run_stage") return copy.stage;
+  if (event.type.startsWith("assistant_")) return "LLM";
+  return copy.noCommand;
+}
+
+function stageLabel(key: StageKey, copy: WorkspaceCopy): string {
+  return copy.stageLabels[key];
+}
+
+function buildStageTimeline(
+  events: TaskEventView[],
+  status: NormalizedTaskStatus,
+  copy: WorkspaceCopy,
+): { currentStage: string; inferredStage: boolean; timeline: StageTimelineItem[] } {
+  const explicitStageEvents = events.filter((event) => event.type === "run_stage");
+  if (explicitStageEvents.length > 0) {
+    const byStage = new Map<string, TaskEventView>();
+    for (const event of explicitStageEvents) {
+      const stageName = analysisStageEventLabel(event, copy);
+      byStage.set(stageName, event);
+    }
+    const timeline = Array.from(byStage.entries()).map(([name, event]) => {
+      const rawStatus = cleanText(event.raw?.status, "running", 40).toLowerCase();
+      const eventStatus: StageEventStatus =
+        rawStatus === "completed" || rawStatus === "done"
+          ? "completed"
+          : rawStatus === "failed" || rawStatus === "error"
+            ? "failed"
+            : rawStatus === "pending"
+              ? "pending"
+              : "running";
+      return {
+        key: "analysis" as StageKey,
+        label: name,
+        status: eventStatus,
+        timestampMs: event.timestampMs,
+      };
+    });
+    const active =
+      [...timeline].reverse().find((item) => item.status === "running") ??
+      [...timeline].reverse().find((item) => item.status === "failed") ??
+      timeline.find((item) => item.status === "pending") ??
+      [...timeline].reverse().find((item) => item.status === "completed") ??
+      timeline.at(-1);
+    return {
+      currentStage: active?.label ?? copy.stageLabels.analysis,
+      inferredStage: false,
+      timeline,
+    };
+  }
+
+  const reached = new Set<StageKey>();
+  let latestStage: StageKey | null = null;
+  for (const event of events) {
+    const source = `${event.type} ${event.tool} ${event.command} ${event.summary}`.toLowerCase();
+    let stage: StageKey | null = null;
+    if (PACKAGE_RE.test(source)) stage = "packaging";
+    else if (TEST_RE.test(source)) stage = "testing";
+    else if (EDIT_RE.test(source)) stage = "editing";
+    else if (ANALYSIS_RE.test(source)) stage = "analysis";
+    else if (FINAL_RE.test(source)) stage = "finalizing";
+    if (stage) {
+      reached.add(stage);
+      latestStage = stage;
+    }
+  }
+
+  if (status === "completed") latestStage = latestStage ?? "finalizing";
+  if (!latestStage && status === "running") latestStage = "analysis";
+
+  const latestIndex = latestStage ? STAGE_ORDER.indexOf(latestStage) : -1;
+  const timeline = STAGE_ORDER.map((key, index) => {
+    let stageStatus: StageEventStatus = "pending";
+    if (status === "completed" && (index <= latestIndex || reached.has(key))) {
+      stageStatus = "completed";
+    } else if ((status === "failed" || status === "needs_attention") && index === Math.max(latestIndex, 0)) {
+      stageStatus = status === "failed" ? "failed" : "running";
+    } else if (index < latestIndex || reached.has(key)) {
+      stageStatus = "completed";
+    } else if (index === latestIndex) {
+      stageStatus = status === "cancelled" ? "pending" : "running";
+    }
+    return {
+      key,
+      label: stageLabel(key, copy),
+      status: stageStatus,
+    };
+  });
+
+  return {
+    currentStage: latestStage ? stageLabel(latestStage, copy) : copy.waitingStart,
+    inferredStage: events.length > 0,
+    timeline,
+  };
+}
+
+function artifactTypeForPath(pathValue: string, metadataType = ""): ArtifactType {
+  const lower = `${pathValue} ${metadataType}`.toLowerCase();
+  if (lower.endsWith("skill.md") || /skill/.test(lower)) return "skill";
+  if (/\.(zip|7z|tar|tgz|gz)$/.test(lower) || /archive|export|package/.test(lower)) return "archive";
+  if (/smoke/.test(lower)) return "smokeReport";
+  if (/path|contract/.test(lower)) return "pathReport";
+  if (/test|pytest|junit|coverage/.test(lower)) return "testReport";
+  if (/\.(md|txt|pdf|docx)$/.test(lower)) return "document";
+  if (/\.(json|html|xml)$/.test(lower)) return "runReport";
+  return "modifiedFile";
+}
+
+function artifactName(pathValue: string): string {
+  const clean = pathValue.replace(/\\/g, "/").replace(/\/+$/, "");
+  return clean.split("/").filter(Boolean).at(-1) || pathValue || "artifact";
+}
+
+function normalizeChangeType(value: unknown): ArtifactView["changeType"] {
+  const raw = String(value || "").toLowerCase();
+  if (["added", "add", "created", "create", "new"].includes(raw)) return "added";
+  if (["deleted", "delete", "removed", "remove"].includes(raw)) return "deleted";
+  if (["modified", "modify", "updated", "update", "changed", "change"].includes(raw)) return "modified";
+  return "unknown";
+}
+
+function extractArtifacts(
+  project: ChatProject,
+  task: ChatTask,
+  events: TaskEventView[],
+): ArtifactView[] {
+  const byPath = new Map<string, ArtifactView>();
+  for (const event of events) {
+    if (event.type === "file_changed") {
+      const pathValue = cleanText(event.raw?.path ?? event.summary, "", 500);
+      if (!pathValue) continue;
+      byPath.set(pathValue, {
+        changeType: normalizeChangeType(event.raw?.changeType ?? event.raw?.change_type),
+        generatedAtMs: event.timestampMs,
+        id: `${task.id}:${pathValue}`,
+        name: artifactName(pathValue),
+        path: pathValue,
+        taskId: task.id,
+        taskTitle: task.title,
+        type: artifactTypeForPath(pathValue),
+      });
+    }
+    if (event.type === "skill_packaged") {
+      const pathValue = cleanText(event.raw?.skillPath ?? event.raw?.path ?? event.summary, "", 500);
+      if (!pathValue) continue;
+      byPath.set(pathValue, {
+        changeType: "added",
+        generatedAtMs: event.timestampMs,
+        id: `${task.id}:skill:${pathValue}`,
+        name: artifactName(pathValue),
+        path: pathValue,
+        taskId: task.id,
+        taskTitle: task.title,
+        type: "skill",
+      });
+    }
+  }
+
+  return Array.from(byPath.values())
+    .map((artifact) => ({
+      ...artifact,
+      path: artifact.path || project.path || task.contextPath || "",
+    }))
+    .sort((a, b) => b.generatedAtMs - a.generatedAtMs)
+    .slice(0, 20);
+}
+
+function testSummary(events: TaskEventView[], copy: WorkspaceCopy): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const text = `${event.command} ${event.summary}`;
+    if (TEST_RE.test(text)) return cleanText(text, copy.noTestSummary, 160);
+  }
+  return copy.noTestSummary;
+}
+
+function completedAtFrom(events: TaskEventView[], session: SessionInfo | null): number | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type === "done") {
+      const completedAt = event.raw?.metadata && isRecord(event.raw.metadata)
+        ? event.raw.metadata.completedAt
+        : event.raw?.completedAt;
+      return timestampMs(completedAt ?? event.timestampMs, event.timestampMs);
+    }
+  }
+  if (session?.ended_at && !session.is_active) return timestampMs(session.ended_at);
+  return null;
+}
+
+function durationFrom(
+  events: TaskEventView[],
+  task: ChatTask,
+  session: SessionInfo | null,
+  status: NormalizedTaskStatus,
+): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "done") continue;
+    const metadata = event.raw?.metadata && isRecord(event.raw.metadata) ? event.raw.metadata : event.raw ?? {};
+    const duration = numberOrZero(metadata.durationMs ?? metadata.duration_ms);
+    if (duration > 0) return duration;
+  }
+  const startedMs = timestampMs(task.run_started_at ?? session?.run_started_at ?? session?.started_at ?? task.created_at);
+  const endedMs =
+    status === "running"
+      ? Date.now()
+      : completedAtFrom(events, session) ?? timestampMs(session?.last_active ?? task.updated_at, Date.now());
+  return Math.max(0, endedMs - startedMs);
+}
+
+function priorityRank(status: NormalizedTaskStatus, updatedAt: number): number {
+  const ageDays = (Date.now() - updatedAt) / 86_400_000;
+  switch (status) {
+    case "needs_attention":
+      return 10;
+    case "running":
+      return 20;
+    case "queued":
+      return 30;
+    case "failed":
+      return 40;
+    case "completed":
+      return ageDays <= 7 ? 50 : 70;
+    case "not_started":
+      return 60;
+    case "paused":
+      return 65;
+    case "cancelled":
+      return 80;
+    default:
+      return 90;
+  }
+}
+
+function buildTaskViewModel(
+  project: ChatProject,
+  task: ChatTask,
+  events: ChatTaskMessage[],
+  artifactsInput: ArtifactView[],
+  options: {
+    copy: WorkspaceCopy;
+    session: SessionInfo | null;
+  },
+): TaskViewModel {
+  const { copy, session } = options;
+  const eventViews = events
+    .map((message, index) => messageEvent(message, index))
+    .filter((event): event is TaskEventView => Boolean(event))
+    .sort((a, b) => a.timestampMs - b.timestampMs);
+  const usage = usageFromMessages(events);
+  const tokensFromSession = numberOrZero(session?.input_tokens) + numberOrZero(session?.output_tokens);
+  const tokens = tokensFromSession || usage.input + usage.output;
+  const toolCalls =
+    numberOrZero(session?.tool_call_count) ||
+    eventViews.filter((event) => event.type === "tool_start" || event.type === "command_start").length;
+  const llmCalls =
+    numberOrZero((session as SessionInfo & { api_calls?: number })?.api_calls) ||
+    usage.apiCalls ||
+    events.filter((message) => message.role === "assistant").length;
+  const current = currentEvent(eventViews);
+  const error = lastError(eventViews);
+  const preview = cleanText(session?.preview, "", 220);
+  const hasStarted =
+    eventViews.length > 0 ||
+    numberOrZero(session?.message_count) > 0 ||
+    Boolean(task.hermesSessionId || task.session_id);
+  const needsAttention = ATTENTION_RE.test(`${preview} ${error} ${current?.summary ?? ""}`);
+  const hasCompleted = hasCompletedEvent(eventViews) || task.runtime_status === "completed";
+  const status = normalizeTaskStatus(task.runtime_status, {
+    hasCompleted,
+    hasError: Boolean(error),
+    hasStarted,
+    needsAttention: needsAttention && !session?.is_active && task.runtime_status !== "completed",
+    queueDepth: numberOrZero(task.queue_depth ?? session?.queue_depth),
+    running: Boolean(task.is_active ?? session?.is_active),
+  });
+  const stage = buildStageTimeline(eventViews, status, copy);
+  const providerModel = providerModelFrom(task, session, copy);
+  const artifacts = artifactsInput.length > 0 ? artifactsInput : extractArtifacts(project, task, eventViews);
+  const createdAt = taskCreatedMs(task);
+  const updatedAt = Math.max(
+    taskUpdatedMs(task),
+    timestampMs(session?.last_active, 0),
+    eventViews.at(-1)?.timestampMs ?? 0,
+  );
+  const completedAt = completedAtFrom(eventViews, session);
+  const durationMs = durationFrom(eventViews, task, session, status);
+  const statusText = statusLabel(status, copy);
+  return {
+    artifactCount: artifacts.length,
+    artifacts,
+    completedAt,
+    createdAt,
+    currentAction: currentActionFromEvent(current, copy),
+    currentCommand: current?.command || copy.noCommand,
+    currentStage: stage.currentStage,
+    currentTool: currentToolFromEvent(current, copy),
+    durationMs,
+    id: task.id,
+    inferredStage: stage.inferredStage,
+    key: taskKey(project.id, task.id),
+    lastError: error,
+    llmCalls,
+    model: providerModel.model,
+    needsAttentionReason: error || preview || current?.summary || statusText,
+    priorityRank: priorityRank(status, updatedAt),
+    projectId: project.id,
+    projectName: displayProjectName(project, task, copy),
+    provider: providerModel.provider,
+    queueDepth: numberOrZero(task.queue_depth ?? session?.queue_depth),
+    recentEvents: [...eventViews].slice(-10).reverse(),
+    recentResult: latestResult(eventViews),
+    stageTimeline: stage.timeline,
+    status,
+    statusLabel: statusText,
+    testSummary: testSummary(eventViews, copy),
+    title: displayTaskTitle(project, task, providerModel, copy),
+    tokens,
+    toolCalls,
+    updatedAt,
+  };
+}
+
+function changeSummary(artifacts: ArtifactView[]) {
+  return artifacts.reduce(
+    (summary, artifact) => {
+      if (artifact.changeType === "added") summary.added += 1;
+      else if (artifact.changeType === "deleted") summary.deleted += 1;
+      else summary.modified += 1;
+      return summary;
+    },
+    { added: 0, deleted: 0, modified: 0 },
+  );
+}
+
+function parentPath(pathValue: string): string {
+  const normalized = pathValue.replace(/\\/g, "/");
+  const index = normalized.lastIndexOf("/");
+  if (index <= 0) return pathValue;
+  return pathValue.slice(0, index);
 }
 
 export default function WorkspacePage() {
   const navigate = useNavigate();
   const { setEnd, setTitle } = usePageHeader();
-  const { isBusy, runAction } = useSystemActions();
   const { locale } = useI18n();
   const copy = COPY[locale];
-  const [draft, setDraft] = useState<string>(copy.defaultDraft);
   const [state, setState] = useState<LoadState>({
     analytics: null,
+    currentProjectId: "",
+    currentTaskId: "",
     error: null,
-    latestMessages: [],
     loading: true,
-    model: null,
     projects: [],
     sessions: [],
-    status: null,
   });
+  const [query, setQuery] = useState("");
+  const [selectedTaskKey, setSelectedTaskKey] = useState<string | null>(null);
+  const [selectedMessages, setSelectedMessages] = useState<{
+    error: string | null;
+    key: string | null;
+    loading: boolean;
+    messages: ChatTaskMessage[];
+  }>({ error: null, key: null, loading: false, messages: [] });
+  const [notice, setNotice] = useState<string | null>(null);
+  const refreshSeqRef = useRef(0);
+  const silentRefreshTimerRef = useRef<number | null>(null);
 
   const refresh = useCallback(async (options?: { silent?: boolean }) => {
+    const refreshSeq = ++refreshSeqRef.current;
     if (!options?.silent) {
       setState((prev) => ({ ...prev, loading: true, error: null }));
     }
-    const [statusResult, sessionsResult, analyticsResult, modelResult, projectsResult] =
-      await Promise.allSettled([
-        api.getStatus(),
-        api.getSessions(100),
-        api.getAnalytics(7),
-        api.getModelInfo(),
-        api.getChatProjects(),
-      ]);
-
-    const failures = [
-      statusResult,
-      sessionsResult,
-      analyticsResult,
-      modelResult,
-      projectsResult,
-    ].filter((result) => result.status === "rejected").length;
-    const sessions =
-      sessionsResult.status === "fulfilled" ? sessionsResult.value.sessions : [];
-    let latestMessages: SessionMessage[] = [];
-    if (sessions[0]) {
-      try {
-        const messagesResult = await api.getSessionMessages(sessions[0].id);
-        latestMessages = messagesResult.messages;
-      } catch {
-        latestMessages = [];
-      }
-    }
-
-    setState({
-      analytics:
-        analyticsResult.status === "fulfilled" ? analyticsResult.value : null,
-      error: failures > 0 ? "Dashboard API is not connected." : null,
-      latestMessages,
-      loading: false,
-      model: modelResult.status === "fulfilled" ? modelResult.value : null,
-      projects:
-        projectsResult.status === "fulfilled" ? projectsResult.value.projects : [],
-      sessions,
-      status: statusResult.status === "fulfilled" ? statusResult.value : null,
+    const [sessionsResult, analyticsResult, projectsResult] = await Promise.allSettled([
+      api.getSessions(200),
+      api.getAnalytics(7),
+      api.getChatProjects(),
+    ]);
+    const failures = [sessionsResult, analyticsResult, projectsResult].filter(
+      (result) => result.status === "rejected",
+    ).length;
+    const projectsResponse =
+      projectsResult.status === "fulfilled" ? projectsResult.value : null;
+    setState((prev) => {
+      if (refreshSeq !== refreshSeqRef.current) return prev;
+      return {
+        analytics: analyticsResult.status === "fulfilled" ? analyticsResult.value : prev.analytics,
+        currentProjectId: projectsResponse?.current_project_id ?? prev.currentProjectId,
+        currentTaskId: projectsResponse?.current_task_id ?? prev.currentTaskId,
+        error: failures > 0 ? "部分任务数据暂时不可用" : null,
+        loading: false,
+        projects: projectsResponse?.projects ?? prev.projects,
+        sessions: sessionsResult.status === "fulfilled" ? sessionsResult.value.sessions : prev.sessions,
+      };
     });
   }, []);
+
+  const scheduleSilentRefresh = useCallback(() => {
+    if (silentRefreshTimerRef.current != null) return;
+    silentRefreshTimerRef.current = window.setTimeout(() => {
+      silentRefreshTimerRef.current = null;
+      void refresh({ silent: true });
+    }, 350);
+  }, [refresh]);
+
+  const selectedTaskMessageSource = useMemo(() => {
+    if (!selectedTaskKey) return null;
+    for (const project of state.projects) {
+      for (const task of project.tasks || []) {
+        if (taskKey(project.id, task.id) === selectedTaskKey) {
+          return {
+            key: selectedTaskKey,
+            projectId: project.id,
+            taskId: task.id,
+            version: timestampMs(
+              task.updatedAt ?? task.updated_at ?? task.createdAt ?? task.created_at,
+              0,
+            ),
+          };
+        }
+      }
+    }
+    return null;
+  }, [selectedTaskKey, state.projects]);
 
   useEffect(() => {
     void refresh();
@@ -483,473 +1291,980 @@ export default function WorkspacePage() {
       void refresh({ silent: true });
     }, 3_000);
     const offAgentEvent = window.redouDesktop?.onAgentEvent?.(() => {
-      void refresh({ silent: true });
+      scheduleSilentRefresh();
     });
     const offAnalysisEvent = window.redouDesktop?.onAnalysisEvent?.(() => {
-      void refresh({ silent: true });
+      scheduleSilentRefresh();
     });
     return () => {
       window.clearInterval(pollId);
+      if (silentRefreshTimerRef.current != null) {
+        window.clearTimeout(silentRefreshTimerRef.current);
+        silentRefreshTimerRef.current = null;
+      }
       offAgentEvent?.();
       offAnalysisEvent?.();
     };
-  }, [refresh]);
-
-  const openChat = useCallback(() => {
-    const cleanDraft = draft.trim().replace(/\s+/g, " ");
-    if (cleanDraft && typeof window !== "undefined") {
-      window.sessionStorage.setItem(CHAT_DRAFT_KEY, cleanDraft);
-    }
-    navigate("/chat");
-  }, [draft, navigate]);
+  }, [refresh, scheduleSilentRefresh]);
 
   useLayoutEffect(() => {
-    setTitle(copy.pageTitle ?? "Redou Console");
+    setTitle(copy.pageTitle);
     setEnd(
       <div className="hidden min-w-0 items-center justify-end gap-1.5 sm:flex">
         <Button
           outlined
           size="icon"
           onClick={() => void refresh()}
-          aria-label={copy.refreshWorkspace}
+          aria-label={copy.refreshConsole}
           title={copy.refresh}
           disabled={state.loading}
         >
           <RefreshCw className={cn(state.loading && "animate-spin")} />
         </Button>
-        <Button
-          outlined
-          size="icon"
-          onClick={() => void runAction("restart")}
-          aria-label={copy.restartGateway}
-          title={copy.restartGateway}
-          disabled={isBusy}
-        >
-          <RotateCw className={cn(isBusy && "animate-spin")} />
-        </Button>
-        <Button onClick={openChat} className="gap-1.5 px-2.5 text-xs">
-          <Terminal className="h-3.5 w-3.5" />
-          <span className="hidden sm:inline">{copy.chat}</span>
-        </Button>
       </div>,
     );
-
     return () => {
       setTitle(null);
       setEnd(null);
     };
-  }, [copy, isBusy, openChat, refresh, runAction, setEnd, setTitle, state.loading]);
+  }, [copy, refresh, setEnd, setTitle, state.loading]);
 
-  const activeSessions = useMemo(
-    () => state.sessions.filter((session) => session.is_active),
-    [state.sessions],
-  );
-  const recentSessions = state.sessions.slice(0, 5);
-  const totalTools = state.sessions.reduce(
-    (sum, session) => sum + session.tool_call_count,
-    0,
-  );
-  const totalMessages = state.sessions.reduce(
-    (sum, session) => sum + session.message_count,
-    0,
-  );
-  const gatewayTone: Tone = state.status?.gateway_running
-    ? "success"
-    : state.status?.gateway_state === "startup_failed"
-      ? "danger"
-      : "warning";
-  const gatewayLabel = state.status?.gateway_running
-    ? copy.gatewayRunning
-    : state.status?.gateway_state === "startup_failed"
-      ? copy.failed
-      : copy.gatewayIdle;
-  const weeklyTokens =
-    (state.analytics?.totals.total_input ?? 0) +
-    (state.analytics?.totals.total_output ?? 0);
   const sessionByTask = useMemo(() => {
     const map = new Map<string, SessionInfo>();
     for (const session of state.sessions) {
-      const key = sessionTaskKey(session);
-      if (key) {
-        map.set(key, session);
+      if (session.projectId && session.taskId) {
+        map.set(taskKey(session.projectId, session.taskId), session);
       }
     }
     return map;
   }, [state.sessions]);
-  const taskRows = useMemo<TaskSummary[]>(() => {
-    const nowSeconds = Date.now() / 1000;
+
+  useEffect(() => {
+    if (!selectedTaskMessageSource) {
+      setSelectedMessages((prev) =>
+        prev.key === null && !prev.loading && prev.messages.length === 0 && !prev.error
+          ? prev
+          : { error: null, key: null, loading: false, messages: [] },
+      );
+      return;
+    }
+    const { key, projectId, taskId } = selectedTaskMessageSource;
+    let cancelled = false;
+    setSelectedMessages((prev) => ({
+      error: null,
+      key,
+      loading: prev.key !== key,
+      messages: prev.key === key ? prev.messages : [],
+    }));
+    api
+      .getChatTaskMessages(projectId, taskId)
+      .then((result) => {
+        if (cancelled) return;
+        setSelectedMessages({
+          error: result.warnings?.[0] ?? null,
+          key,
+          loading: false,
+          messages: result.messages ?? [],
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setSelectedMessages({
+          error: errorMessage(error),
+          key,
+          loading: false,
+          messages: [],
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    selectedTaskMessageSource?.key,
+    selectedTaskMessageSource?.projectId,
+    selectedTaskMessageSource?.taskId,
+    selectedTaskMessageSource?.version,
+  ]);
+
+  const taskViewModels = useMemo(() => {
     return state.projects.flatMap((project) =>
-      project.tasks.map((task) => {
-        const session = sessionByTask.get(taskKey(project.id, task.id)) ?? null;
-        const queueDepth = Math.max(0, Number(session?.queue_depth ?? 0));
-        const lastActive =
-          session?.last_active ?? task.updated_at ?? task.created_at ?? project.updated_at ?? 0;
-        const inactiveForSeconds = nowSeconds - Number(lastActive || 0);
-        const staleActive = Boolean(session?.is_active && inactiveForSeconds > 5 * 60);
-        const preview = session?.preview ?? null;
-        const attentionCue =
-          staleActive ||
-          session?.last_event_type === "error" ||
-          includesAttentionCue(preview);
-        const status: TaskStatus = session?.is_active
-          ? attentionCue
-            ? "attention"
-            : "running"
-          : queueDepth > 0
-            ? "queued"
-            : attentionCue
-              ? "attention"
-              : (session?.message_count ?? 0) > 0 || (session?.tool_call_count ?? 0) > 0
-                ? "done"
-                : "idle";
-        const statusLabel =
-          status === "running"
-            ? copy.taskBoard.active
-            : status === "queued"
-              ? copy.taskBoard.queued
-              : status === "attention"
-                ? staleActive
-                  ? copy.taskBoard.stale
-                  : copy.taskBoard.attention
-                : status === "done"
-                  ? copy.taskBoard.done
-                  : copy.taskBoard.idle;
-        const phase =
-          status === "running"
-            ? eventPhase(session?.last_event_type, copy)
-            : status === "queued"
-              ? `${queueDepth} ${copy.taskBoard.queued}`
-              : status === "attention"
-                ? attentionPhase(session?.last_event_type, preview, copy)
-                : status === "done"
-                  ? timeAgo(lastActive, locale)
-                  : copy.taskBoard.waiting;
-        return {
-          color: projectColor(project.id),
-          lastActive,
-          messageCount: session?.message_count ?? 0,
-          phase,
-          preview,
-          project,
-          queueDepth,
-          session,
-          status,
-          statusLabel,
-          task,
-          toolCount: session?.tool_call_count ?? 0,
-        };
+      (project.tasks || []).map((task) => {
+        const key = taskKey(project.id, task.id);
+        const messages = selectedMessages.key === key ? selectedMessages.messages : [];
+        return buildTaskViewModel(project, task, messages, [], {
+          copy,
+          session: sessionByTask.get(key) ?? null,
+        });
       }),
     );
-  }, [copy, locale, sessionByTask, state.projects]);
-  const activeTaskRows = taskRows.filter(
-    (task) => task.status === "running" || task.status === "queued",
-  );
-  const attentionTaskRows = taskRows.filter((task) => task.status === "attention");
-  const recentOutputTaskRows = [...taskRows]
-    .filter((task) => task.messageCount > 0 || task.toolCount > 0 || task.status === "done")
-    .sort((a, b) =>
-      a.project.id === b.project.id ? b.lastActive - a.lastActive : 0,
-    )
-    .slice(0, 8);
+  }, [copy, selectedMessages.key, selectedMessages.messages, sessionByTask, state.projects]);
 
-  const terminalLines = useMemo(
-    () => [
-      "$ redou console status",
-      `${copy.gateway}: ${gatewayLabel.toLowerCase()}${state.status?.gateway_pid ? ` pid ${state.status.gateway_pid}` : ""}`,
-      `model: ${state.model ? `${state.model.provider}/${state.model.model}` : copy.modelNotLoaded}`,
-      `${copy.runs}: ${state.sessions.length} ${copy.recentRuns}, ${activeSessions.length} ${copy.active}`,
-      `${copy.tools}: ${totalTools} ${copy.visibleCalls}`,
-      state.error ? `api: ${state.error}` : `api: ${copy.apiConnected}`,
-      state.status?.config_path
-        ? `${copy.config}: ${state.status.config_path}`
-        : `${copy.config}: ${copy.stage.waiting}`,
-    ],
-    [
-      activeSessions.length,
-      copy,
-      gatewayLabel,
-      state.error,
-      state.model,
-      state.sessions.length,
-      state.status,
-      totalTools,
-    ],
+  useEffect(() => {
+    if (taskViewModels.length === 0) {
+      if (selectedTaskKey) setSelectedTaskKey(null);
+      return;
+    }
+    if (selectedTaskKey && taskViewModels.some((task) => task.key === selectedTaskKey)) return;
+    const currentKey =
+      state.currentProjectId && state.currentTaskId
+        ? taskKey(state.currentProjectId, state.currentTaskId)
+        : null;
+    const nextKey =
+      (currentKey && taskViewModels.some((task) => task.key === currentKey)
+        ? currentKey
+        : null) ?? taskViewModels[0].key;
+    setSelectedTaskKey(nextKey);
+  }, [selectedTaskKey, state.currentProjectId, state.currentTaskId, taskViewModels]);
+
+  const selectedTask = useMemo(
+    () => taskViewModels.find((task) => task.key === selectedTaskKey) ?? null,
+    [selectedTaskKey, taskViewModels],
   );
+
+  const sortedTasks = useMemo(
+    () =>
+      [...taskViewModels].sort((a, b) => {
+        if (a.priorityRank !== b.priorityRank) return a.priorityRank - b.priorityRank;
+        return b.updatedAt - a.updatedAt;
+      }),
+    [taskViewModels],
+  );
+
+  const filteredTasks = useMemo(() => {
+    const cleanQuery = query.trim().toLowerCase();
+    if (!cleanQuery) return sortedTasks;
+    return sortedTasks.filter((task) =>
+      [
+        task.title,
+        task.projectName,
+        task.statusLabel,
+        task.currentAction,
+        task.currentTool,
+        task.provider,
+        task.model,
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(cleanQuery),
+    );
+  }, [query, sortedTasks]);
+
+  const overview = useMemo(() => {
+    const allTasks = state.projects.flatMap((project) =>
+      (project.tasks || []).map((task) => ({
+        session: sessionByTask.get(taskKey(project.id, task.id)) ?? null,
+        task,
+      })),
+    );
+    const statuses = allTasks.map(({ session, task }) => overviewStatusForTask(task, session));
+    const todaySessions = state.sessions.filter((session) =>
+      isToday(timestampMs(session.last_active ?? session.started_at, 0)),
+    );
+    const todayTokensFromSessions = todaySessions.reduce(
+      (sum, session) => sum + numberOrZero(session.input_tokens) + numberOrZero(session.output_tokens),
+      0,
+    );
+    const todayTools = todaySessions.reduce(
+      (sum, session) => sum + numberOrZero(session.tool_call_count),
+      0,
+    );
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const todayAnalytics = state.analytics?.daily.find((entry) => entry.day === todayKey) ?? null;
+    const todayTokensFromAnalytics =
+      todayAnalytics
+        ? numberOrZero(todayAnalytics.input_tokens) + numberOrZero(todayAnalytics.output_tokens)
+        : 0;
+    return {
+      active: statuses.filter((status) => status === "running").length,
+      completed: statuses.filter((status) => status === "completed").length,
+      failed: statuses.filter((status) => status === "failed").length,
+      needsAttention: statuses.filter((status) => status === "needs_attention").length,
+      queued: statuses.filter((status) => status === "queued").length,
+      todayTokens: todayTokensFromAnalytics || todayTokensFromSessions,
+      todayTools: numberOrZero(todayAnalytics?.tool_calls) || todayTools,
+    };
+  }, [sessionByTask, state.analytics?.daily, state.projects, state.sessions]);
+
+  const needsAttentionTasks = useMemo(
+    () =>
+      taskViewModels
+        .filter((task) => task.status === "needs_attention" || task.status === "failed")
+        .sort((a, b) => a.priorityRank - b.priorityRank || b.updatedAt - a.updatedAt)
+        .slice(0, 8),
+    [taskViewModels],
+  );
+
+  const selectedArtifacts = selectedTask?.artifacts ?? [];
+  const selectedChanges = changeSummary(selectedArtifacts);
+
+  const enterTask = useCallback(
+    async (task: TaskViewModel | null = selectedTask) => {
+      if (!task) {
+        setNotice(copy.selectTaskPrompt);
+        return;
+      }
+      try {
+        setNotice(null);
+        await api.setActiveChatTask(task.projectId, task.id);
+        navigate("/chat");
+      } catch (error) {
+        setNotice(`${copy.enterFailed}: ${errorMessage(error)}`);
+      }
+    },
+    [copy.enterFailed, copy.selectTaskPrompt, navigate, selectedTask],
+  );
+
+  const copyArtifactPath = useCallback(
+    async (artifact: ArtifactView) => {
+      try {
+        await navigator.clipboard.writeText(artifact.path);
+        setNotice(copy.copiedPath);
+      } catch (error) {
+        setNotice(errorMessage(error));
+      }
+    },
+    [copy.copiedPath],
+  );
+
+  const openArtifact = useCallback(async (artifact: ArtifactView, locate = false) => {
+    const target = locate ? parentPath(artifact.path) : artifact.path;
+    if (!target) return;
+    const result = await api.openLocalPath(target);
+    if (!result.ok) setNotice(result.message ?? "Path could not be opened.");
+  }, []);
 
   return (
     <div className="redou-workspace flex min-h-0 min-w-0 flex-1 flex-col gap-3 normal-case text-midground">
-      <section className="grid min-w-0 gap-3 xl:grid-cols-[minmax(0,1.05fr)_minmax(340px,1.35fr)]">
-        <div className="relative min-w-0 overflow-hidden rounded-lg border border-border bg-background-base/70 p-4 shadow-[0_18px_60px_rgba(0,0,0,0.32)]">
-          <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-midground/60 to-transparent" />
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div className="min-w-0">
-                <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
-                  <Bot className="h-4 w-4 text-success" />
-                  <span className="font-mono-ui tracking-[0.14em]">
-                    REDOU AGENT
-                  </span>
-                </div>
-                <h2 className="break-words font-expanded text-2xl font-bold leading-none tracking-[0.04em] text-midground sm:text-4xl">
-                  {copy.missionControl}
-                </h2>
-              </div>
-              <StatusPill tone={gatewayTone} label={gatewayLabel} />
-            </div>
-
-            <div className="grid min-w-0 gap-2 sm:grid-cols-2 2xl:grid-cols-4">
-              <Metric
-                icon={Activity}
-                label={copy.active}
-                value={String(activeSessions.length)}
-                detail={`${state.sessions.length} ${copy.visibleRuns}`}
-                tone="success"
-              />
-              <Metric
-                icon={MessageSquare}
-                label={copy.messages}
-                value={formatTokenCount(totalMessages)}
-                detail={copy.recentRuns}
-              />
-              <Metric
-                icon={Sparkles}
-                label={copy.tokens}
-                value={formatTokenCount(weeklyTokens)}
-                detail={copy.last7Days}
-                tone="warning"
-              />
-              <Metric
-                icon={HardDrive}
-                label={copy.tools}
-                value={formatTokenCount(totalTools)}
-                detail={copy.visibleCalls}
-              />
-            </div>
-
-            <div className="grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_14rem]">
-              <label className="flex min-h-32 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-black/20">
-                <span className="border-b border-border px-3 py-2 font-mono-ui text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                  {copy.taskDraft}
-                </span>
-                <textarea
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  className="min-h-28 w-full flex-1 resize-none bg-transparent px-3 py-2 text-sm leading-relaxed text-midground outline-none placeholder:text-muted-foreground/60"
-                  placeholder={copy.taskDraftPlaceholder}
-                  wrap="soft"
-                />
-              </label>
-
-              <div className="grid">
-                <button
-                  type="button"
-                  onClick={openChat}
-                  className="group flex min-h-28 items-center justify-between rounded-lg border border-success/35 bg-success/10 px-3 py-2 text-left transition-colors hover:bg-success/15 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-success"
-                >
-                  <span className="flex min-w-0 flex-col">
-                    <span className="text-sm font-medium text-success">
-                      {copy.startChat}
-                    </span>
-                    <span className="truncate text-xs text-success/70">
-                      {copy.draftHandoff}
-                    </span>
-                  </span>
-                  <ArrowRight className="h-4 w-4 shrink-0 transition-transform group-hover:translate-x-0.5" />
-                </button>
-              </div>
-            </div>
-          </div>
+      {notice && (
+        <div className="rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-sm text-warning">
+          {notice}
         </div>
+      )}
 
-        <div className="grid min-w-0 gap-3 sm:grid-cols-2 2xl:grid-cols-4">
-          <TaskStatusPanel
-            title={copy.taskBoard.overview}
-            icon={ListChecks}
-            count={taskRows.length}
-          >
-            <ProjectLegend
-              label={copy.taskBoard.projectLegend}
-              tasks={taskRows}
-            />
-            <TaskRows
-              rows={taskRows}
-              emptyLabel={copy.taskBoard.noTasks}
-              maxRows={8}
-              mode="overview"
-            />
-          </TaskStatusPanel>
+      <section className="grid min-h-0 min-w-0 gap-3 xl:grid-cols-[minmax(280px,0.82fr)_minmax(460px,1.6fr)_minmax(330px,0.95fr)]">
+        <RunOverviewPanel
+          copy={copy}
+          overview={overview}
+          selectedTask={selectedTask}
+          onEnterTask={() => void enterTask()}
+        />
 
-          <TaskStatusPanel
-            title={copy.taskBoard.activeProgress}
-            icon={Activity}
-            count={activeTaskRows.length}
-          >
-            <TaskRows
-              rows={activeTaskRows}
-              emptyLabel={copy.taskBoard.noActive}
-              maxRows={7}
-              mode="progress"
-            />
-          </TaskStatusPanel>
+        <TaskOverviewPanel
+          copy={copy}
+          filteredTasks={filteredTasks}
+          loading={state.loading}
+          onEnterTask={(task) => void enterTask(task)}
+          query={query}
+          selectedTaskKey={selectedTaskKey}
+          setQuery={setQuery}
+          setSelectedTaskKey={setSelectedTaskKey}
+          totalTasks={taskViewModels.length}
+        />
 
-          <TaskStatusPanel
-            title={copy.taskBoard.attention}
-            icon={AlertCircle}
-            count={attentionTaskRows.length}
-            tone={attentionTaskRows.length > 0 ? "danger" : "success"}
-          >
-            <TaskRows
-              rows={attentionTaskRows}
-              emptyDetail={copy.taskBoard.attentionHint}
-              emptyLabel={copy.taskBoard.allClear}
-              maxRows={6}
-              mode="attention"
-            />
-          </TaskStatusPanel>
-
-          <TaskStatusPanel
-            title={copy.taskBoard.output}
-            icon={CheckCircle2}
-            count={recentOutputTaskRows.length}
-          >
-            <TaskRows
-              rows={recentOutputTaskRows}
-              emptyLabel={copy.taskBoard.noOutput}
-              maxRows={7}
-              mode="output"
-            />
-          </TaskStatusPanel>
+        <div className="grid min-h-0 min-w-0 gap-3">
+          <TaskDetailPanel
+            copy={copy}
+            locale={locale}
+            loading={selectedMessages.loading}
+            selectedTask={selectedTask}
+            selectedTaskError={selectedMessages.error}
+          />
+          <NeedsAttentionPanel
+            copy={copy}
+            locale={locale}
+            tasks={needsAttentionTasks}
+          />
+          <ArtifactsPanel
+            artifacts={selectedArtifacts}
+            copy={copy}
+            locale={locale}
+            onCopy={copyArtifactPath}
+            onLocate={(artifact) => void openArtifact(artifact, true)}
+            onOpen={(artifact) => void openArtifact(artifact)}
+          />
         </div>
       </section>
 
-      <section className="grid min-h-0 min-w-0 flex-1 gap-3 xl:grid-cols-[minmax(260px,0.82fr)_minmax(360px,1.18fr)_minmax(300px,0.9fr)]">
-        <Panel
-          title={copy.runs}
-          icon={GitBranch}
-          end={
-            state.loading ? (
-              <Badge tone="outline" className="text-[10px]">
-                {copy.sync}
-              </Badge>
-            ) : (
-              <Badge tone="secondary" className="text-[10px]">
-                {recentSessions.length}
-              </Badge>
-            )
-          }
-        >
-          <div className="flex min-h-0 flex-col gap-2 overflow-y-auto pr-1">
-            {recentSessions.length === 0 ? (
-              <EmptyLine label={copy.noRecentRuns} detail={state.error ?? copy.waitingForSessions} />
-            ) : (
-              recentSessions.map((session) => (
-                <RunRow key={session.id} session={session} />
-              ))
-            )}
-          </div>
-        </Panel>
-
-        <Panel title={copy.codeCanvas} icon={FileCode2}>
-          <div className="grid min-h-0 min-w-0 gap-3 lg:grid-cols-[minmax(0,0.75fr)_minmax(0,1.25fr)]">
-            <div className="min-h-0 min-w-0 overflow-hidden rounded-lg border border-border bg-black/20">
-              <div className="border-b border-border px-3 py-2 font-mono-ui text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                {copy.files}
-              </div>
-              <div className="flex flex-col">
-                {FILE_ROWS.map((file) => (
-                  <div
-                    key={file.path}
-                    className="grid grid-cols-[1fr_auto] gap-2 border-b border-border/60 px-3 py-2 last:border-b-0"
-                  >
-                    <span className="min-w-0 truncate font-mono-ui text-xs">
-                      {file.path}
-                    </span>
-                    <span
-                      className={cn(
-                        "font-mono-ui text-xs",
-                        file.tone === "success" && "text-success",
-                        file.tone === "warning" && "text-warning",
-                        file.tone === "default" && "text-muted-foreground",
-                      )}
-                    >
-                      {file.lines}
-                    </span>
-                    <span className="col-span-2 text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
-                      {copy.fileStates[file.state as keyof typeof copy.fileStates] ?? file.state}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="min-h-0 min-w-0 overflow-hidden rounded-lg border border-border bg-[#071414]/85">
-              <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2">
-                <span className="font-mono-ui text-[11px] uppercase tracking-[0.16em] text-muted-foreground">
-                  {copy.patchPreview}
-                </span>
-                <Badge tone="outline" className="text-[10px]">
-                  {copy.workspace}
-                </Badge>
-              </div>
-              <pre className="min-h-0 overflow-auto p-3 font-mono-ui text-xs leading-6">
-                {PATCH_LINES.map((line, index) => (
-                  <code
-                    key={`${line.sign}-${index}`}
-                    className={cn(
-                      "block whitespace-pre-wrap break-words",
-                      line.sign === "+" && "text-success",
-                      line.sign === "-" && "text-destructive",
-                      line.sign === " " && "text-muted-foreground",
-                    )}
-                  >
-                    <span className="mr-2 inline-block w-3 text-muted-foreground">
-                      {line.sign}
-                    </span>
-                    {line.text}
-                  </code>
-                ))}
-              </pre>
-            </div>
-          </div>
-        </Panel>
-
-        <Panel title={copy.terminal} icon={Terminal}>
-          <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-[#061111]">
-            <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3">
-              <Circle className="h-2.5 w-2.5 fill-destructive text-destructive" />
-              <Circle className="h-2.5 w-2.5 fill-warning text-warning" />
-              <Circle className="h-2.5 w-2.5 fill-success text-success" />
-              <span className="ml-2 truncate font-mono-ui text-[11px] text-muted-foreground">
-                redou-agent
-              </span>
-            </div>
-            <pre className="min-h-0 flex-1 overflow-auto p-3 font-mono-ui text-xs leading-6 text-midground">
-              {terminalLines.map((line) => (
-                <code key={line} className="block whitespace-pre-wrap break-all">
-                  {line}
-                </code>
-              ))}
-            </pre>
-          </div>
-        </Panel>
+      <section className="grid min-h-0 min-w-0 gap-3 xl:grid-cols-[minmax(0,1.2fr)_minmax(340px,0.8fr)]">
+        <ChangePreviewPanel
+          artifacts={selectedArtifacts}
+          changes={selectedChanges}
+          copy={copy}
+          onEnterTask={() => void enterTask()}
+          selectedTask={selectedTask}
+        />
+        <DiagnosticsPanel
+          copy={copy}
+          events={selectedTask?.recentEvents ?? []}
+          locale={locale}
+          loading={selectedMessages.loading}
+        />
       </section>
     </div>
   );
 }
 
+function RunOverviewPanel({
+  copy,
+  onEnterTask,
+  overview,
+  selectedTask,
+}: {
+  copy: WorkspaceCopy;
+  onEnterTask: () => void;
+  overview: {
+    active: number;
+    completed: number;
+    failed: number;
+    needsAttention: number;
+    queued: number;
+    todayTokens: number;
+    todayTools: number;
+  };
+  selectedTask: TaskViewModel | null;
+}) {
+  const metrics = [
+    { label: copy.metrics.active, tone: "success" as Tone, value: overview.active },
+    { label: copy.metrics.queued, tone: "warning" as Tone, value: overview.queued },
+    { label: copy.metrics.needsAttention, tone: "danger" as Tone, value: overview.needsAttention },
+    { label: copy.metrics.failed, tone: "danger" as Tone, value: overview.failed },
+    { label: copy.metrics.completed, tone: "success" as Tone, value: overview.completed },
+    { label: copy.metrics.todayTokens, tone: "default" as Tone, value: formatTokenCount(overview.todayTokens) },
+    { label: copy.metrics.todayTools, tone: "default" as Tone, value: formatTokenCount(overview.todayTools) },
+  ];
+  return (
+    <Panel title={copy.sections.runOverview} icon={Activity}>
+      <div className="grid min-w-0 grid-cols-2 gap-2">
+        {metrics.map((metric) => (
+          <MetricTile
+            key={metric.label}
+            label={metric.label}
+            tone={metric.tone}
+            value={String(metric.value)}
+          />
+        ))}
+      </div>
+
+      <div className="mt-3 rounded-lg border border-border bg-black/15 p-3">
+        <div className="mb-2 font-mono-ui text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+          {copy.currentTask}
+        </div>
+        {selectedTask ? (
+          <div className="space-y-3">
+            <div className="min-w-0 text-sm">
+              <div className="truncate font-medium">{selectedTask.title}</div>
+              <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+                <span>{selectedTask.statusLabel}</span>
+                <span>·</span>
+                <span>{selectedTask.currentTool}</span>
+                <span>·</span>
+                <span>{formatDuration(selectedTask.durationMs)}</span>
+              </div>
+            </div>
+            <Button onClick={onEnterTask} size="sm" className="w-full justify-center gap-1.5">
+              {copy.enterTask}
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+        ) : (
+          <div className="flex min-h-24 flex-col justify-center text-sm text-muted-foreground">
+            {copy.selectTaskPrompt}
+            <Button disabled size="sm" className="mt-3 w-full justify-center">
+              {copy.enterTask}
+            </Button>
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function TaskOverviewPanel({
+  copy,
+  filteredTasks,
+  loading,
+  onEnterTask,
+  query,
+  selectedTaskKey,
+  setQuery,
+  setSelectedTaskKey,
+  totalTasks,
+}: {
+  copy: WorkspaceCopy;
+  filteredTasks: TaskViewModel[];
+  loading: boolean;
+  onEnterTask: (task: TaskViewModel) => void;
+  query: string;
+  selectedTaskKey: string | null;
+  setQuery: (value: string) => void;
+  setSelectedTaskKey: (value: string) => void;
+  totalTasks: number;
+}) {
+  return (
+    <Panel
+      title={copy.sections.taskOverview}
+      icon={ListChecks}
+      end={
+        <Badge tone="outline" className="shrink-0 text-[10px]">
+          {filteredTasks.length}/{totalTasks}
+        </Badge>
+      }
+      className="min-h-[31rem]"
+    >
+      <div className="mb-3 flex min-w-0 items-center gap-2">
+        <div className="relative min-w-0 flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="h-8 pl-8 text-xs"
+            placeholder={copy.searchPlaceholder}
+          />
+        </div>
+        <Badge tone={loading ? "warning" : "secondary"} className="text-[10px]">
+          {loading ? copy.refresh : copy.allTasks}
+        </Badge>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto pr-1">
+        {filteredTasks.length === 0 ? (
+          <EmptyState icon={ListChecks} label={copy.selectTaskPrompt} />
+        ) : (
+          filteredTasks.map((task) => (
+            <TaskOverviewCard
+              key={task.key}
+              copy={copy}
+              selected={task.key === selectedTaskKey}
+              task={task}
+              onEnterTask={onEnterTask}
+              onSelect={() => setSelectedTaskKey(task.key)}
+            />
+          ))
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function TaskOverviewCard({
+  copy,
+  onEnterTask,
+  onSelect,
+  selected,
+  task,
+}: {
+  copy: WorkspaceCopy;
+  onEnterTask: (task: TaskViewModel) => void;
+  onSelect: () => void;
+  selected: boolean;
+  task: TaskViewModel;
+}) {
+  const detailParts = [
+    task.currentTool,
+    task.currentAction,
+    formatDuration(task.durationMs),
+    task.provider,
+    `LLM ${formatTokenCount(task.llmCalls)}`,
+    `Tool ${formatTokenCount(task.toolCalls)}`,
+    `${formatTokenCount(task.tokens)} tokens`,
+    task.artifactCount > 0 ? `${task.artifactCount} ${copy.artifactCount}` : "",
+  ].filter(Boolean);
+  const canRetry = task.status === "failed";
+  return (
+    <div
+      className={cn(
+        "group min-w-0 rounded-lg border px-3 py-2 transition-colors",
+        selected
+          ? "border-success/55 bg-success/[0.08]"
+          : "border-border bg-card/45 hover:border-midground/35 hover:bg-card/70",
+      )}
+    >
+      <div className="flex min-w-0 items-start gap-2">
+        <button
+          type="button"
+          onClick={onSelect}
+          className="flex min-w-0 flex-1 items-start gap-2 rounded-sm text-left text-midground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-success"
+        >
+          <span
+            className={cn(
+              "mt-0.5 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border font-mono-ui text-xs",
+              task.status === "running" && "border-success/40 text-success",
+              task.status === "queued" && "border-warning/40 text-warning",
+              task.status === "needs_attention" && "border-destructive/50 text-destructive",
+              task.status === "failed" && "border-destructive/50 text-destructive",
+              task.status === "completed" && "border-success/35 text-success",
+              (task.status === "not_started" || task.status === "cancelled" || task.status === "paused") &&
+                "border-border text-muted-foreground",
+            )}
+          >
+            {statusSymbol(task.status)}
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="min-w-0">
+              <div className="truncate text-sm font-medium">{task.title}</div>
+              <div className="mt-0.5 truncate text-[11px] text-muted-foreground">
+                {task.projectName}
+              </div>
+            </div>
+            <div className="mt-1 truncate text-xs text-muted-foreground">
+              {detailParts.join(" · ")}
+            </div>
+          </div>
+        </button>
+        <div className="flex shrink-0 flex-col items-end gap-1">
+          <Badge tone={badgeTone(task.status)} className="text-[10px]">
+            {task.statusLabel}
+          </Badge>
+          <div className="flex items-center gap-1">
+            {canRetry && (
+              <TaskActionIconButton
+                icon={RefreshCw}
+                label={copy.retry}
+                onClick={() => onEnterTask(task)}
+                tone="danger"
+              />
+            )}
+            <TaskActionIconButton
+              icon={ArrowRight}
+              label={copy.enterTask}
+              onClick={() => onEnterTask(task)}
+            />
+            <TaskActionIconButton
+              icon={Terminal}
+              label={copy.viewLog}
+              onClick={onSelect}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaskDetailPanel({
+  copy,
+  loading,
+  locale,
+  selectedTask,
+  selectedTaskError,
+}: {
+  copy: WorkspaceCopy;
+  loading: boolean;
+  locale: "zh" | "en";
+  selectedTask: TaskViewModel | null;
+  selectedTaskError: string | null;
+}) {
+  return (
+    <Panel
+      title={copy.sections.taskDetail}
+      icon={Activity}
+      end={
+        selectedTask ? (
+          <Badge tone={badgeTone(selectedTask.status)} className="text-[10px]">
+            {selectedTask.statusLabel}
+          </Badge>
+        ) : null
+      }
+      className="min-h-[20rem]"
+    >
+      {!selectedTask ? (
+        <EmptyState icon={Activity} label={copy.selectDetailPrompt} />
+      ) : (
+        <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-1">
+          <div className="min-w-0">
+            <div className="truncate text-base font-semibold">{selectedTask.title}</div>
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+              <span>{copy.status}: {selectedTask.statusLabel}</span>
+              <span>·</span>
+              <span>
+                {copy.stage}: {selectedTask.currentStage}
+                {selectedTask.inferredStage ? ` (${copy.inferred})` : ""}
+              </span>
+            </div>
+          </div>
+
+          {loading && (
+            <div className="rounded-md border border-border bg-black/10 px-2 py-1 text-xs text-muted-foreground">
+              {copy.loadingTask}
+            </div>
+          )}
+          {selectedTaskError && (
+            <div className="rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-xs text-warning">
+              {selectedTaskError}
+            </div>
+          )}
+
+          <StatusSpecificDetails copy={copy} locale={locale} task={selectedTask} />
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function StatusSpecificDetails({
+  copy,
+  locale,
+  task,
+}: {
+  copy: WorkspaceCopy;
+  locale: "zh" | "en";
+  task: TaskViewModel;
+}) {
+  if (task.status === "running") {
+    return (
+      <>
+        <DetailGrid
+          rows={[
+            [copy.currentTool, task.currentTool],
+            [copy.currentAction, task.currentAction],
+            [copy.currentCommand, task.currentCommand],
+          ]}
+        />
+        <DetailSection title={copy.model}>
+          <DetailGrid
+            rows={[
+              [copy.provider, task.provider],
+              [copy.modelName, task.model],
+              [copy.llmCalls, formatTokenCount(task.llmCalls)],
+              [copy.tokens, formatTokenCount(task.tokens)],
+            ]}
+          />
+        </DetailSection>
+        <DetailSection title={copy.tools}>
+          <DetailGrid
+            rows={[
+              [copy.currentTool, task.currentTool],
+              [copy.toolCalls, formatTokenCount(task.toolCalls)],
+              [copy.recentResult, task.recentResult || copy.unavailable],
+            ]}
+          />
+        </DetailSection>
+        <DetailSection title={copy.time}>
+          <DetailGrid
+            rows={[
+              [copy.duration, formatDuration(task.durationMs, true)],
+              [copy.recentEvent, formatRelativeTime(task.updatedAt, locale)],
+            ]}
+          />
+        </DetailSection>
+        <StageTimeline copy={copy} timeline={task.stageTimeline} />
+      </>
+    );
+  }
+
+  if (task.status === "completed") {
+    return (
+      <>
+        <DetailGrid
+          rows={[
+            [copy.completedAt, formatDateTime(task.completedAt, locale)],
+            [copy.totalDuration, formatDuration(task.durationMs, true)],
+            [copy.provider, task.provider],
+            [copy.modelName, task.model],
+            [copy.llmCalls, formatTokenCount(task.llmCalls)],
+            [copy.toolCalls, formatTokenCount(task.toolCalls)],
+            [copy.tokens, formatTokenCount(task.tokens)],
+            [copy.artifactCount, String(task.artifactCount)],
+            [copy.testSummary, task.testSummary],
+          ]}
+        />
+        <DetailSection title={copy.recentArtifacts}>
+          {task.artifacts.slice(0, 3).length > 0 ? (
+            <div className="space-y-1">
+              {task.artifacts.slice(0, 3).map((artifact) => (
+                <div key={artifact.id} className="truncate text-xs text-muted-foreground">
+                  {artifact.name}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-xs text-muted-foreground">{copy.noRecentArtifacts}</div>
+          )}
+        </DetailSection>
+        <StageTimeline copy={copy} timeline={task.stageTimeline} />
+      </>
+    );
+  }
+
+  if (task.status === "needs_attention") {
+    return (
+      <>
+        <DetailGrid
+          rows={[
+            [copy.blockingReason, task.needsAttentionReason],
+            [copy.waitingConfirmation, task.currentAction],
+            [copy.recentEvent, formatRelativeTime(task.updatedAt, locale)],
+          ]}
+        />
+        <StageTimeline copy={copy} timeline={task.stageTimeline} />
+      </>
+    );
+  }
+
+  if (task.status === "failed") {
+    return (
+      <>
+        <DetailGrid
+          rows={[
+            [copy.errorSummary, task.lastError || task.needsAttentionReason],
+            [copy.failedStage, task.currentStage],
+            [copy.currentTool, task.currentTool],
+            [copy.currentCommand, task.currentCommand],
+          ]}
+        />
+        <StageTimeline copy={copy} timeline={task.stageTimeline} />
+      </>
+    );
+  }
+
+  return (
+    <>
+      <DetailGrid
+        rows={[
+          [copy.status, task.statusLabel],
+          [copy.queuePosition, task.queueDepth > 0 ? String(task.queueDepth) : copy.noCommand],
+          [copy.createdAt, formatDateTime(task.createdAt, locale)],
+          [copy.provider, task.provider],
+          [copy.modelName, task.model],
+        ]}
+      />
+      <StageTimeline copy={copy} timeline={task.stageTimeline} />
+    </>
+  );
+}
+
+function NeedsAttentionPanel({
+  copy,
+  locale,
+  tasks,
+}: {
+  copy: WorkspaceCopy;
+  locale: "zh" | "en";
+  tasks: TaskViewModel[];
+}) {
+  return (
+    <Panel
+      title={copy.sections.needsAttention}
+      icon={AlertCircle}
+      end={
+        <Badge tone={tasks.length > 0 ? "destructive" : "success"} className="text-[10px]">
+          {tasks.length}
+        </Badge>
+      }
+      className="min-h-[14rem]"
+    >
+      {tasks.length === 0 ? (
+        <EmptyState icon={CheckCircle2} label={copy.noNeedsAttention} />
+      ) : (
+        <div className="flex min-h-0 flex-col gap-2 overflow-y-auto pr-1">
+          {tasks.map((task) => (
+            <div key={task.key} className="rounded-lg border border-border bg-card/45 p-2.5">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{task.title}</div>
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    {cleanText(task.needsAttentionReason, task.statusLabel, 110)}
+                  </div>
+                </div>
+                <Badge tone={task.status === "failed" ? "destructive" : "warning"} className="shrink-0 text-[10px]">
+                  {task.status === "failed" ? copy.severityLevels.high : copy.severityLevels.medium}
+                </Badge>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+                <span>{task.projectName}</span>
+                <span>·</span>
+                <span>{formatRelativeTime(task.updatedAt, locale)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ArtifactsPanel({
+  artifacts,
+  copy,
+  locale,
+  onCopy,
+  onLocate,
+  onOpen,
+}: {
+  artifacts: ArtifactView[];
+  copy: WorkspaceCopy;
+  locale: "zh" | "en";
+  onCopy: (artifact: ArtifactView) => void;
+  onLocate: (artifact: ArtifactView) => void;
+  onOpen: (artifact: ArtifactView) => void;
+}) {
+  return (
+    <Panel
+      title={copy.sections.artifacts}
+      icon={PackageCheck}
+      end={<Badge tone="outline" className="text-[10px]">{artifacts.length}</Badge>}
+      className="min-h-[14rem]"
+    >
+      {artifacts.length === 0 ? (
+        <EmptyState icon={PackageCheck} label={copy.noArtifacts} />
+      ) : (
+        <div className="flex min-h-0 flex-col gap-2 overflow-y-auto pr-1">
+          {artifacts.slice(0, 8).map((artifact) => (
+            <div key={artifact.id} className="rounded-lg border border-border bg-card/45 p-2.5">
+              <div className="truncate text-sm font-medium">{artifact.name}</div>
+              <div className="mt-1 truncate text-xs text-muted-foreground">
+                {copy.artifactTypes[artifact.type]} · {artifact.taskTitle} · {formatRelativeTime(artifact.generatedAtMs, locale)}
+              </div>
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <IconButton label={copy.open} onClick={() => onOpen(artifact)} icon={Eye} />
+                <IconButton label={copy.locate} onClick={() => onLocate(artifact)} icon={FolderOpen} />
+                <IconButton label={copy.copyPath} onClick={() => onCopy(artifact)} icon={Copy} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ChangePreviewPanel({
+  artifacts,
+  changes,
+  copy,
+  onEnterTask,
+  selectedTask,
+}: {
+  artifacts: ArtifactView[];
+  changes: { added: number; deleted: number; modified: number };
+  copy: WorkspaceCopy;
+  onEnterTask: () => void;
+  selectedTask: TaskViewModel | null;
+}) {
+  return (
+    <Panel
+      title={copy.sections.changePreview}
+      icon={GitBranch}
+      end={
+        <TaskActionIconButton
+          disabled={!selectedTask}
+          icon={Eye}
+          label={copy.openFullChanges}
+          onClick={onEnterTask}
+        />
+      }
+      className="min-h-56"
+    >
+      {artifacts.length === 0 ? (
+        <EmptyState icon={FileCode2} label={copy.noChanges} />
+      ) : (
+        <div className="grid min-h-0 gap-3 lg:grid-cols-[16rem_minmax(0,1fr)]">
+          <div className="rounded-lg border border-border bg-black/15 p-3">
+            <div className="mb-2 text-sm font-medium">{copy.changes.recent}</div>
+            <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+              <Badge tone="success" className="text-[10px]">
+                {copy.changes.added} {changes.added}
+              </Badge>
+              <Badge tone="warning" className="text-[10px]">
+                {copy.changes.modified} {changes.modified}
+              </Badge>
+              <Badge tone="destructive" className="text-[10px]">
+                {copy.changes.deleted} {changes.deleted}
+              </Badge>
+            </div>
+          </div>
+          <div className="min-h-0 overflow-y-auto pr-1">
+            <div className="mb-2 text-xs uppercase tracking-[0.14em] text-muted-foreground">
+              {copy.changes.important}
+            </div>
+            <ul className="space-y-1.5">
+              {artifacts.slice(0, 8).map((artifact) => (
+                <li key={artifact.id} className="flex min-w-0 items-start gap-2 text-sm">
+                  <FileText className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 truncate font-mono-ui text-xs">{artifact.path}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function DiagnosticsPanel({
+  copy,
+  events,
+  loading,
+  locale,
+}: {
+  copy: WorkspaceCopy;
+  events: TaskEventView[];
+  loading: boolean;
+  locale: "zh" | "en";
+}) {
+  return (
+    <Panel
+      title={copy.sections.diagnostics}
+      icon={Terminal}
+      end={loading ? <Badge tone="warning" className="text-[10px]">{copy.refresh}</Badge> : null}
+      className="min-h-56 opacity-90"
+    >
+      {events.length === 0 ? (
+        <EmptyState icon={Terminal} label={copy.noDiagnostics} />
+      ) : (
+        <div className="flex min-h-0 flex-col gap-3">
+          <div className="space-y-1.5">
+            {events.slice(0, 6).map((event) => (
+              <div
+                key={event.id}
+                className="grid grid-cols-[3.5rem_1fr] gap-2 rounded-md border border-border/60 bg-black/10 px-2 py-1.5 text-xs"
+              >
+                <span className="font-mono-ui text-muted-foreground">{formatClock(event.timestampMs, locale)}</span>
+                <span className="min-w-0 truncate">
+                  {event.label} {event.success === false ? "失败" : "成功"}
+                </span>
+              </div>
+            ))}
+          </div>
+          <details className="rounded-lg border border-border bg-black/15">
+            <summary className="cursor-pointer px-3 py-2 text-xs text-muted-foreground">
+              {copy.expandRawLogs}
+            </summary>
+            <pre className="max-h-64 overflow-auto border-t border-border p-3 font-mono-ui text-xs leading-6 text-muted-foreground">
+              {events
+                .map((event) => {
+                  const raw = event.raw ? JSON.stringify(event.raw, null, 2) : event.summary;
+                  return `${formatClock(event.timestampMs, locale)} ${event.type}\n${raw}`;
+                })
+                .join("\n\n")}
+            </pre>
+          </details>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 function Panel({
   children,
+  className,
   end,
   icon: Icon,
   title,
 }: {
   children: ReactNode;
+  className?: string;
   end?: ReactNode;
   icon: ComponentType<{ className?: string }>;
   title: string;
 }) {
   return (
-    <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-background-base/62">
+    <div
+      className={cn(
+        "flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-background-base/62",
+        className,
+      )}
+    >
       <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
         <div className="flex min-w-0 items-center gap-2">
           <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -959,327 +2274,152 @@ function Panel({
         </div>
         {end}
       </div>
-      <div className="min-h-0 flex-1 p-3">{children}</div>
+      <div className="flex min-h-0 flex-1 flex-col p-3">{children}</div>
     </div>
   );
 }
 
-function Metric({
-  detail,
-  icon: Icon,
+function MetricTile({
   label,
-  tone = "default",
+  tone,
   value,
 }: {
-  detail: string;
-  icon: ComponentType<{ className?: string }>;
   label: string;
-  tone?: Tone;
+  tone: Tone;
   value: string;
 }) {
   return (
-    <div className="min-w-0 rounded-lg border border-border bg-card/50 px-3 py-2">
-      <div className="mb-2 flex items-center justify-between gap-2">
-        <span className="truncate text-xs uppercase tracking-[0.14em] text-muted-foreground">
-          {label}
-        </span>
-        <Icon
-          className={cn(
-            "h-4 w-4 shrink-0",
-            tone === "success" && "text-success",
-            tone === "warning" && "text-warning",
-            tone === "danger" && "text-destructive",
-            tone === "default" && "text-muted-foreground",
-          )}
-        />
-      </div>
-      <div className="font-mono-ui text-2xl leading-none text-midground">
-        {value}
-      </div>
-      <div className="mt-1 truncate text-xs text-muted-foreground">{detail}</div>
-    </div>
-  );
-}
-
-function StatusPill({ label, tone }: { label: string; tone: Tone }) {
-  return (
     <div
       className={cn(
-        "inline-flex shrink-0 items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs",
-        tone === "success" && "border-success/35 bg-success/10 text-success",
-        tone === "warning" && "border-warning/35 bg-warning/10 text-warning",
-        tone === "danger" &&
-          "border-destructive/35 bg-destructive/10 text-destructive",
-        tone === "default" && "border-border bg-card/60",
-      )}
-    >
-      <span className="relative flex h-2 w-2">
-        <span
-          className={cn(
-            "absolute inline-flex h-full w-full animate-ping rounded-full opacity-60",
-            tone === "success" && "bg-success",
-            tone === "warning" && "bg-warning",
-            tone === "danger" && "bg-destructive",
-            tone === "default" && "bg-muted-foreground",
-          )}
-        />
-        <span
-          className={cn(
-            "relative inline-flex h-2 w-2 rounded-full",
-            tone === "success" && "bg-success",
-            tone === "warning" && "bg-warning",
-            tone === "danger" && "bg-destructive",
-            tone === "default" && "bg-muted-foreground",
-          )}
-        />
-      </span>
-      <span className="font-mono-ui uppercase tracking-[0.14em]">{label}</span>
-    </div>
-  );
-}
-
-function TaskStatusPanel({
-  children,
-  count,
-  icon: Icon,
-  title,
-  tone = "default",
-}: {
-  children: ReactNode;
-  count: number;
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  tone?: Tone;
-}) {
-  return (
-    <div
-      className={cn(
-        "flex min-h-48 min-w-0 flex-col overflow-hidden rounded-lg border bg-card/50",
+        "min-w-0 rounded-lg border bg-card/45 px-3 py-2",
         tone === "success" && "border-success/25",
         tone === "warning" && "border-warning/25",
         tone === "danger" && "border-destructive/30",
         tone === "default" && "border-border",
       )}
     >
-      <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b border-border/60 px-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <Icon
-            className={cn(
-              "h-4 w-4 shrink-0",
-              tone === "success" && "text-success",
-              tone === "warning" && "text-warning",
-              tone === "danger" && "text-destructive",
-              tone === "default" && "text-muted-foreground",
-            )}
-          />
-          <h3 className="truncate font-expanded text-xs font-bold uppercase tracking-[0.1em]">
-            {title}
-          </h3>
-        </div>
-        <Badge tone={tone === "danger" ? "destructive" : "outline"} className="text-[10px]">
-          {count}
-        </Badge>
+      <div className="truncate text-[11px] text-muted-foreground">{label}</div>
+      <div className="mt-1 font-mono-ui text-xl leading-none text-midground">{value}</div>
+    </div>
+  );
+}
+
+function DetailSection({ children, title }: { children: ReactNode; title: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-black/10 p-2.5">
+      <div className="mb-2 font-mono-ui text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+        {title}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">{children}</div>
+      {children}
     </div>
   );
 }
 
-function ProjectLegend({ label, tasks }: { label: string; tasks: TaskSummary[] }) {
-  const projects = Array.from(
-    new Map(tasks.map((task) => [task.project.id, task])).values(),
-  ).slice(0, 5);
-
-  if (projects.length === 0) {
-    return null;
-  }
-
+function DetailGrid({ rows }: { rows: Array<[string, string]> }) {
   return (
-    <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/50 pb-2">
-      <span className="shrink-0 font-mono-ui text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
-        {label}
-      </span>
-      {projects.map((task) => (
-        <span
-          key={task.project.id}
-          className="inline-flex min-w-0 max-w-28 items-center gap-1.5 text-[11px] text-muted-foreground"
-        >
-          <span
-            className="h-2 w-2 shrink-0 rounded-full"
-            style={{ backgroundColor: task.color }}
-          />
-          <span className="truncate">{task.project.name}</span>
-        </span>
-      ))}
-    </div>
-  );
-}
-
-function TaskRows({
-  emptyDetail,
-  emptyLabel,
-  maxRows,
-  mode,
-  rows,
-}: {
-  emptyDetail?: string;
-  emptyLabel: string;
-  maxRows: number;
-  mode: "overview" | "progress" | "attention" | "output";
-  rows: TaskSummary[];
-}) {
-  const { locale } = useI18n();
-  const copy = COPY[locale];
-  const visibleRows = rows.slice(0, maxRows);
-  const hiddenCount = Math.max(0, rows.length - visibleRows.length);
-
-  if (rows.length === 0) {
-    return <EmptyTaskLine detail={emptyDetail} label={emptyLabel} />;
-  }
-
-  return (
-    <div className="flex min-h-0 flex-col gap-2 overflow-y-auto pr-1">
-      {visibleRows.map((row) => (
-        <TaskMiniRow
-          key={`${row.project.id}:${row.task.id}`}
-          copy={copy}
-          locale={locale}
-          mode={mode}
-          row={row}
-        />
-      ))}
-      {hiddenCount > 0 && (
-        <div className="rounded-md border border-dashed border-border px-2 py-1 text-center text-xs text-muted-foreground">
-          {copy.taskBoard.more(hiddenCount)}
+    <div className="grid gap-1.5 text-sm">
+      {rows.map(([label, value]) => (
+        <div key={label} className="grid min-w-0 grid-cols-[7.5rem_minmax(0,1fr)] gap-2">
+          <span className="text-xs text-muted-foreground">{label}</span>
+          <span className="min-w-0 break-words text-xs text-midground">{value || "—"}</span>
         </div>
-      )}
+      ))}
     </div>
   );
 }
 
-function TaskMiniRow({
+function StageTimeline({
   copy,
-  locale,
-  mode,
-  row,
+  timeline,
 }: {
   copy: WorkspaceCopy;
-  locale: "zh" | "en";
-  mode: "overview" | "progress" | "attention" | "output";
-  row: TaskSummary;
+  timeline: StageTimelineItem[];
 }) {
-  const outputDetail = `${row.messageCount} ${copy.run.msgs} · ${row.toolCount} ${copy.run.tools} · ${timeAgo(row.lastActive, locale)}`;
-  const detail =
-    mode === "output"
-      ? outputDetail
-      : mode === "overview"
-        ? `${row.statusLabel} · ${row.phase}`
-        : row.preview
-          ? compactText(row.preview, row.phase, 72)
-          : row.phase;
-
   return (
-    <div
-      className="min-w-0 rounded-md border border-l-2 border-border/70 bg-black/15 px-2.5 py-2"
-      style={{ borderLeftColor: row.color }}
-    >
-      <div className="flex min-w-0 items-start gap-2">
-        <span
-          className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
-          style={{
-            backgroundColor: row.color,
-            boxShadow: `0 0 0 3px ${row.color}22`,
-          }}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex min-w-0 items-center justify-between gap-2">
-            <span className="truncate text-sm font-medium">{row.task.title}</span>
+    <DetailSection title={copy.stages}>
+      <div className="space-y-1.5">
+        {timeline.map((stage) => (
+          <div key={`${stage.key}-${stage.label}`} className="flex min-w-0 items-center gap-2 text-xs">
             <span
               className={cn(
-                "shrink-0 font-mono-ui text-[10px] uppercase tracking-[0.1em]",
-                row.status === "running" && "text-success",
-                row.status === "queued" && "text-warning",
-                row.status === "attention" && "text-destructive",
-                row.status === "done" && "text-muted-foreground",
-                row.status === "idle" && "text-muted-foreground/70",
+                "inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full border font-mono-ui",
+                stage.status === "completed" && "border-success/35 text-success",
+                stage.status === "running" && "border-warning/35 text-warning",
+                stage.status === "failed" && "border-destructive/40 text-destructive",
+                stage.status === "pending" && "border-border text-muted-foreground",
               )}
             >
-              {row.statusLabel}
+              {copy.stageStates[stage.status]}
             </span>
+            <span className="truncate">{stage.label}</span>
           </div>
-          <div className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-            {row.status === "running" ? (
-              <Activity className="h-3 w-3 shrink-0 text-success" />
-            ) : row.status === "done" ? (
-              <CheckCircle2 className="h-3 w-3 shrink-0 text-muted-foreground" />
-            ) : (
-              <Clock3 className="h-3 w-3 shrink-0" />
-            )}
-            <span className="truncate">{detail}</span>
-          </div>
-        </div>
+        ))}
       </div>
+    </DetailSection>
+  );
+}
+
+function EmptyState({
+  icon: Icon,
+  label,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+}) {
+  return (
+    <div className="flex min-h-28 min-w-0 flex-1 flex-col items-center justify-center rounded-lg border border-dashed border-border px-3 text-center text-muted-foreground">
+      <Icon className="h-5 w-5" />
+      <div className="mt-2 text-sm">{label}</div>
     </div>
   );
 }
 
-function EmptyTaskLine({ detail, label }: { detail?: string; label: string }) {
+function IconButton({
+  icon: Icon,
+  label,
+  onClick,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+}) {
   return (
-    <div className="flex min-h-28 min-w-0 flex-col items-center justify-center rounded-md border border-dashed border-border px-3 text-center">
-      <Clock3 className="h-5 w-5 text-muted-foreground" />
-      <div className="mt-2 text-sm font-medium">{label}</div>
-      {detail && (
-        <div className="mt-1 max-w-48 text-xs text-muted-foreground">{detail}</div>
-      )}
-    </div>
+    <Button outlined size="xs" onClick={onClick} title={label} aria-label={label}>
+      <Icon className="h-3.5 w-3.5" />
+    </Button>
   );
 }
 
-function RunRow({ session }: { session: SessionInfo }) {
-  const { locale } = useI18n();
-  const copy = COPY[locale];
-  const source = session.source ?? copy.local;
-  const label =
-    session.title && session.title !== "Untitled"
-      ? session.title
-      : session.preview || copy.run.untitled;
-
+function TaskActionIconButton({
+  disabled = false,
+  icon: Icon,
+  label,
+  onClick,
+  tone = "default",
+}: {
+  disabled?: boolean;
+  icon: ComponentType<{ className?: string }>;
+  label: string;
+  onClick: () => void;
+  tone?: "default" | "danger";
+}) {
   return (
-    <div
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      disabled={disabled}
+      onClick={(event) => {
+        event.stopPropagation();
+        if (disabled) return;
+        onClick();
+      }}
       className={cn(
-        "min-w-0 rounded-lg border px-3 py-2",
-        session.is_active
-          ? "border-success/35 bg-success/[0.06]"
-          : "border-border bg-card/45",
+        "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border/70 bg-black/10 text-muted-foreground transition-colors hover:border-midground/50 hover:text-midground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-success disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-border/70 disabled:hover:text-muted-foreground",
+        tone === "danger" && "border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive",
       )}
     >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-medium">{label}</div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-            <span className="font-mono-ui">{source}</span>
-            <span>{session.message_count} {copy.run.msgs}</span>
-            <span>{session.tool_call_count} {copy.run.tools}</span>
-            <span>{timeAgo(session.last_active, locale)}</span>
-          </div>
-        </div>
-        <Badge
-          tone={session.is_active ? "success" : "outline"}
-          className="shrink-0 text-[10px]"
-        >
-          {session.is_active ? copy.run.live : copy.run.stored}
-        </Badge>
-      </div>
-    </div>
-  );
-}
-
-function EmptyLine({ detail, label }: { detail: string; label: string }) {
-  return (
-    <div className="flex min-h-28 min-w-0 flex-col items-center justify-center rounded-lg border border-dashed border-border px-3 text-center">
-      <Play className="mb-2 h-5 w-5 text-muted-foreground" />
-      <div className="text-sm font-medium">{label}</div>
-      <div className="mt-1 max-w-48 text-xs text-muted-foreground">{detail}</div>
-    </div>
+      <Icon className="h-3.5 w-3.5" />
+    </button>
   );
 }

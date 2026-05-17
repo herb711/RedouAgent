@@ -484,7 +484,7 @@ async function loadRenderer() {
     throw new Error(`Renderer build not found: ${indexPath}`);
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
-    await mainWindow.loadFile(indexPath, { hash: "/chat" });
+    await mainWindow.loadFile(indexPath, { hash: "/workspace" });
     rendererLoaded = true;
   }
 }
