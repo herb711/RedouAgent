@@ -29,7 +29,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -169,6 +168,10 @@ const CHAT_COPY = {
     notLoaded: "未加载",
     includedFiles: (count: number) => `包含文件 (${count})`,
     candidateTitle: (target: string) => `${target} 候选规则`,
+    candidateSummary: (target: string) => `发现 1 条 ${target} 候选规则`,
+    candidateView: "查看",
+    candidateCollapse: "收起",
+    candidateDismiss: "忽略",
     confirmTarget: (target: string) => `确认写入 ${target}`,
     contextLabels: {
       project: "项目",
@@ -278,6 +281,10 @@ const CHAT_COPY = {
     notLoaded: "not loaded",
     includedFiles: (count: number) => `includedFiles (${count})`,
     candidateTitle: (target: string) => `${target} Candidate`,
+    candidateSummary: (target: string) => `1 ${target} candidate rule found`,
+    candidateView: "View",
+    candidateCollapse: "Collapse",
+    candidateDismiss: "Dismiss",
     confirmTarget: (target: string) => `Confirm ${target}`,
     contextLabels: {
       project: "Project",
@@ -975,6 +982,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [contextOpen, setContextOpen] = useState(false);
   const [appliedRuleCandidateKey, setAppliedRuleCandidateKey] = useState<string | null>(null);
   const [applyingRuleCandidateKey, setApplyingRuleCandidateKey] = useState<string | null>(null);
+  const [dismissedRuleCandidateKey, setDismissedRuleCandidateKey] = useState<string | null>(null);
+  const [expandedRuleCandidateKey, setExpandedRuleCandidateKey] = useState<string | null>(null);
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const [narrow, setNarrow] = useState(() =>
     typeof window !== "undefined"
@@ -1806,10 +1815,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               )}
             </div>
 
-            {ruleCandidate && ruleCandidateKey !== appliedRuleCandidateKey && runState === "done" && (
+            {ruleCandidate &&
+              ruleCandidateKey &&
+              ruleCandidateKey !== appliedRuleCandidateKey &&
+              ruleCandidateKey !== dismissedRuleCandidateKey &&
+              runState === "done" && (
               <RuleCandidates
                 candidate={ruleCandidate}
                 applying={applyingRuleCandidateKey === ruleCandidateKey}
+                expanded={expandedRuleCandidateKey === ruleCandidateKey}
+                onToggle={() =>
+                  setExpandedRuleCandidateKey((current) => (current === ruleCandidateKey ? null : ruleCandidateKey))
+                }
+                onDismiss={() => setDismissedRuleCandidateKey(ruleCandidateKey)}
                 onApplyRule={() => void applyRuleCandidate()}
               />
             )}
@@ -2288,25 +2306,6 @@ function EventCard({ event }: { event: AgentEvent }) {
   );
 }
 
-function Card({ children, icon, title, tone = "default" }: { children: ReactNode; icon: ReactNode; title: string; tone?: "default" | "success" | "danger" }) {
-  return (
-    <div
-      className={cn(
-        "rounded-lg border px-3 py-2 text-sm",
-        tone === "danger" && "border-destructive/40 bg-destructive/5",
-        tone === "success" && "border-success/40 bg-success/5",
-        tone === "default" && "border-border/70 bg-card/45",
-      )}
-    >
-      <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
-        <span className="h-4 w-4">{icon}</span>
-        {title}
-      </div>
-      <div className="space-y-2">{children}</div>
-    </div>
-  );
-}
-
 function LongText({ children }: { children: string }) {
   const { locale } = useI18n();
   const copy = CHAT_COPY[locale];
@@ -2539,26 +2538,81 @@ function InfoRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function ruleCandidatePreview(content: string): string {
+  return (
+    content
+      .split(/\n+/)
+      .map((line) => line.trim())
+      .find((line) => line && !/^[-*]\s*Candidate\b/i.test(line) && !/^Source:/i.test(line)) ??
+    content.trim()
+  ).replace(/^[-*]\s+/, "");
+}
+
 function RuleCandidates({
   candidate,
   applying,
+  expanded,
+  onToggle,
+  onDismiss,
   onApplyRule,
 }: {
   candidate: { scope: "project" | "task"; content: string };
   applying?: boolean;
+  expanded: boolean;
+  onToggle(): void;
+  onDismiss(): void;
   onApplyRule(): void;
 }) {
   const { locale } = useI18n();
   const copy = CHAT_COPY[locale];
   const target = candidate.scope === "project" ? "PROJECT_RULES.md" : "TASK_RULES.md";
+  const preview = ruleCandidatePreview(candidate.content);
   return (
-    <div className="grid gap-2 border-t border-border bg-card/35 p-3 lg:grid-cols-3">
-      <Card icon={<Info />} title={copy.candidateTitle(target)}>
-        <LongText>{candidate.content}</LongText>
-        <Button size="sm" outlined disabled={applying} onClick={onApplyRule}>
-          {applying ? "..." : copy.confirmTarget(target)}
-        </Button>
-      </Card>
+    <div className="border-t border-border bg-card/35 px-3 py-2">
+      <div className="flex min-w-0 flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <button
+          type="button"
+          onClick={onToggle}
+          aria-expanded={expanded}
+          className="flex min-w-0 items-center gap-2 rounded-md px-1 py-1 text-left transition hover:bg-card/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border/70 bg-background/35 text-muted-foreground">
+            <Info className="h-4 w-4" />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-sm font-medium text-midground">{copy.candidateSummary(target)}</span>
+            <span className="block truncate text-xs text-muted-foreground" title={preview}>
+              {preview}
+            </span>
+          </span>
+        </button>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          <Button type="button" size="sm" ghost onClick={onToggle} aria-expanded={expanded}>
+            <ChevronDown className={cn("h-4 w-4 transition-transform", expanded && "rotate-180")} />
+            {expanded ? copy.candidateCollapse : copy.candidateView}
+          </Button>
+          <Button type="button" size="sm" outlined disabled={applying} onClick={onApplyRule}>
+            <ListPlus className="h-4 w-4" />
+            {applying ? "..." : copy.confirmTarget(target)}
+          </Button>
+          <Button type="button" size="sm" ghost disabled={applying} onClick={onDismiss}>
+            <X className="h-4 w-4" />
+            {copy.candidateDismiss}
+          </Button>
+        </div>
+      </div>
+      {expanded && (
+        <div className="mt-2 rounded-md border border-border/70 bg-background/25 p-3">
+          <div className="mb-2 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <FileText className="h-4 w-4" />
+            {copy.candidateTitle(target)}
+          </div>
+          <LongText>{candidate.content}</LongText>
+          <Button className="mt-2" type="button" size="sm" outlined disabled={applying} onClick={onApplyRule}>
+            {applying ? "..." : copy.confirmTarget(target)}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
