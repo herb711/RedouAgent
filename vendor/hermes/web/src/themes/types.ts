@@ -165,7 +165,7 @@ export interface DashboardTheme {
 }
 
 /**
- * Wire response shape for `GET /api/dashboard/themes`.
+ * Wire response shape for the desktop theme bridge.
  *
  * The `themes` list is intentionally partial — built-in themes are fully
  * defined in `presets.ts`; user themes carry their full definition so the

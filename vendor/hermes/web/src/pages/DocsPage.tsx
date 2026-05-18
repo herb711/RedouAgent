@@ -5,8 +5,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn } from "@/lib/utils";
 import { PluginSlot } from "@/plugins";
 import { Markdown } from "@/components/Markdown";
-import readmeEn from "../../../../../README.md?raw";
-import readmeZh from "../../../../../README.zh-CN.md?raw";
+import redouReadme from "../../../../../README.md?raw";
 
 export const REDOU_README_URL = "https://github.com/herb711/RedouAgent#readme";
 
@@ -19,9 +18,8 @@ const DS_BUTTON_OUTLINED_LINK_CN = cn(
 );
 
 export default function DocsPage() {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const { setEnd } = usePageHeader();
-  const readme = locale === "zh" ? readmeZh : readmeEn;
 
   useLayoutEffect(() => {
     setEnd(
@@ -55,7 +53,7 @@ export default function DocsPage() {
           "px-4 py-4 sm:px-6 sm:py-5",
         )}
       >
-        <Markdown content={readme} />
+        <Markdown content={redouReadme} />
       </div>
       <PluginSlot name="docs:bottom" />
     </div>

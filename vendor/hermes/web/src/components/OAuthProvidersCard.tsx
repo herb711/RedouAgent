@@ -8,7 +8,7 @@ import {
   Terminal,
   LogIn,
 } from "lucide-react";
-import { api, type OAuthProvider } from "@/lib/api";
+import { redouApi, type OAuthProvider } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -62,7 +62,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
 
   const refresh = useCallback(() => {
     setLoading(true);
-    api
+    redouApi
       .getOAuthProviders()
       .then((resp) => setProviders(resp.providers))
       .catch((e) => onErrorRef.current?.(`Failed to load providers: ${e}`))
@@ -79,7 +79,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     }
     setBusyId(provider.id);
     try {
-      await api.disconnectOAuthProvider(provider.id);
+      await redouApi.disconnectOAuthProvider(provider.id);
       onSuccess?.(`${provider.name} ${t.oauth.disconnect.toLowerCase()}ed`);
       refresh();
     } catch (e) {

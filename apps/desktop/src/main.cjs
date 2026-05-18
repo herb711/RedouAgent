@@ -26,6 +26,10 @@ function runtimeRoot() {
   return path.join(app.getPath("userData"), "runtime");
 }
 
+function windowIconPath() {
+  return path.join(projectRoot(), "logo.png");
+}
+
 function hermesHome() {
   return path.join(app.getPath("userData"), "hermes-home");
 }
@@ -166,6 +170,7 @@ function createWindow() {
     minWidth: 1080,
     minHeight: 720,
     title: PRODUCT_NAME,
+    icon: windowIconPath(),
     backgroundColor: "#061612",
     autoHideMenuBar: true,
     webPreferences: {
@@ -357,6 +362,42 @@ ipcMain.handle("redou:analytics:usage", (_event, days) =>
   getLocalService().getUsageAnalytics(days),
 );
 ipcMain.handle("redou:logs", (_event, params) => getLocalService().getLogs(params));
+ipcMain.handle("redou:cron:list", () => getLocalService().getCronJobs());
+ipcMain.handle("redou:cron:create", (_event, job) => getLocalService().createCronJob(job));
+ipcMain.handle("redou:cron:pause", (_event, id) => getLocalService().pauseCronJob(id));
+ipcMain.handle("redou:cron:resume", (_event, id) => getLocalService().resumeCronJob(id));
+ipcMain.handle("redou:cron:trigger", (_event, id) => getLocalService().triggerCronJob(id));
+ipcMain.handle("redou:cron:delete", (_event, id) => getLocalService().deleteCronJob(id));
+ipcMain.handle("redou:theme:list", () => getLocalService().getThemes());
+ipcMain.handle("redou:theme:set", (_event, name) => getLocalService().setTheme(name));
+ipcMain.handle("redou:language:get", () => getLocalService().getLanguage());
+ipcMain.handle("redou:language:set", (_event, language) =>
+  getLocalService().setLanguage(language),
+);
+ipcMain.handle("redou:plugins:manifests", () => getLocalService().getDashboardPlugins());
+ipcMain.handle("redou:plugins:rescan", () => getLocalService().rescanDashboardPlugins());
+ipcMain.handle("redou:plugins:hub", () => getLocalService().getPluginsHub());
+ipcMain.handle("redou:plugins:install", (_event, body) =>
+  getLocalService().installAgentPlugin(body),
+);
+ipcMain.handle("redou:plugins:enable", (_event, name) =>
+  getLocalService().enableAgentPlugin(name),
+);
+ipcMain.handle("redou:plugins:disable", (_event, name) =>
+  getLocalService().disableAgentPlugin(name),
+);
+ipcMain.handle("redou:plugins:update", (_event, name) =>
+  getLocalService().updateAgentPlugin(name),
+);
+ipcMain.handle("redou:plugins:remove", (_event, name) =>
+  getLocalService().removeAgentPlugin(name),
+);
+ipcMain.handle("redou:plugins:providers:save", (_event, body) =>
+  getLocalService().savePluginProviders(body),
+);
+ipcMain.handle("redou:plugins:visibility", (_event, name, hidden) =>
+  getLocalService().setPluginVisibility(name, hidden),
+);
 ipcMain.handle("redou:analysis:benchmarks", () =>
   getLocalService().getAnalysisBenchmarks(),
 );

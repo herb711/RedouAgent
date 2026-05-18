@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import type { ActionStatusResponse } from "@/lib/api";
 import { Toast } from "@/components/Toast";
 import { useI18n } from "@/i18n";
@@ -39,7 +39,7 @@ export function SystemActionsProvider({
 
     const poll = async () => {
       try {
-        const resp = await api.getActionStatus(name);
+        const resp = await redouApi.getActionStatus(name);
         if (cancelled) return;
         setActionStatus(resp);
         if (!resp.running) {
@@ -70,7 +70,7 @@ export function SystemActionsProvider({
       setPendingAction(action);
       setActionStatus(null);
       try {
-        await api.restartGateway();
+        await redouApi.restartGateway();
         setActiveAction(action);
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);

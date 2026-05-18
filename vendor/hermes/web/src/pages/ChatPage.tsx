@@ -37,7 +37,7 @@ import { ChatTaskToolbar } from "@/components/ChatTaskToolbar";
 import { ProjectTaskPanel } from "@/components/ProjectTaskPanel";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
-import { CHAT_PROJECTS_CHANGED_EVENT, api } from "@/lib/api";
+import { CHAT_PROJECTS_CHANGED_EVENT, redouApi } from "@/lib/api";
 import type {
   AgentEvent,
   BuiltContext,
@@ -1179,7 +1179,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const portalRoot = typeof document !== "undefined" ? document.body : null;
 
   const refreshProjects = useCallback(async () => {
-    const data = await api.getChatProjects();
+    const data = await redouApi.getChatProjects();
     setProjects(data.projects);
     const nextProject =
       data.projects.find((project) => project.id === selectedProjectId) ??
@@ -1290,13 +1290,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setQueuedCount(0);
     setRunState("loading");
     try {
-      const loaded = await api.getChatTaskMessages(projectId, taskId);
+      const loaded = await redouApi.getChatTaskMessages(projectId, taskId);
       if (!isCurrentSelection(projectId, taskId)) return;
       setMessages(normalizeChatMessages(loaded.messages));
       setWarnings(loaded.warnings);
       setQueuedCount(Math.max(0, Number(loaded.queue_depth || 0)));
       setCurrentRunId(loaded.active_run_id || null);
-      const built = await api.buildTaskContext({
+      const built = await redouApi.buildTaskContext({
         projectId,
         taskId,
         userInput: "",
@@ -1330,7 +1330,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [deliveryMode, runMode]);
 
   useEffect(() => {
-    const unsubscribe = api.onAgentEvent((payload) => {
+    const unsubscribe = redouApi.onAgentEvent((payload) => {
       if (!isCurrentSelection(payload.projectId, payload.taskId)) return;
       const { event } = payload;
       if (event.type !== "done") {
@@ -1471,7 +1471,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       next.set("task", task.id);
       next.delete("resume");
       setSearchParams(next);
-      void api.setActiveChatTask(project.id, task.id).catch((e) => {
+      void redouApi.setActiveChatTask(project.id, task.id).catch((e) => {
         setError(e instanceof Error ? e.message : String(e));
       });
     },
@@ -1585,7 +1585,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ]);
     }
     try {
-      const response = await api.sendChatMessage({
+      const response = await redouApi.sendChatMessage({
         projectId: selectedProjectId,
         taskId: selectedTaskId,
         userInput,
@@ -1658,7 +1658,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ]);
     }
     try {
-      const response = await api.sendChatMessage({
+      const response = await redouApi.sendChatMessage({
         projectId: selectedProjectId,
         taskId: selectedTaskId,
         userInput,
@@ -1700,7 +1700,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     if (!selectedProjectId || !selectedTaskId) return;
     setError(null);
     try {
-      const response = await api.updateQueuedChatMessage({
+      const response = await redouApi.updateQueuedChatMessage({
         projectId: selectedProjectId,
         taskId: selectedTaskId,
         queueId: queued.id,
@@ -1737,9 +1737,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const runId = currentRunId ?? selectedTask?.active_run_id ?? null;
     try {
       const response = runId
-        ? await api.stopChatRun(runId)
+        ? await redouApi.stopChatRun(runId)
         : selectedProjectId && selectedTaskId
-          ? await api.stopChatTask(selectedProjectId, selectedTaskId)
+          ? await redouApi.stopChatTask(selectedProjectId, selectedTaskId)
           : null;
       if (!response) return;
       if (!response.ok) {
@@ -1758,7 +1758,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const uniquePaths = Array.from(new Set(filePaths.map((file) => file.trim()).filter(Boolean)));
     if (!uniquePaths.length) return;
     try {
-      const result = await api.copyTaskAttachments(selectedProjectId, selectedTaskId, uniquePaths);
+      const result = await redouApi.copyTaskAttachments(selectedProjectId, selectedTaskId, uniquePaths);
       setPendingAttachments((current) => [...current, ...result.attachments]);
       setAttachmentWarnings(result.warnings);
     } catch (e) {
@@ -1840,16 +1840,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setError(null);
     try {
       if (candidate.scope === "project") {
-        const current = await api.getProjectContextFile(selectedProject.id, "rules");
+        const current = await redouApi.getProjectContextFile(selectedProject.id, "rules");
         const next = `${current.content.trimEnd()}\n\n${candidate.content}\n`;
-        await api.updateProjectContextFile(selectedProject.id, "rules", next);
+        await redouApi.updateProjectContextFile(selectedProject.id, "rules", next);
       } else {
-        const current = await api.getTaskContextFile(selectedProject.id, selectedTask.id, "rules");
+        const current = await redouApi.getTaskContextFile(selectedProject.id, selectedTask.id, "rules");
         const next = `${current.content.trimEnd()}\n\n${candidate.content}\n`;
-        await api.updateTaskContextFile(selectedProject.id, selectedTask.id, "rules", next);
+        await redouApi.updateTaskContextFile(selectedProject.id, selectedTask.id, "rules", next);
       }
       setAppliedRuleCandidateKey(key);
-      const built = await api.buildTaskContext({
+      const built = await redouApi.buildTaskContext({
         projectId: selectedProject.id,
         taskId: selectedTask.id,
         userInput: "",

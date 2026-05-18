@@ -2,25 +2,9 @@
  * ChatSidebar — structured-events panel that sits next to the xterm.js
  * terminal in the dashboard Chat tab.
  *
- * Two WebSockets, one per concern:
- *
- *   1. **JSON-RPC sidecar** (`GatewayClient` → /api/ws) — drives the
- *      sidebar's own slot of the dashboard's in-process gateway.  Owns
- *      the model badge / picker / connection state / error banner.
- *      Independent of the PTY pane's session by design — those are the
- *      pieces the sidebar needs to be able to drive directly (model
- *      switch via slash.exec, etc.).
- *
- *   2. **Event subscriber** (/api/events?channel=…) — passive, receives
- *      every dispatcher emit from the PTY-side `tui_gateway.entry` that
- *      the dashboard fanned out.  This is how `tool.start/progress/
- *      complete` from the agent loop reach the sidebar even though the
- *      PTY child runs three processes deep from us.  The `channel` id
- *      ties this listener to the same chat tab's PTY child — see
- *      `ChatPage.tsx` for where the id is generated.
- *
- * Best-effort throughout: WS failures show in the badge / banner, the
- * terminal pane keeps working unimpaired.
+ * Legacy structured-events panel for the browser dashboard transport.
+ * Redou Desktop no longer connects this component to the standalone
+ * dashboard server; if it is mounted, it surfaces a clear Desktop TODO.
  */
 
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -41,13 +25,6 @@ interface SessionInfo {
   provider?: string;
   credential_warning?: string;
 }
-
-interface RpcEnvelope {
-  method?: string;
-  params?: { type?: string; payload?: unknown };
-}
-
-const TOOL_LIMIT = 20;
 
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: "idle",
@@ -142,134 +119,14 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     };
   }, [gw]);
 
-  // Event subscriber WebSocket — receives the rebroadcast of every
-  // dispatcher emit from the PTY child's gateway.  See /api/pub +
-  // /api/events in hermes_cli/web_server.py for the broadcast hop.
-  //
-  // Failures (auth/loopback rejection, server too old to expose the
-  // endpoint, transient drops) surface in the same banner as the
-  // JSON-RPC sidecar so the sidebar matches its documented best-effort
-  // UX and the user always has a reconnect affordance.
+  // Legacy browser-dashboard event transport is intentionally disabled in
+  // Redou Desktop. TODO: route this sidebar through IPC if it is mounted again.
   useEffect(() => {
-    const token = window.__HERMES_SESSION_TOKEN__;
-
-    if (!token || !channel) {
-      return;
-    }
-
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const qs = new URLSearchParams({ token, channel });
-    const ws = new WebSocket(
-      `${proto}//${window.location.host}/api/events?${qs.toString()}`,
+    void channel;
+    setError(
+      "Legacy dashboard event stream is disabled in Redou Desktop. " +
+        "TODO: route sidebar events through Electron IPC before re-enabling this panel.",
     );
-
-    // `unmounting` suppresses the banner during cleanup — `ws.close()`
-    // from the effect's return fires a close event with code 1005 that
-    // would otherwise look like an unexpected drop.
-    const DISCONNECTED = "events feed disconnected — tool calls may not appear";
-    let unmounting = false;
-    const surface = (msg: string) => !unmounting && setError(msg);
-
-    ws.addEventListener("error", () => surface(DISCONNECTED));
-
-    ws.addEventListener("close", (ev) => {
-      if (ev.code === 4401 || ev.code === 4403) {
-        surface(`events feed rejected (${ev.code}) — reload the page`);
-      } else if (ev.code !== 1000) {
-        surface(DISCONNECTED);
-      }
-    });
-
-    ws.addEventListener("message", (ev) => {
-      let frame: RpcEnvelope;
-
-      try {
-        frame = JSON.parse(ev.data);
-      } catch {
-        return;
-      }
-
-      if (frame.method !== "event" || !frame.params) {
-        return;
-      }
-
-      const { type, payload } = frame.params;
-
-      if (type === "tool.start") {
-        const p = payload as
-          | { tool_id?: string; name?: string; context?: string }
-          | undefined;
-        const toolId = p?.tool_id;
-
-        if (!toolId) {
-          return;
-        }
-
-        setTools((prev) =>
-          [
-            ...prev,
-            {
-              kind: "tool" as const,
-              id: `tool-${toolId}-${prev.length}`,
-              tool_id: toolId,
-              name: p?.name ?? "tool",
-              context: p?.context,
-              status: "running" as const,
-              startedAt: Date.now(),
-            },
-          ].slice(-TOOL_LIMIT),
-        );
-      } else if (type === "tool.progress") {
-        const p = payload as
-          | { name?: string; preview?: string }
-          | undefined;
-
-        if (!p?.name || !p.preview) {
-          return;
-        }
-
-        setTools((prev) =>
-          prev.map((t) =>
-            t.status === "running" && t.name === p.name
-              ? { ...t, preview: p.preview }
-              : t,
-          ),
-        );
-      } else if (type === "tool.complete") {
-        const p = payload as
-          | {
-              tool_id?: string;
-              summary?: string;
-              error?: string;
-              inline_diff?: string;
-            }
-          | undefined;
-
-        if (!p?.tool_id) {
-          return;
-        }
-
-        setTools((prev) =>
-          prev.map((t) =>
-            t.tool_id === p.tool_id
-              ? {
-                  ...t,
-                  status: p.error ? "error" : "done",
-                  summary: p.summary,
-                  error: p.error,
-                  inline_diff: p.inline_diff,
-                  completedAt: Date.now(),
-                }
-              : t,
-          ),
-        );
-      }
-    });
-
-    return () => {
-      unmounting = true;
-      ws.close();
-    };
   }, [channel, version]);
 
   const reconnect = useCallback(() => {

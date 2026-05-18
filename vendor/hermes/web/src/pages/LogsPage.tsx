@@ -6,7 +6,7 @@ import {
   useRef,
 } from "react";
 import { FileText, RefreshCw } from "lucide-react";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { FilterGroup, Segmented } from "@nous-research/ui/ui/components/segmented";
@@ -63,7 +63,7 @@ export default function LogsPage() {
   const fetchLogs = useCallback(() => {
     setLoading(true);
     setError(null);
-    api
+    redouApi
       .getLogs({ file, lines: lineCount, level, component })
       .then((resp) => {
         setLines(resp.lines);

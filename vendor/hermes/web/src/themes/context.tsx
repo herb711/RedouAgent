@@ -20,7 +20,7 @@ import type {
   ThemePalette,
   ThemeTypography,
 } from "./types";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 
 /** LocalStorage key — pre-applied before the React tree mounts to avoid
  *  a visible flash of the default palette on theme-overridden installs. */
@@ -348,7 +348,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Load server-side themes (built-ins + user YAMLs) once on mount.
   useEffect(() => {
     let cancelled = false;
-    api
+    redouApi
       .getThemes()
       .then((resp) => {
         if (cancelled) return;
@@ -395,7 +395,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       if (typeof window !== "undefined") {
         window.localStorage.setItem(STORAGE_KEY, next);
       }
-      api.setTheme(next).catch(() => {});
+      redouApi.setTheme(next).catch(() => {});
     },
     [availableThemes, userThemeDefs],
   );

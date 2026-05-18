@@ -10,7 +10,7 @@ import {
   Square,
   TriangleAlert,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import type {
   AnalysisBenchmarkResult,
   AnalysisBenchmarkTaskResult,
@@ -692,8 +692,8 @@ export default function AnalyticsPage() {
     setError(null);
     try {
       const [nextBenchmarks, nextModels] = await Promise.all([
-        api.getAnalysisBenchmarks(),
-        api.getModelOptions(),
+        redouApi.getAnalysisBenchmarks(),
+        redouApi.getModelOptions(),
       ]);
       setBenchmarks(nextBenchmarks);
       setModelOptions(nextModels);
@@ -720,8 +720,8 @@ export default function AnalyticsPage() {
   useEffect(() => {
     let cleanup: (() => void) | undefined;
     try {
-      cleanup = api.onAnalysisEvent(() => {
-        void api.getAnalysisBenchmarks().then(setBenchmarks);
+      cleanup = redouApi.onAnalysisEvent(() => {
+        void redouApi.getAnalysisBenchmarks().then(setBenchmarks);
       });
     } catch {
       cleanup = undefined;
@@ -739,7 +739,7 @@ export default function AnalyticsPage() {
   useEffect(() => {
     if (!hasLiveBenchmarks(benchmarks)) return;
     const timer = window.setInterval(() => {
-      void api.getAnalysisBenchmarks().then(setBenchmarks).catch(() => undefined);
+      void redouApi.getAnalysisBenchmarks().then(setBenchmarks).catch(() => undefined);
     }, 2000);
     return () => window.clearInterval(timer);
   }, [benchmarks]);
@@ -790,7 +790,7 @@ export default function AnalyticsPage() {
     setStarting(true);
     setError(null);
     try {
-      await api.startAnalysisBenchmarks({
+      await redouApi.startAnalysisBenchmarks({
         models: selectedModels.map(({ provider, model }) => ({ provider, model })),
       });
       await load();

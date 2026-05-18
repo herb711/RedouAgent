@@ -2012,6 +2012,325 @@ def _get_toolsets() -> List[Dict[str, Any]]:
     return result
 
 
+_BUILTIN_DASHBOARD_THEMES: List[Dict[str, str]] = [
+    {
+        "name": "default",
+        "label": "AGENT Teal",
+        "description": "Classic dark teal - the canonical AGENT look",
+    },
+    {"name": "midnight", "label": "Midnight", "description": "Deep blue-violet with cool accents"},
+    {"name": "ember", "label": "Ember", "description": "Warm crimson and bronze"},
+    {"name": "mono", "label": "Mono", "description": "Clean grayscale - minimal and focused"},
+    {"name": "paper", "label": "Paper", "description": "White canvas with black text"},
+    {"name": "cyberpunk", "label": "Cyberpunk", "description": "Neon green on black"},
+    {"name": "rose", "label": "Rose", "description": "Soft pink and warm ivory"},
+    {
+        "name": "default-large",
+        "label": "AGENT Teal (Large)",
+        "description": "AGENT Teal with bigger fonts and roomier spacing",
+    },
+]
+
+
+def _normalise_dashboard_language(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in {"zh", "en"} else "zh"
+
+
+def _ensure_dashboard_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    dashboard = config.get("dashboard")
+    if not isinstance(dashboard, dict):
+        dashboard = {}
+        config["dashboard"] = dashboard
+    return dashboard
+
+
+def _get_dashboard_theme_name() -> str:
+    dashboard = load_config().get("dashboard")
+    if isinstance(dashboard, dict):
+        return str(dashboard.get("theme") or "default")
+    return "default"
+
+
+def _get_themes() -> Dict[str, Any]:
+    return {"themes": list(_BUILTIN_DASHBOARD_THEMES), "active": _get_dashboard_theme_name()}
+
+
+def _set_theme(payload: Dict[str, Any]) -> Dict[str, Any]:
+    name = str(payload.get("name") or "default").strip() or "default"
+    config = load_config()
+    _ensure_dashboard_config(config)["theme"] = name
+    save_config(config)
+    return {"ok": True, "theme": name}
+
+
+def _get_language() -> Dict[str, str]:
+    dashboard = load_config().get("dashboard")
+    value = dashboard.get("language") if isinstance(dashboard, dict) else "zh"
+    return {"language": _normalise_dashboard_language(value)}
+
+
+def _set_language(payload: Dict[str, Any]) -> Dict[str, Any]:
+    language = _normalise_dashboard_language(payload.get("language"))
+    config = load_config()
+    _ensure_dashboard_config(config)["language"] = language
+    save_config(config)
+    return {"ok": True, "language": language}
+
+
+def _require_nonempty_id(payload: Dict[str, Any]) -> str:
+    job_id = str(payload.get("id") or "").strip()
+    if not job_id:
+        raise ValueError("cron job id required")
+    return job_id
+
+
+def _cron_list() -> List[Dict[str, Any]]:
+    from cron.jobs import list_jobs
+
+    return list_jobs(include_disabled=True)
+
+
+def _cron_create(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from cron.jobs import create_job
+
+    return create_job(
+        prompt=str(payload.get("prompt") or ""),
+        schedule=str(payload.get("schedule") or ""),
+        name=str(payload.get("name") or "") or None,
+        deliver=str(payload.get("deliver") or "local") or "local",
+    )
+
+
+def _cron_pause(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from cron.jobs import pause_job
+
+    job = pause_job(_require_nonempty_id(payload))
+    if not job:
+        raise ValueError("cron job not found")
+    return job
+
+
+def _cron_resume(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from cron.jobs import resume_job
+
+    job = resume_job(_require_nonempty_id(payload))
+    if not job:
+        raise ValueError("cron job not found")
+    return job
+
+
+def _cron_trigger(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from cron.jobs import trigger_job
+
+    job = trigger_job(_require_nonempty_id(payload))
+    if not job:
+        raise ValueError("cron job not found")
+    return job
+
+
+def _cron_delete(payload: Dict[str, Any]) -> Dict[str, bool]:
+    from cron.jobs import remove_job
+
+    if not remove_job(_require_nonempty_id(payload)):
+        raise ValueError("cron job not found")
+    return {"ok": True}
+
+
+def _get_dashboard_plugins() -> List[Dict[str, Any]]:
+    # Desktop does not serve plugin JS/CSS assets over an HTTP dashboard route.
+    # Keep renderer extension injection disabled until there is a desktop asset
+    # loader. The plugin hub below still manages agent plugins.
+    return []
+
+
+def _rescan_dashboard_plugins() -> Dict[str, Any]:
+    return {"ok": True, "count": 0}
+
+
+def _validate_plugin_name(name: Any) -> str:
+    text = str(name or "").strip()
+    if not text or "/" in text or "\\" in text or ".." in text:
+        raise ValueError("invalid plugin name")
+    return text
+
+
+def _plugins_hub() -> Dict[str, Any]:
+    from hermes_cli.plugins_cmd import (
+        _discover_all_plugins,
+        _discover_context_engines,
+        _discover_memory_providers,
+        _get_current_context_engine,
+        _get_current_memory_provider,
+        _get_disabled_set,
+        _get_enabled_set,
+        _read_manifest as _read_plugin_manifest_at,
+    )
+
+    disabled_set = _get_disabled_set()
+    enabled_set = _get_enabled_set()
+    config = load_config()
+    dashboard = config.get("dashboard") if isinstance(config.get("dashboard"), dict) else {}
+    hidden_plugins = dashboard.get("hidden_plugins") if isinstance(dashboard, dict) else []
+    hidden_set = set(hidden_plugins) if isinstance(hidden_plugins, list) else set()
+    plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
+    rows: List[Dict[str, Any]] = []
+
+    for name, version, description, source, dir_path in _discover_all_plugins():
+        path = Path(dir_path)
+        if name in disabled_set:
+            runtime_status = "disabled"
+        elif name in enabled_set:
+            runtime_status = "enabled"
+        else:
+            runtime_status = "inactive"
+
+        under_user_tree = False
+        try:
+            path.resolve().relative_to(plugins_root_resolved)
+            under_user_tree = True
+        except ValueError:
+            pass
+
+        can_remove_update = source in ("user", "git") and under_user_tree and path.is_dir()
+        manifest_data = _read_plugin_manifest_at(path)
+        provides_tools = manifest_data.get("provides_tools") or []
+        auth_required = False
+        auth_command = ""
+        if provides_tools:
+            try:
+                from tools.registry import registry
+
+                for tool_name in provides_tools:
+                    entry = registry.get_entry(tool_name)
+                    if entry and entry.check_fn and not entry.check_fn():
+                        auth_required = True
+                        auth_command = f"hermes auth {name}"
+                        break
+            except Exception:
+                pass
+
+        rows.append(
+            {
+                "name": name,
+                "version": version or "",
+                "description": description or "",
+                "source": source,
+                "runtime_status": runtime_status,
+                "has_dashboard_manifest": (path / "dashboard" / "manifest.json").exists(),
+                "dashboard_manifest": None,
+                "path": str(path),
+                "can_remove": can_remove_update,
+                "can_update_git": can_remove_update and (path / ".git").exists(),
+                "auth_required": auth_required,
+                "auth_command": auth_command,
+                "user_hidden": name in hidden_set,
+            }
+        )
+
+    memory_options: List[Dict[str, str]] = []
+    try:
+        memory_options = [
+            {"name": name, "description": description}
+            for name, description in _discover_memory_providers()
+        ]
+    except Exception:
+        pass
+
+    context_options: List[Dict[str, str]] = []
+    try:
+        context_options = [
+            {"name": name, "description": description}
+            for name, description in _discover_context_engines()
+        ]
+    except Exception:
+        pass
+
+    return {
+        "plugins": rows,
+        "orphan_dashboard_plugins": [],
+        "providers": {
+            "memory_provider": _get_current_memory_provider() or "",
+            "memory_options": memory_options,
+            "context_engine": _get_current_context_engine(),
+            "context_options": context_options,
+        },
+    }
+
+
+def _install_agent_plugin(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from hermes_cli.plugins_cmd import dashboard_install_plugin
+
+    identifier = str(payload.get("identifier") or "").strip()
+    if not identifier:
+        raise ValueError("plugin identifier required")
+    result = dashboard_install_plugin(
+        identifier,
+        force=bool(payload.get("force")),
+        enable=bool(payload.get("enable", True)),
+    )
+    if not result.get("ok"):
+        raise ValueError(str(result.get("error") or "plugin install failed"))
+    return result
+
+
+def _set_agent_plugin_enabled(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from hermes_cli.plugins_cmd import dashboard_set_agent_plugin_enabled
+
+    result = dashboard_set_agent_plugin_enabled(
+        _validate_plugin_name(payload.get("name")),
+        enabled=bool(payload.get("enabled")),
+    )
+    if not result.get("ok"):
+        raise ValueError(str(result.get("error") or "plugin state update failed"))
+    return result
+
+
+def _update_agent_plugin(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from hermes_cli.plugins_cmd import dashboard_update_user_plugin
+
+    result = dashboard_update_user_plugin(_validate_plugin_name(payload.get("name")))
+    if not result.get("ok"):
+        raise ValueError(str(result.get("error") or "plugin update failed"))
+    return result
+
+
+def _remove_agent_plugin(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from hermes_cli.plugins_cmd import dashboard_remove_user_plugin
+
+    result = dashboard_remove_user_plugin(_validate_plugin_name(payload.get("name")))
+    if not result.get("ok"):
+        raise ValueError(str(result.get("error") or "plugin remove failed"))
+    return result
+
+
+def _save_plugin_providers(payload: Dict[str, Any]) -> Dict[str, bool]:
+    from hermes_cli.plugins_cmd import _save_context_engine, _save_memory_provider
+
+    if "memory_provider" in payload:
+        _save_memory_provider(str(payload.get("memory_provider") or ""))
+    if "context_engine" in payload:
+        _save_context_engine(str(payload.get("context_engine") or ""))
+    return {"ok": True}
+
+
+def _set_plugin_visibility(payload: Dict[str, Any]) -> Dict[str, Any]:
+    name = _validate_plugin_name(payload.get("name"))
+    hidden = bool(payload.get("hidden"))
+    config = load_config()
+    dashboard = _ensure_dashboard_config(config)
+    hidden_list = dashboard.get("hidden_plugins")
+    if not isinstance(hidden_list, list):
+        hidden_list = []
+    if hidden and name not in hidden_list:
+        hidden_list.append(name)
+    elif not hidden and name in hidden_list:
+        hidden_list.remove(name)
+    dashboard["hidden_plugins"] = hidden_list
+    save_config(config)
+    return {"ok": True, "name": name, "hidden": hidden}
+
+
 def handle(action: str, payload: Dict[str, Any]) -> Any:
     if action == "get_config":
         return _normalize_config_for_web(load_config())
@@ -2059,6 +2378,44 @@ def handle(action: str, payload: Dict[str, Any]) -> Any:
         return _merge_skills(payload)
     if action == "get_toolsets":
         return _get_toolsets()
+    if action == "get_themes":
+        return _get_themes()
+    if action == "set_theme":
+        return _set_theme(payload)
+    if action == "get_language":
+        return _get_language()
+    if action == "set_language":
+        return _set_language(payload)
+    if action == "cron_list":
+        return _cron_list()
+    if action == "cron_create":
+        return _cron_create(payload)
+    if action == "cron_pause":
+        return _cron_pause(payload)
+    if action == "cron_resume":
+        return _cron_resume(payload)
+    if action == "cron_trigger":
+        return _cron_trigger(payload)
+    if action == "cron_delete":
+        return _cron_delete(payload)
+    if action == "get_dashboard_plugins":
+        return _get_dashboard_plugins()
+    if action == "rescan_dashboard_plugins":
+        return _rescan_dashboard_plugins()
+    if action == "get_plugins_hub":
+        return _plugins_hub()
+    if action == "install_agent_plugin":
+        return _install_agent_plugin(payload)
+    if action == "set_agent_plugin_enabled":
+        return _set_agent_plugin_enabled(payload)
+    if action == "update_agent_plugin":
+        return _update_agent_plugin(payload)
+    if action == "remove_agent_plugin":
+        return _remove_agent_plugin(payload)
+    if action == "save_plugin_providers":
+        return _save_plugin_providers(payload)
+    if action == "set_plugin_visibility":
+        return _set_plugin_visibility(payload)
     raise ValueError(f"Unsupported dashboard bridge action: {action}")
 
 

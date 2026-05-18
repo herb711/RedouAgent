@@ -11,7 +11,7 @@ import {
   Wrench,
   Zap,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import type {
   AuxiliaryModelsResponse,
   AuxiliaryTaskAssignment,
@@ -300,7 +300,7 @@ function UseAsMenu({
     setBusy(true);
     setError(null);
     try {
-      await api.setModelAssignment({ scope, provider, model, task });
+      await redouApi.setModelAssignment({ scope, provider, model, task });
       onAssigned();
       setOpen(false);
     } catch (e) {
@@ -583,7 +583,7 @@ function ModelSettingsPanel({
     provider: string;
     model: string;
   }) => {
-    await api.setModelAssignment({ scope, task, provider, model });
+    await redouApi.setModelAssignment({ scope, task, provider, model });
     onSaved();
   };
 
@@ -593,7 +593,7 @@ function ModelSettingsPanel({
     }
     setResetBusy(true);
     try {
-      await api.setModelAssignment({
+      await redouApi.setModelAssignment({
         scope: "auxiliary",
         task: "__reset__",
         provider: "",
@@ -725,7 +725,7 @@ function ModelSettingsPanel({
         {picker?.kind === "aux" && (
           <ModelPickerDialog
             key={`picker-${refreshKey}`}
-            loader={api.getModelOptions}
+            loader={redouApi.getModelOptions}
             alwaysGlobal
             title={copy.setAuxiliary(auxTaskCopy(locale, picker.task).label)}
             onApply={async ({ provider, model }) => {
@@ -762,8 +762,8 @@ export default function ModelsPage() {
     setLoading(true);
     setError(null);
     Promise.all([
-      api.getModelsAnalytics(days),
-      api.getAuxiliaryModels().catch(() => null),
+      redouApi.getModelsAnalytics(days),
+      redouApi.getAuxiliaryModels().catch(() => null),
     ])
       .then(([models, auxData]) => {
         setData(models);
@@ -775,7 +775,7 @@ export default function ModelsPage() {
 
   const onAssigned = useCallback(() => {
     // Reload aux state after any assignment change.
-    api
+    redouApi
       .getAuxiliaryModels()
       .then(setAux)
       .catch(() => {});

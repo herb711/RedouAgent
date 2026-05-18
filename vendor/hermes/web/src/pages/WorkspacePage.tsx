@@ -31,7 +31,7 @@ import { useNavigate } from "react-router-dom";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { Input } from "@/components/ui/input";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import type {
   AnalyticsResponse,
   ChatProject,
@@ -1364,9 +1364,9 @@ export default function WorkspacePage() {
       setState((prev) => ({ ...prev, loading: true, error: null }));
     }
     const [sessionsResult, analyticsResult, projectsResult] = await Promise.allSettled([
-      api.getSessions(200),
-      api.getAnalytics(7),
-      api.getChatProjects(),
+      redouApi.getSessions(200),
+      redouApi.getAnalytics(7),
+      redouApi.getChatProjects(),
     ]);
     const failures = [sessionsResult, analyticsResult, projectsResult].filter(
       (result) => result.status === "rejected",
@@ -1489,7 +1489,7 @@ export default function WorkspacePage() {
       loading: prev.key !== key,
       messages: prev.key === key ? prev.messages : [],
     }));
-    api
+    redouApi
       .getChatTaskMessages(projectId, taskId)
       .then((result) => {
         if (cancelled) return;
@@ -1638,7 +1638,7 @@ export default function WorkspacePage() {
       }
       try {
         setNotice(null);
-        await api.setActiveChatTask(task.projectId, task.id);
+        await redouApi.setActiveChatTask(task.projectId, task.id);
         navigate("/chat");
       } catch (error) {
         setNotice(`${copy.enterFailed}: ${errorMessage(error)}`);
@@ -1662,7 +1662,7 @@ export default function WorkspacePage() {
   const openArtifact = useCallback(async (artifact: ArtifactView, locate = false) => {
     const target = locate ? parentPath(artifact.path) : artifact.path;
     if (!target) return;
-    const result = await api.openLocalPath(target);
+    const result = await redouApi.openLocalPath(target);
     if (!result.ok) setNotice(result.message ?? "Path could not be opened.");
   }, []);
 
@@ -1674,13 +1674,18 @@ export default function WorkspacePage() {
         </div>
       )}
 
-      <section className="grid min-h-0 min-w-0 gap-3 xl:grid-cols-[minmax(280px,0.82fr)_minmax(460px,1.6fr)_minmax(330px,0.95fr)]">
-        <RunOverviewPanel
-          copy={copy}
-          overview={overview}
-          selectedTask={selectedTask}
-          onEnterTask={() => void enterTask()}
-        />
+      <section className="grid min-h-0 min-w-0 gap-3 xl:grid-cols-[minmax(280px,0.82fr)_minmax(460px,1.55fr)_minmax(330px,1fr)]">
+        <div className="grid min-h-0 min-w-0 gap-3">
+          <RunOverviewPanel
+            copy={copy}
+            overview={overview}
+          />
+          <NeedsAttentionPanel
+            copy={copy}
+            locale={locale}
+            tasks={needsAttentionTasks}
+          />
+        </div>
 
         <TaskOverviewPanel
           copy={copy}
@@ -1694,31 +1699,24 @@ export default function WorkspacePage() {
           totalTasks={taskViewModels.length}
         />
 
-        <div className="grid min-h-0 min-w-0 gap-3">
-          <TaskDetailPanel
-            copy={copy}
-            locale={locale}
-            loading={selectedMessages.loading}
-            selectedTask={selectedTask}
-            selectedTaskError={selectedMessages.error}
-          />
-          <NeedsAttentionPanel
-            copy={copy}
-            locale={locale}
-            tasks={needsAttentionTasks}
-          />
-          <ArtifactsPanel
-            artifacts={selectedArtifacts}
-            copy={copy}
-            locale={locale}
-            onCopy={copyArtifactPath}
-            onLocate={(artifact) => void openArtifact(artifact, true)}
-            onOpen={(artifact) => void openArtifact(artifact)}
-          />
-        </div>
+        <TaskDetailPanel
+          copy={copy}
+          locale={locale}
+          loading={selectedMessages.loading}
+          selectedTask={selectedTask}
+          selectedTaskError={selectedMessages.error}
+        />
       </section>
 
-      <section className="grid min-h-0 min-w-0 gap-3 xl:grid-cols-[minmax(0,1.2fr)_minmax(340px,0.8fr)]">
+      <section className="grid min-h-0 min-w-0 gap-3 xl:grid-cols-[minmax(300px,0.9fr)_minmax(0,1.35fr)_minmax(320px,0.9fr)]">
+        <ArtifactsPanel
+          artifacts={selectedArtifacts}
+          copy={copy}
+          locale={locale}
+          onCopy={copyArtifactPath}
+          onLocate={(artifact) => void openArtifact(artifact, true)}
+          onOpen={(artifact) => void openArtifact(artifact)}
+        />
         <ChangePreviewPanel
           artifacts={selectedArtifacts}
           changes={selectedChanges}
@@ -1739,12 +1737,9 @@ export default function WorkspacePage() {
 
 function RunOverviewPanel({
   copy,
-  onEnterTask,
   overview,
-  selectedTask,
 }: {
   copy: WorkspaceCopy;
-  onEnterTask: () => void;
   overview: {
     active: number;
     completed: number;
@@ -1754,7 +1749,6 @@ function RunOverviewPanel({
     todayTokens: number;
     todayTools: number;
   };
-  selectedTask: TaskViewModel | null;
 }) {
   const metrics = [
     { label: copy.metrics.active, tone: "success" as Tone, value: overview.active },
@@ -1776,37 +1770,6 @@ function RunOverviewPanel({
             value={String(metric.value)}
           />
         ))}
-      </div>
-
-      <div className="mt-3 rounded-lg border border-border bg-black/15 p-3">
-        <div className="mb-2 font-mono-ui text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-          {copy.currentTask}
-        </div>
-        {selectedTask ? (
-          <div className="space-y-3">
-            <div className="min-w-0 text-sm">
-              <div className="truncate font-medium">{selectedTask.title}</div>
-              <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
-                <span>{selectedTask.statusLabel}</span>
-                <span>·</span>
-                <span>{selectedTask.currentTool}</span>
-                <span>·</span>
-                <span>{formatDuration(selectedTask.durationMs)}</span>
-              </div>
-            </div>
-            <Button onClick={onEnterTask} size="sm" className="w-full justify-center gap-1.5">
-              {copy.enterTask}
-              <ArrowRight className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-        ) : (
-          <div className="flex min-h-24 flex-col justify-center text-sm text-muted-foreground">
-            {copy.selectTaskPrompt}
-            <Button disabled size="sm" className="mt-3 w-full justify-center">
-              {copy.enterTask}
-            </Button>
-          </div>
-        )}
       </div>
     </Panel>
   );

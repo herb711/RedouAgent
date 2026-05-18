@@ -4,7 +4,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { CopyButton } from "@nous-research/ui/ui/components/command-block";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
-import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
+import { redouApi, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n";
 
@@ -37,7 +37,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   // Initiate flow on mount
   useEffect(() => {
     isMounted.current = true;
-    api
+    redouApi
       .startOAuthLogin(provider.id)
       .then((resp) => {
         if (!isMounted.current) return;
@@ -86,7 +86,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     const sid = start.session_id;
     pollTimer.current = window.setInterval(async () => {
       try {
-        const resp = await api.pollOAuthSession(provider.id, sid);
+        const resp = await redouApi.pollOAuthSession(provider.id, sid);
         if (!isMounted.current) return;
         if (resp.status === "approved") {
           setPhase("approved");
@@ -118,7 +118,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
     setPhase("submitting");
     setErrorMsg(null);
     try {
-      const resp = await api.submitOAuthCode(
+      const resp = await redouApi.submitOAuthCode(
         provider.id,
         start.session_id,
         pkceCode.trim(),
@@ -142,7 +142,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   const handleClose = async () => {
     if (start && phase !== "approved" && phase !== "error") {
       try {
-        await api.cancelOAuthSession(start.session_id);
+        await redouApi.cancelOAuthSession(start.session_id);
       } catch {
         // ignore
       }
@@ -323,13 +323,13 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                 <Button
                   onClick={() => {
                     if (start?.session_id) {
-                      api.cancelOAuthSession(start.session_id).catch(() => {});
+                      redouApi.cancelOAuthSession(start.session_id).catch(() => {});
                     }
                     setErrorMsg(null);
                     setStart(null);
                     setPkceCode("");
                     setPhase("starting");
-                    api
+                    redouApi
                       .startOAuthLogin(provider.id)
                       .then((resp) => {
                         if (!isMounted.current) return;

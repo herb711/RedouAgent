@@ -17,7 +17,7 @@ import {
   GitMerge,
   Trash2,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import type { SkillInfo, ToolsetInfo } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
@@ -127,7 +127,7 @@ export default function SkillsPage() {
   const { setAfterTitle, setEnd } = usePageHeader();
 
   useEffect(() => {
-    Promise.all([api.getSkills(), api.getToolsets()])
+    Promise.all([redouApi.getSkills(), redouApi.getToolsets()])
       .then(([s, tsets]) => {
         setSkills(s);
         setToolsets(tsets);
@@ -155,7 +155,7 @@ export default function SkillsPage() {
         const skill = skills.find((item) => skillKey(item) === key);
         if (!skill) return;
         try {
-          await api.deleteSkill({
+          await redouApi.deleteSkill({
             id: skill.id,
             name: skill.name,
             source: skill.source,
@@ -164,7 +164,7 @@ export default function SkillsPage() {
             category: skill.category,
             path: skill.path,
           });
-          const refreshed = await api.getSkills();
+          const refreshed = await redouApi.getSkills();
           setSkills(refreshed);
           setSelectedSkillKeys((prev) => {
             const next = new Set(prev);
@@ -202,7 +202,7 @@ export default function SkillsPage() {
     const key = skillKey(skill);
     setTogglingSkills((prev) => new Set(prev).add(key));
     try {
-      await api.toggleSkill(skill.name, !skill.enabled, {
+      await redouApi.toggleSkill(skill.name, !skill.enabled, {
         profile: skill.profile || null,
         profileHome: skill.profileHome || null,
         path: skill.path || null,
@@ -261,7 +261,7 @@ export default function SkillsPage() {
 
     setMergingSkills(true);
     try {
-      const result = await api.mergeSkills(
+      const result = await redouApi.mergeSkills(
         selectedSkills.map((skill) => ({
           id: skill.id,
           name: skill.name,
@@ -272,7 +272,7 @@ export default function SkillsPage() {
           path: skill.path,
         })),
       );
-      const refreshed = await api.getSkills();
+      const refreshed = await redouApi.getSkills();
       setSkills(refreshed);
       setSelectedSkillKeys(new Set());
       showToast(

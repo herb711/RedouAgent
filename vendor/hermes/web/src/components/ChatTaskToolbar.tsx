@@ -2,7 +2,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import {
   CHAT_PROJECTS_CHANGED_EVENT,
   MODEL_OPTIONS_CHANGED_EVENT,
-  api,
+  redouApi,
   type AgentEvent,
   type ChatProject,
   type ChatTask,
@@ -144,7 +144,7 @@ export function ChatTaskToolbar({
     }
 
     try {
-      const data = await api.getChatProjects();
+      const data = await redouApi.getChatProjects();
       const nextProject =
         data.projects.find((item) => item.id === selectedProjectId) ?? null;
       const nextTask =
@@ -185,7 +185,7 @@ export function ChatTaskToolbar({
   useEffect(() => {
     let cancelled = false;
     const loadModelOptions = () => {
-      api
+      redouApi
         .getModelOptions()
         .then((result) => {
           if (cancelled) return;
@@ -231,7 +231,7 @@ export function ChatTaskToolbar({
       return typeof id === "string" && id ? id : "name" in event ? event.name : event.type;
     };
 
-    return api.onAgentEvent((payload) => {
+    return redouApi.onAgentEvent((payload) => {
       const current = selectedIdsRef.current;
       if (payload.projectId !== current.projectId || payload.taskId !== current.taskId) return;
       const { event } = payload;
@@ -308,7 +308,7 @@ export function ChatTaskToolbar({
       setModelProviderDraft(provider);
       setModelDraft(model);
       try {
-        const result = await api.updateChatTask(project.id, task.id, {
+        const result = await redouApi.updateChatTask(project.id, task.id, {
           model_provider: provider || null,
           model: model || null,
         });

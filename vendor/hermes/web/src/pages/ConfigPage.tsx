@@ -38,7 +38,7 @@ import {
   RefreshCw,
   Languages,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
@@ -176,18 +176,18 @@ export default function ConfigPage() {
   }
 
   useEffect(() => {
-    api
+    redouApi
       .getConfig()
       .then(setConfig)
       .catch(() => {});
-    api
+    redouApi
       .getSchema()
       .then((resp) => {
         setSchema(resp.fields as Record<string, Record<string, unknown>>);
         setCategoryOrder(resp.category_order ?? []);
       })
       .catch(() => {});
-    api
+    redouApi
       .getDefaults()
       .then(setDefaults)
       .catch(() => {});
@@ -204,7 +204,7 @@ export default function ConfigPage() {
   useEffect(() => {
     if (yamlMode) {
       setYamlLoading(true);
-      api
+      redouApi
         .getConfigRaw()
         .then((resp) => setYamlText(resp.yaml))
         .catch(() => showToast(t.config.failedToLoadRaw, "error"))
@@ -271,7 +271,7 @@ export default function ConfigPage() {
     if (!config) return;
     setSaving(true);
     try {
-      await api.saveConfig(config);
+      await redouApi.saveConfig(config);
       showToast(t.config.configSaved, "success");
     } catch (e) {
       showToast(`${t.config.failedToSave}: ${e}`, "error");
@@ -283,9 +283,9 @@ export default function ConfigPage() {
   const handleYamlSave = async () => {
     setYamlSaving(true);
     try {
-      await api.saveConfigRaw(yamlText);
+      await redouApi.saveConfigRaw(yamlText);
       showToast(t.config.yamlConfigSaved, "success");
-      api
+      redouApi
         .getConfig()
         .then(setConfig)
         .catch(() => {});

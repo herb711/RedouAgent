@@ -17,7 +17,7 @@ import React, {
   useContext,
   createContext,
 } from "react";
-import { api, fetchJSON } from "@/lib/api";
+import { redouApi, fetchJSON } from "@/lib/api";
 import { cn, timeAgo, isoTimeAgo } from "@/lib/utils";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -116,9 +116,10 @@ export function exposePluginSDK() {
       createContext,
     },
 
-    // Hermes API client
-    api,
-    // Raw fetchJSON for plugin-specific endpoints
+    // Redou Desktop API client
+    api: redouApi,
+    redouApi,
+    // Legacy helper retained for plugin compatibility; it throws in Desktop.
     fetchJSON,
 
     // UI components (shadcn/ui primitives)

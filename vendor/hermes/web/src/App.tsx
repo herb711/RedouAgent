@@ -323,7 +323,7 @@ export default function App() {
   // plugin owns /chat, the built-in chat UI is entirely absent.
   //
   // Waiting on `pluginsLoading` is load-bearing: manifests arrive
-  // asynchronously from /api/dashboard/plugins, so on initial render
+  // asynchronously from the desktop plugin bridge, so on initial render
   // `chatOverriddenByPlugin` is always false.  Without the loading
   // gate, the persistent host would mount, spawn a PTY, and THEN get
   // yanked out from under the user when the plugin's manifest resolves

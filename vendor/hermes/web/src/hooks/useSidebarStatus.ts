@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
 
 const POLL_MS = 3_000;
@@ -13,7 +13,7 @@ export function useSidebarStatus() {
 
   useEffect(() => {
     const load = () => {
-      api
+      redouApi
         .getStatus()
         .then(setStatus)
         .catch(() => {});

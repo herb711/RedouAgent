@@ -1,7 +1,7 @@
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@/components/ui/input";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { api, notifyChatProjectsChanged, type ChatProject, type ChatTask } from "@/lib/api";
+import { redouApi, notifyChatProjectsChanged, type ChatProject, type ChatTask } from "@/lib/api";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
@@ -408,7 +408,7 @@ export function ProjectTaskPanel({
     setLoading(true);
     setError(null);
     try {
-      const data = await api.getChatProjects();
+      const data = await redouApi.getChatProjects();
       setProjects(data.projects);
 
       const nextProject =
@@ -469,7 +469,7 @@ export function ProjectTaskPanel({
 
     setError(null);
     try {
-      const result = await api.openLocalPath(trimmedPath);
+      const result = await redouApi.openLocalPath(trimmedPath);
       if (!result.ok) {
         throw new Error(result.message || `Could not open path: ${trimmedPath}`);
       }
@@ -513,7 +513,7 @@ export function ProjectTaskPanel({
           closeRename();
           return;
         }
-        const result = await api.updateChatProject(renameTarget.projectId, {
+        const result = await redouApi.updateChatProject(renameTarget.projectId, {
           name: nextName,
         });
         setProjects((prev) =>
@@ -528,7 +528,7 @@ export function ProjectTaskPanel({
           closeRename();
           return;
         }
-        const result = await api.updateChatTask(renameTarget.projectId, renameTarget.taskId, {
+        const result = await redouApi.updateChatTask(renameTarget.projectId, renameTarget.taskId, {
           title: nextName,
         });
         setProjects((prev) =>
@@ -556,7 +556,7 @@ export function ProjectTaskPanel({
   );
 
   const createProject = useCallback(async () => {
-    const result = await api.createChatProject({
+    const result = await redouApi.createChatProject({
       name: projectName.trim() || copy.newProject,
       workspace_path: workspacePath.trim() || null,
     });
@@ -571,7 +571,7 @@ export function ProjectTaskPanel({
 
   const updateWorkspace = useCallback(async () => {
     if (!selectedProject) return;
-    const result = await api.updateChatProject(selectedProject.id, {
+    const result = await redouApi.updateChatProject(selectedProject.id, {
       workspace_path: workspaceDraft.trim() || null,
     });
     setProjects((prev) =>
@@ -586,7 +586,7 @@ export function ProjectTaskPanel({
     if (!selectedProject) return;
     const inheritedModelProvider = selectedTask?.model_provider?.trim() ?? "";
     const inheritedModel = selectedTask?.model?.trim() ?? "";
-    const result = await api.createChatTask(selectedProject.id, {
+    const result = await redouApi.createChatTask(selectedProject.id, {
       title: taskTitle.trim() || copy.newTask,
       ...(inheritedModelProvider || inheritedModel
         ? {
@@ -645,7 +645,7 @@ export function ProjectTaskPanel({
     try {
       if (deleteTarget.scope === "project") {
         const deletingSelectedProject = deleteTarget.project.id === selectedProjectId;
-        const result = await api.deleteChatProject(deleteTarget.project.id);
+        const result = await redouApi.deleteChatProject(deleteTarget.project.id);
         setProjects(result.projects);
         notifyChatProjectsChanged();
         if (deletingSelectedProject) {
@@ -659,7 +659,7 @@ export function ProjectTaskPanel({
         const deletingSelectedTask =
           deleteTarget.project.id === selectedProjectId &&
           deleteTarget.task.id === selectedTaskId;
-        const result = await api.deleteChatTask(
+        const result = await redouApi.deleteChatTask(
           deleteTarget.project.id,
           deleteTarget.task.id,
         );
@@ -702,8 +702,8 @@ export function ProjectTaskPanel({
 
     const request =
       target.scope === "project"
-        ? api.getProjectContextFile(target.projectId, target.kind)
-        : api.getTaskContextFile(target.projectId, target.taskId, target.kind);
+        ? redouApi.getProjectContextFile(target.projectId, target.kind)
+        : redouApi.getTaskContextFile(target.projectId, target.taskId, target.kind);
 
     request
       .then((result) => {
@@ -742,8 +742,8 @@ export function ProjectTaskPanel({
     setEditor((current) => ({ ...current, error: null, saving: true }));
     const request =
       target.scope === "project"
-        ? api.updateProjectContextFile(target.projectId, target.kind, editor.content)
-        : api.updateTaskContextFile(
+        ? redouApi.updateProjectContextFile(target.projectId, target.kind, editor.content)
+        : redouApi.updateTaskContextFile(
             target.projectId,
             target.taskId,
             target.kind,
@@ -776,7 +776,7 @@ export function ProjectTaskPanel({
       setError(null);
       setActionNotice(null);
       try {
-        const result = await api.packageTaskSkill(project.id, task.id);
+        const result = await redouApi.packageTaskSkill(project.id, task.id);
         setProjects((prev) =>
           prev.map((item) =>
             item.id === result.project.id ? result.project : item,
@@ -800,7 +800,7 @@ export function ProjectTaskPanel({
       setError(null);
       setActionNotice(null);
       try {
-        const result = await api.extractTaskRules(project.id, task.id, target);
+        const result = await redouApi.extractTaskRules(project.id, task.id, target);
         setProjects((prev) =>
           prev.map((item) =>
             item.id === result.project.id ? result.project : item,

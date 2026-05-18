@@ -1,21 +1,3 @@
-// The dashboard can be served either at the root of its host (e.g.
-// https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
-// (e.g. https://mission-control.tilos.com/hermes/). The Python backend
-// injects ``window.__HERMES_BASE_PATH__`` into index.html based on the
-// incoming ``X-Forwarded-Prefix`` header so the SPA can address its own
-// ``/api/...`` and ``/dashboard-plugins/...`` URLs correctly without a
-// rebuild. Empty string means "served at root".
-function readBasePath(): string {
-  if (typeof window === "undefined") return "";
-  const raw = window.__HERMES_BASE_PATH__ ?? "";
-  if (!raw) return "";
-  // Normalise: ensure leading slash, strip trailing slash.
-  const withLead = raw.startsWith("/") ? raw : `/${raw}`;
-  return withLead.replace(/\/+$/, "");
-}
-
-export const HERMES_BASE_PATH = readBasePath();
-const BASE = HERMES_BASE_PATH;
 export const MODEL_OPTIONS_CHANGED_EVENT = "redou:model-options-changed";
 export const CHAT_PROJECTS_CHANGED_EVENT = "redou:chat-projects-changed";
 
@@ -31,12 +13,9 @@ export function notifyChatProjectsChanged(): void {
   window.dispatchEvent(new CustomEvent(CHAT_PROJECTS_CHANGED_EVENT));
 }
 
-// Ephemeral session token for protected endpoints.
-// Injected into index.html by the server — never fetched via API.
+// Redou Desktop renderer bridge exposed by apps/desktop/src/preload.cjs.
 declare global {
   interface Window {
-    __HERMES_SESSION_TOKEN__?: string;
-    __HERMES_BASE_PATH__?: string;
     redouDesktop?: {
       pickDirectory?: () => Promise<string | null>;
       pickFiles?: () => Promise<string[]>;
@@ -77,6 +56,37 @@ declare global {
       getLogs?: (
         params: { file?: string; lines?: number; level?: string; component?: string },
       ) => Promise<LogsResponse>;
+      getCronJobs?: () => Promise<CronJob[]>;
+      createCronJob?: (
+        job: { prompt: string; schedule: string; name?: string; deliver?: string },
+      ) => Promise<CronJob>;
+      pauseCronJob?: (id: string) => Promise<CronJob>;
+      resumeCronJob?: (id: string) => Promise<CronJob>;
+      triggerCronJob?: (id: string) => Promise<CronJob>;
+      deleteCronJob?: (id: string) => Promise<{ ok: boolean }>;
+      getThemes?: () => Promise<DashboardThemesResponse>;
+      setTheme?: (name: string) => Promise<{ ok: boolean; theme: string }>;
+      getLanguage?: () => Promise<{ language?: string }>;
+      setLanguage?: (language: string) => Promise<{ ok: boolean; language: string }>;
+      getPlugins?: () => Promise<PluginManifestResponse[]>;
+      rescanPlugins?: () => Promise<{ ok: boolean; count: number }>;
+      getPluginsHub?: () => Promise<PluginsHubResponse>;
+      installAgentPlugin?: (
+        body: AgentPluginInstallRequest,
+      ) => Promise<AgentPluginInstallResponse>;
+      enableAgentPlugin?: (
+        name: string,
+      ) => Promise<{ ok: boolean; name: string; unchanged?: boolean }>;
+      disableAgentPlugin?: (
+        name: string,
+      ) => Promise<{ ok: boolean; name: string; unchanged?: boolean }>;
+      updateAgentPlugin?: (name: string) => Promise<AgentPluginUpdateResponse>;
+      removeAgentPlugin?: (name: string) => Promise<{ ok: boolean; name: string }>;
+      savePluginProviders?: (body: PluginProvidersPutRequest) => Promise<{ ok: boolean }>;
+      setPluginVisibility?: (
+        name: string,
+        hidden: boolean,
+      ) => Promise<{ ok: boolean; name: string; hidden: boolean }>;
       createChatProject?: (body: ChatProjectCreateRequest) => Promise<ChatProjectMutationResponse>;
       updateChatProject?: (
         projectId: string,
@@ -168,13 +178,10 @@ declare global {
     };
   }
 }
-let _sessionToken: string | null = null;
-const SESSION_HEADER = "X-Hermes-Session-Token";
-
 function requireRedouDesktopApi() {
   const desktop = window.redouDesktop;
   if (!desktop) {
-    throw new Error("Redou desktop IPC API is unavailable. This Chat view must run inside the Electron renderer.");
+    throw new Error("Redou Desktop IPC API is unavailable. The renderer must run inside Electron with preload.cjs loaded.");
   }
   return desktop;
 }
@@ -189,416 +196,290 @@ function requireRedouMethod<K extends keyof NonNullable<Window["redouDesktop"]>>
   return method as NonNullable<NonNullable<Window["redouDesktop"]>[K]>;
 }
 
-function isRedouDesktop(): boolean {
-  return typeof window !== "undefined" && Boolean(window.redouDesktop);
-}
-
-function setSessionHeader(headers: Headers, token: string): void {
-  if (!headers.has(SESSION_HEADER)) {
-    headers.set(SESSION_HEADER, token);
-  }
-}
-
 export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  if (isRedouDesktop() && url.startsWith("/api/")) {
-    throw new Error(`Dashboard HTTP API is disabled in Redou Desktop: ${url}`);
-  }
-  // Inject the session token into all /api/ requests.
-  const headers = new Headers(init?.headers);
-  const token = window.__HERMES_SESSION_TOKEN__;
-  if (token) {
-    setSessionHeader(headers, token);
-  }
-  const res = await fetch(`${BASE}${url}`, { ...init, headers });
-  if (!res.ok) {
-    const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
-  }
-  return res.json();
+  void init;
+  throw new Error(
+    `Legacy dashboard HTTP fetch is disabled in Redou Desktop (${url}). ` +
+      "Use redouApi/window.redouDesktop IPC instead.",
+  );
 }
 
-async function getSessionToken(): Promise<string> {
-  if (_sessionToken) return _sessionToken;
-  const injected = window.__HERMES_SESSION_TOKEN__;
-  if (injected) {
-    _sessionToken = injected;
-    return _sessionToken;
-  }
-  throw new Error("Session token not available — page must be served by the Hermes dashboard server");
+function unsupportedDesktopFeature<T = never>(feature: string, todo: string): Promise<T> {
+  return Promise.reject(
+    new Error(`${feature} is not wired for Redou Desktop yet. TODO: ${todo}`),
+  );
 }
 
-export const api = {
-  getStatus: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getStatus")()
-      : fetchJSON<StatusResponse>("/api/status"),
-  getSessions: (limit = 20, offset = 0) =>
-    isRedouDesktop()
-      ? requireRedouMethod("getSessions")(limit, offset)
-      : fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
-  getSessionMessages: (id: string) =>
-    isRedouDesktop()
-      ? requireRedouMethod("getSessionMessages")(id)
-      : fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
-  getChatProjects: () =>
-    requireRedouMethod("getChatProjects")(),
-  createChatProject: (body: ChatProjectCreateRequest) =>
-    requireRedouMethod("createChatProject")(body),
-  updateChatProject: (projectId: string, body: ChatProjectUpdateRequest) =>
-    requireRedouMethod("updateChatProject")(projectId, body),
-  deleteChatProject: (projectId: string) =>
-    requireRedouMethod("deleteChatProject")(projectId),
-  createChatTask: (projectId: string, body: ChatTaskCreateRequest) =>
-    requireRedouMethod("createChatTask")(projectId, body),
-  updateChatTask: (projectId: string, taskId: string, body: ChatTaskUpdateRequest) =>
-    requireRedouMethod("updateChatTask")(projectId, taskId, body),
-  deleteChatTask: (projectId: string, taskId: string) =>
-    requireRedouMethod("deleteChatTask")(projectId, taskId),
-  setActiveChatTask: (projectId: string, taskId: string) =>
-    requireRedouMethod("setActiveChatTask")(projectId, taskId),
-  getChatTaskMessages: (projectId: string, taskId: string) =>
-    requireRedouMethod("getChatTaskMessages")(projectId, taskId),
-  packageTaskSkill: (projectId: string, taskId: string) =>
-    requireRedouMethod("packageTaskSkill")(projectId, taskId),
-  extractTaskRules: (
-    projectId: string,
-    taskId: string,
-    target: RuleExtractionTarget,
-  ) =>
-    requireRedouMethod("extractTaskRules")(projectId, taskId, target),
-  copyTaskAttachments: (projectId: string, taskId: string, filePaths: string[]) =>
-    requireRedouMethod("copyTaskAttachments")(projectId, taskId, filePaths),
-  openLocalPath: (targetPath: string) =>
-    requireRedouMethod("openLocalPath")(targetPath),
-  getGlobalContextFile: (kind: GlobalContextFileKind) =>
-    requireRedouMethod("getGlobalContextFile")(kind),
-  updateGlobalContextFile: (kind: GlobalContextFileKind, content: string) =>
-    requireRedouMethod("updateGlobalContextFile")(kind, content),
-  getProjectContextFile: (projectId: string, kind: ProjectContextFileKind) =>
-    requireRedouMethod("getProjectContextFile")(projectId, kind),
-  updateProjectContextFile: (
-    projectId: string,
-    kind: ProjectContextFileKind,
-    content: string,
-  ) =>
-    requireRedouMethod("updateProjectContextFile")(projectId, kind, content),
-  getTaskContextFile: (projectId: string, taskId: string, kind: TaskContextFileKind) =>
-    requireRedouMethod("getTaskContextFile")(projectId, taskId, kind),
-  updateTaskContextFile: (
-    projectId: string,
-    taskId: string,
-    kind: TaskContextFileKind,
-    content: string,
-  ) =>
-    requireRedouMethod("updateTaskContextFile")(projectId, taskId, kind, content),
-  getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
-    if (isRedouDesktop()) {
-      return requireRedouMethod("getLogs")(params);
-    }
-    const qs = new URLSearchParams();
-    if (params.file) qs.set("file", params.file);
-    if (params.lines) qs.set("lines", String(params.lines));
-    if (params.level && params.level !== "ALL") qs.set("level", params.level);
-    if (params.component && params.component !== "all") qs.set("component", params.component);
-    return fetchJSON<LogsResponse>(`/api/logs?${qs.toString()}`);
+const redouApiCore = {
+  status: {
+    getStatus: () => requireRedouMethod("getStatus")(),
   },
-  getAnalytics: (days: number) =>
-    isRedouDesktop()
-      ? requireRedouMethod("getAnalytics")(days)
-      : fetchJSON<AnalyticsResponse>(`/api/analytics/usage?days=${days}`),
-  getModelsAnalytics: (days: number) =>
-    isRedouDesktop()
-      ? requireRedouMethod("getModelsAnalytics")(days)
-      : fetchJSON<ModelsAnalyticsResponse>(`/api/analytics/models?days=${days}`),
-  getAnalysisBenchmarks: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getAnalysisBenchmarks")()
-      : Promise.resolve({
-          version: 1,
-          tasks: [],
-          results: [],
-          activeRunId: null,
-          activeRunIds: [],
-          queueDepth: 0,
-        }),
-  startAnalysisBenchmarks: (body: AnalysisBenchmarkStartRequest) =>
-    requireRedouMethod("startAnalysisBenchmarks")(body),
-  getConfig: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getConfig")()
-      : fetchJSON<Record<string, unknown>>("/api/config"),
-  getDefaults: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getConfigDefaults")()
-      : fetchJSON<Record<string, unknown>>("/api/config/defaults"),
-  getSchema: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getConfigSchema")()
-      : fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
-  getModelInfo: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getModelInfo")()
-      : fetchJSON<ModelInfoResponse>("/api/model/info"),
-  getModelOptions: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getModelOptions")()
-      : fetchJSON<ModelOptionsResponse>("/api/model/options"),
-  getModelSetupCatalog: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getModelSetupCatalog")()
-      : fetchJSON<ModelSetupCatalogResponse>("/api/model/setup-catalog"),
-  getAuxiliaryModels: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getAuxiliaryModels")()
-      : fetchJSON<AuxiliaryModelsResponse>("/api/model/auxiliary"),
-  setupMainModel: (body: ModelSetupRequest) =>
-    isRedouDesktop()
-      ? requireRedouMethod("setupMainModel")(body)
-      : fetchJSON<ModelSetupResponse>("/api/model/setup", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        }),
-  refreshModelSetupModels: (body: ModelSetupRefreshRequest) =>
-    isRedouDesktop()
-      ? requireRedouMethod("refreshModelSetupModels")(body)
-      : fetchJSON<ModelSetupRefreshResponse>("/api/model/setup/refresh", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        }),
-  setModelAssignment: (body: ModelAssignmentRequest) =>
-    isRedouDesktop()
-      ? requireRedouMethod("setModelAssignment")(body)
-      : fetchJSON<ModelAssignmentResponse>("/api/model/set", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        }),
-  saveConfig: (config: Record<string, unknown>) =>
-    isRedouDesktop()
-      ? requireRedouMethod("saveConfig")(config)
-      : fetchJSON<{ ok: boolean }>("/api/config", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ config }),
-        }),
-  getConfigRaw: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getConfigRaw")()
-      : fetchJSON<{ yaml: string }>("/api/config/raw"),
-  saveConfigRaw: (yaml_text: string) =>
-    isRedouDesktop()
-      ? requireRedouMethod("saveConfigRaw")(yaml_text)
-      : fetchJSON<{ ok: boolean }>("/api/config/raw", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ yaml_text }),
-        }),
-
-  // Cron jobs
-  getCronJobs: () => fetchJSON<CronJob[]>("/api/cron/jobs"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }) =>
-    fetchJSON<CronJob>("/api/cron/jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(job),
-    }),
-  pauseCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/pause`, { method: "POST" }),
-  resumeCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/resume`, { method: "POST" }),
-  triggerCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/trigger`, { method: "POST" }),
-  deleteCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}`, { method: "DELETE" }),
-
-  // Skills & Toolsets
-  getSkills: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getSkills")()
-      : fetchJSON<SkillInfo[]>("/api/skills"),
-  toggleSkill: (name: string, enabled: boolean, scope?: SkillToggleScope) =>
-    isRedouDesktop()
-      ? requireRedouMethod("toggleSkill")(name, enabled, scope)
-      : fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, enabled, ...(scope || {}) }),
-        }),
-  deleteSkill: (skill: SkillDeleteInput) =>
-    isRedouDesktop()
-      ? requireRedouMethod("deleteSkill")(skill)
-      : fetchJSON<SkillDeleteResponse>("/api/skills/delete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(skill),
-        }),
-  mergeSkills: (skills: SkillMergeInput[]) =>
-    isRedouDesktop()
-      ? requireRedouMethod("mergeSkills")(skills)
-      : fetchJSON<SkillMergeResponse>("/api/skills/merge", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ skills }),
-        }),
-  getToolsets: () =>
-    isRedouDesktop()
-      ? requireRedouMethod("getToolsets")()
-      : fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
-
-  // OAuth provider management
-  getOAuthProviders: () =>
-    fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
-  disconnectOAuthProvider: async (providerId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ ok: boolean; provider: string }>(
-      `/api/providers/oauth/${encodeURIComponent(providerId)}`,
-      {
-        method: "DELETE",
-        headers: { [SESSION_HEADER]: token },
-      },
-    );
+  sessions: {
+    list: (limit = 20, offset = 0) => requireRedouMethod("getSessions")(limit, offset),
+    messages: (id: string) => requireRedouMethod("getSessionMessages")(id),
   },
-  startOAuthLogin: async (providerId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<OAuthStartResponse>(
-      `/api/providers/oauth/${encodeURIComponent(providerId)}/start`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [SESSION_HEADER]: token,
-        },
-        body: "{}",
-      },
-    );
+  tasks: {
+    getChatProjects: () => requireRedouMethod("getChatProjects")(),
+    createChatProject: (body: ChatProjectCreateRequest) =>
+      requireRedouMethod("createChatProject")(body),
+    updateChatProject: (projectId: string, body: ChatProjectUpdateRequest) =>
+      requireRedouMethod("updateChatProject")(projectId, body),
+    deleteChatProject: (projectId: string) =>
+      requireRedouMethod("deleteChatProject")(projectId),
+    createChatTask: (projectId: string, body: ChatTaskCreateRequest) =>
+      requireRedouMethod("createChatTask")(projectId, body),
+    updateChatTask: (projectId: string, taskId: string, body: ChatTaskUpdateRequest) =>
+      requireRedouMethod("updateChatTask")(projectId, taskId, body),
+    deleteChatTask: (projectId: string, taskId: string) =>
+      requireRedouMethod("deleteChatTask")(projectId, taskId),
+    setActiveChatTask: (projectId: string, taskId: string) =>
+      requireRedouMethod("setActiveChatTask")(projectId, taskId),
+    getChatTaskMessages: (projectId: string, taskId: string) =>
+      requireRedouMethod("getChatTaskMessages")(projectId, taskId),
+    packageTaskSkill: (projectId: string, taskId: string) =>
+      requireRedouMethod("packageTaskSkill")(projectId, taskId),
+    extractTaskRules: (projectId: string, taskId: string, target: RuleExtractionTarget) =>
+      requireRedouMethod("extractTaskRules")(projectId, taskId, target),
+    copyTaskAttachments: (projectId: string, taskId: string, filePaths: string[]) =>
+      requireRedouMethod("copyTaskAttachments")(projectId, taskId, filePaths),
+    buildTaskContext: (input: BuildContextInput) =>
+      requireRedouMethod("buildTaskContext")(input),
+    sendChatMessage: (input: SendMessageInput) =>
+      requireRedouMethod("sendMessage")(input),
+    updateQueuedChatMessage: (input: QueuedMessageUpdateInput) =>
+      requireRedouMethod("updateQueuedMessage")(input),
+    stopChatRun: (runId: string) => requireRedouMethod("stopRun")(runId),
+    stopChatTask: (projectId: string, taskId: string) =>
+      requireRedouMethod("stopTaskRun")(projectId, taskId),
+    onAgentEvent: (callback: (payload: AgentEventEnvelope) => void) =>
+      requireRedouMethod("onAgentEvent")(callback),
   },
-  submitOAuthCode: async (providerId: string, sessionId: string, code: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<OAuthSubmitResponse>(
-      `/api/providers/oauth/${encodeURIComponent(providerId)}/submit`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          [SESSION_HEADER]: token,
-        },
-        body: JSON.stringify({ session_id: sessionId, code }),
-      },
-    );
+  context: {
+    openLocalPath: (targetPath: string) => requireRedouMethod("openLocalPath")(targetPath),
+    getGlobalContextFile: (kind: GlobalContextFileKind) =>
+      requireRedouMethod("getGlobalContextFile")(kind),
+    updateGlobalContextFile: (kind: GlobalContextFileKind, content: string) =>
+      requireRedouMethod("updateGlobalContextFile")(kind, content),
+    getProjectContextFile: (projectId: string, kind: ProjectContextFileKind) =>
+      requireRedouMethod("getProjectContextFile")(projectId, kind),
+    updateProjectContextFile: (projectId: string, kind: ProjectContextFileKind, content: string) =>
+      requireRedouMethod("updateProjectContextFile")(projectId, kind, content),
+    getTaskContextFile: (projectId: string, taskId: string, kind: TaskContextFileKind) =>
+      requireRedouMethod("getTaskContextFile")(projectId, taskId, kind),
+    updateTaskContextFile: (
+      projectId: string,
+      taskId: string,
+      kind: TaskContextFileKind,
+      content: string,
+    ) => requireRedouMethod("updateTaskContextFile")(projectId, taskId, kind, content),
   },
-  pollOAuthSession: (providerId: string, sessionId: string) =>
-    fetchJSON<OAuthPollResponse>(
-      `/api/providers/oauth/${encodeURIComponent(providerId)}/poll/${encodeURIComponent(sessionId)}`,
-    ),
-  cancelOAuthSession: async (sessionId: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ ok: boolean }>(
-      `/api/providers/oauth/sessions/${encodeURIComponent(sessionId)}`,
-      {
-        method: "DELETE",
-        headers: { [SESSION_HEADER]: token },
-      },
-    );
+  logs: {
+    getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) =>
+      requireRedouMethod("getLogs")(params),
   },
+  analytics: {
+    getAnalytics: (days: number) => requireRedouMethod("getAnalytics")(days),
+    getModelsAnalytics: (days: number) => requireRedouMethod("getModelsAnalytics")(days),
+    getAnalysisBenchmarks: () => requireRedouMethod("getAnalysisBenchmarks")(),
+    startAnalysisBenchmarks: (body: AnalysisBenchmarkStartRequest) =>
+      requireRedouMethod("startAnalysisBenchmarks")(body),
+    onAnalysisEvent: (callback: (payload: AnalysisBenchmarkEvent) => void) =>
+      requireRedouMethod("onAnalysisEvent")(callback),
+  },
+  settings: {
+    getConfig: () => requireRedouMethod("getConfig")(),
+    getDefaults: () => requireRedouMethod("getConfigDefaults")(),
+    getSchema: () => requireRedouMethod("getConfigSchema")(),
+    saveConfig: (config: Record<string, unknown>) => requireRedouMethod("saveConfig")(config),
+    getConfigRaw: () => requireRedouMethod("getConfigRaw")(),
+    saveConfigRaw: (yamlText: string) => requireRedouMethod("saveConfigRaw")(yamlText),
+    getLanguage: () => requireRedouMethod("getLanguage")(),
+    setLanguage: (language: string) => requireRedouMethod("setLanguage")(language),
+  },
+  theme: {
+    getThemes: () => requireRedouMethod("getThemes")(),
+    setTheme: (name: string) => requireRedouMethod("setTheme")(name),
+  },
+  models: {
+    getModelInfo: () => requireRedouMethod("getModelInfo")(),
+    getModelOptions: () => requireRedouMethod("getModelOptions")(),
+    getModelSetupCatalog: () => requireRedouMethod("getModelSetupCatalog")(),
+    getAuxiliaryModels: () => requireRedouMethod("getAuxiliaryModels")(),
+    setupMainModel: (body: ModelSetupRequest) => requireRedouMethod("setupMainModel")(body),
+    refreshModelSetupModels: (body: ModelSetupRefreshRequest) =>
+      requireRedouMethod("refreshModelSetupModels")(body),
+    setModelAssignment: (body: ModelAssignmentRequest) =>
+      requireRedouMethod("setModelAssignment")(body),
+  },
+  cron: {
+    getCronJobs: () => requireRedouMethod("getCronJobs")(),
+    createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }) =>
+      requireRedouMethod("createCronJob")(job),
+    pauseCronJob: (id: string) => requireRedouMethod("pauseCronJob")(id),
+    resumeCronJob: (id: string) => requireRedouMethod("resumeCronJob")(id),
+    triggerCronJob: (id: string) => requireRedouMethod("triggerCronJob")(id),
+    deleteCronJob: (id: string) => requireRedouMethod("deleteCronJob")(id),
+  },
+  skills: {
+    getSkills: () => requireRedouMethod("getSkills")(),
+    toggleSkill: (name: string, enabled: boolean, scope?: SkillToggleScope) =>
+      requireRedouMethod("toggleSkill")(name, enabled, scope),
+    deleteSkill: (skill: SkillDeleteInput) => requireRedouMethod("deleteSkill")(skill),
+    mergeSkills: (skills: SkillMergeInput[]) => requireRedouMethod("mergeSkills")(skills),
+    getToolsets: () => requireRedouMethod("getToolsets")(),
+  },
+  plugins: {
+    getPlugins: () => requireRedouMethod("getPlugins")(),
+    rescanPlugins: () => requireRedouMethod("rescanPlugins")(),
+    getPluginsHub: () => requireRedouMethod("getPluginsHub")(),
+    installAgentPlugin: (body: AgentPluginInstallRequest) =>
+      requireRedouMethod("installAgentPlugin")(body),
+    enableAgentPlugin: (name: string) => requireRedouMethod("enableAgentPlugin")(name),
+    disableAgentPlugin: (name: string) => requireRedouMethod("disableAgentPlugin")(name),
+    updateAgentPlugin: (name: string) => requireRedouMethod("updateAgentPlugin")(name),
+    removeAgentPlugin: (name: string) => requireRedouMethod("removeAgentPlugin")(name),
+    savePluginProviders: (body: PluginProvidersPutRequest) =>
+      requireRedouMethod("savePluginProviders")(body),
+    setPluginVisibility: (name: string, hidden: boolean) =>
+      requireRedouMethod("setPluginVisibility")(name, hidden),
+  },
+  oauth: {
+    getOAuthProviders: () =>
+      unsupportedDesktopFeature<OAuthProvidersResponse>(
+        "OAuth provider management",
+        "use the system browser plus localhost/custom-protocol callback and store tokens in the OS keychain",
+      ),
+    disconnectOAuthProvider: (_providerId: string) =>
+      unsupportedDesktopFeature<{ ok: boolean }>(
+        "OAuth disconnect",
+        "add a desktop auth bridge that updates Hermes auth storage without web_server.py",
+      ),
+    startOAuthLogin: (_providerId: string) =>
+      unsupportedDesktopFeature<OAuthStartResponse>(
+        "OAuth login",
+        "use system browser plus localhost/custom-protocol callback and OS keychain persistence",
+      ),
+    submitOAuthCode: (_providerId: string, _sessionId: string, _code: string) =>
+      unsupportedDesktopFeature<OAuthSubmitResponse>(
+        "OAuth code submit",
+        "replace dashboard session-token flow with a desktop auth bridge",
+      ),
+    pollOAuthSession: (_providerId: string, _sessionId: string) =>
+      unsupportedDesktopFeature<OAuthPollResponse>(
+        "OAuth polling",
+        "replace dashboard polling with desktop-owned callback state",
+      ),
+    cancelOAuthSession: (_sessionId: string) =>
+      unsupportedDesktopFeature<{ ok: boolean }>(
+        "OAuth session cancellation",
+        "replace dashboard session storage with desktop-owned auth state",
+      ),
+  },
+  system: {
+    restartGateway: () =>
+      unsupportedDesktopFeature<ActionResponse>(
+        "Gateway restart",
+        "wire an explicit Electron main-process action if Redou Desktop needs gateway control",
+      ),
+    updateHermes: () =>
+      unsupportedDesktopFeature<ActionResponse>(
+        "Hermes update",
+        "wire an explicit Electron updater flow instead of the legacy dashboard action endpoint",
+      ),
+    getActionStatus: (_name: string, _lines = 200) =>
+      unsupportedDesktopFeature<ActionStatusResponse>(
+        "Legacy action status",
+        "track desktop-owned background actions in Electron main if needed",
+      ),
+  },
+} as const;
 
-  // Gateway / update actions
-  restartGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/restart", { method: "POST" }),
-  updateHermes: () =>
-    fetchJSON<ActionResponse>("/api/hermes/update", { method: "POST" }),
-  getActionStatus: (name: string, lines = 200) =>
-    fetchJSON<ActionStatusResponse>(
-      `/api/actions/${encodeURIComponent(name)}/status?lines=${lines}`,
-    ),
+export const redouApi = {
+  ...redouApiCore,
+  getStatus: redouApiCore.status.getStatus,
+  getSessions: redouApiCore.sessions.list,
+  getSessionMessages: redouApiCore.sessions.messages,
+  getChatProjects: redouApiCore.tasks.getChatProjects,
+  createChatProject: redouApiCore.tasks.createChatProject,
+  updateChatProject: redouApiCore.tasks.updateChatProject,
+  deleteChatProject: redouApiCore.tasks.deleteChatProject,
+  createChatTask: redouApiCore.tasks.createChatTask,
+  updateChatTask: redouApiCore.tasks.updateChatTask,
+  deleteChatTask: redouApiCore.tasks.deleteChatTask,
+  setActiveChatTask: redouApiCore.tasks.setActiveChatTask,
+  getChatTaskMessages: redouApiCore.tasks.getChatTaskMessages,
+  packageTaskSkill: redouApiCore.tasks.packageTaskSkill,
+  extractTaskRules: redouApiCore.tasks.extractTaskRules,
+  copyTaskAttachments: redouApiCore.tasks.copyTaskAttachments,
+  buildTaskContext: redouApiCore.tasks.buildTaskContext,
+  sendChatMessage: redouApiCore.tasks.sendChatMessage,
+  updateQueuedChatMessage: redouApiCore.tasks.updateQueuedChatMessage,
+  stopChatRun: redouApiCore.tasks.stopChatRun,
+  stopChatTask: redouApiCore.tasks.stopChatTask,
+  onAgentEvent: redouApiCore.tasks.onAgentEvent,
+  openLocalPath: redouApiCore.context.openLocalPath,
+  getGlobalContextFile: redouApiCore.context.getGlobalContextFile,
+  updateGlobalContextFile: redouApiCore.context.updateGlobalContextFile,
+  getProjectContextFile: redouApiCore.context.getProjectContextFile,
+  updateProjectContextFile: redouApiCore.context.updateProjectContextFile,
+  getTaskContextFile: redouApiCore.context.getTaskContextFile,
+  updateTaskContextFile: redouApiCore.context.updateTaskContextFile,
+  getLogs: redouApiCore.logs.getLogs,
+  getAnalytics: redouApiCore.analytics.getAnalytics,
+  getModelsAnalytics: redouApiCore.analytics.getModelsAnalytics,
+  getAnalysisBenchmarks: redouApiCore.analytics.getAnalysisBenchmarks,
+  startAnalysisBenchmarks: redouApiCore.analytics.startAnalysisBenchmarks,
+  onAnalysisEvent: redouApiCore.analytics.onAnalysisEvent,
+  getConfig: redouApiCore.settings.getConfig,
+  getDefaults: redouApiCore.settings.getDefaults,
+  getSchema: redouApiCore.settings.getSchema,
+  saveConfig: redouApiCore.settings.saveConfig,
+  getConfigRaw: redouApiCore.settings.getConfigRaw,
+  saveConfigRaw: redouApiCore.settings.saveConfigRaw,
+  getLanguage: redouApiCore.settings.getLanguage,
+  setLanguage: redouApiCore.settings.setLanguage,
+  getThemes: redouApiCore.theme.getThemes,
+  setTheme: redouApiCore.theme.setTheme,
+  getModelInfo: redouApiCore.models.getModelInfo,
+  getModelOptions: redouApiCore.models.getModelOptions,
+  getModelSetupCatalog: redouApiCore.models.getModelSetupCatalog,
+  getAuxiliaryModels: redouApiCore.models.getAuxiliaryModels,
+  setupMainModel: redouApiCore.models.setupMainModel,
+  refreshModelSetupModels: redouApiCore.models.refreshModelSetupModels,
+  setModelAssignment: redouApiCore.models.setModelAssignment,
+  getCronJobs: redouApiCore.cron.getCronJobs,
+  createCronJob: redouApiCore.cron.createCronJob,
+  pauseCronJob: redouApiCore.cron.pauseCronJob,
+  resumeCronJob: redouApiCore.cron.resumeCronJob,
+  triggerCronJob: redouApiCore.cron.triggerCronJob,
+  deleteCronJob: redouApiCore.cron.deleteCronJob,
+  getSkills: redouApiCore.skills.getSkills,
+  toggleSkill: redouApiCore.skills.toggleSkill,
+  deleteSkill: redouApiCore.skills.deleteSkill,
+  mergeSkills: redouApiCore.skills.mergeSkills,
+  getToolsets: redouApiCore.skills.getToolsets,
+  getPlugins: redouApiCore.plugins.getPlugins,
+  rescanPlugins: redouApiCore.plugins.rescanPlugins,
+  getPluginsHub: redouApiCore.plugins.getPluginsHub,
+  installAgentPlugin: redouApiCore.plugins.installAgentPlugin,
+  enableAgentPlugin: redouApiCore.plugins.enableAgentPlugin,
+  disableAgentPlugin: redouApiCore.plugins.disableAgentPlugin,
+  updateAgentPlugin: redouApiCore.plugins.updateAgentPlugin,
+  removeAgentPlugin: redouApiCore.plugins.removeAgentPlugin,
+  savePluginProviders: redouApiCore.plugins.savePluginProviders,
+  setPluginVisibility: redouApiCore.plugins.setPluginVisibility,
+  getOAuthProviders: redouApiCore.oauth.getOAuthProviders,
+  disconnectOAuthProvider: redouApiCore.oauth.disconnectOAuthProvider,
+  startOAuthLogin: redouApiCore.oauth.startOAuthLogin,
+  submitOAuthCode: redouApiCore.oauth.submitOAuthCode,
+  pollOAuthSession: redouApiCore.oauth.pollOAuthSession,
+  cancelOAuthSession: redouApiCore.oauth.cancelOAuthSession,
+  restartGateway: redouApiCore.system.restartGateway,
+  updateHermes: redouApiCore.system.updateHermes,
+  getActionStatus: redouApiCore.system.getActionStatus,
+} as const;
 
-  // Dashboard plugins
-  getPlugins: () =>
-    isRedouDesktop()
-      ? Promise.resolve([])
-      : fetchJSON<PluginManifestResponse[]>("/api/dashboard/plugins"),
-  rescanPlugins: () =>
-    isRedouDesktop()
-      ? Promise.resolve({ ok: true, count: 0 })
-      : fetchJSON<{ ok: boolean; count: number }>("/api/dashboard/plugins/rescan"),
-
-  getPluginsHub: () =>
-    fetchJSON<PluginsHubResponse>("/api/dashboard/plugins/hub"),
-
-  installAgentPlugin: (body: AgentPluginInstallRequest) =>
-    fetchJSON<AgentPluginInstallResponse>("/api/dashboard/agent-plugins/install", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...body }),
-    }),
-
-  enableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/enable`,
-      { method: "POST" },
-    ),
-
-  disableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/disable`,
-      { method: "POST" },
-    ),
-
-  updateAgentPlugin: (name: string) =>
-    fetchJSON<AgentPluginUpdateResponse>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/update`,
-      { method: "POST" },
-    ),
-
-  removeAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string }>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}`,
-      { method: "DELETE" },
-    ),
-
-  savePluginProviders: (body: PluginProvidersPutRequest) =>
-    fetchJSON<{ ok: boolean }>("/api/dashboard/plugin-providers", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    }),
-
-  setPluginVisibility: (name: string, hidden: boolean) =>
-    fetchJSON<{ ok: boolean; name: string; hidden: boolean }>(
-      `/api/dashboard/plugins/${encodeURIComponent(name)}/visibility`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hidden }),
-      },
-    ),
-
-  // Dashboard themes
-  getThemes: () =>
-    fetchJSON<DashboardThemesResponse>("/api/dashboard/themes"),
-  setTheme: (name: string) =>
-    fetchJSON<{ ok: boolean; theme: string }>("/api/dashboard/theme", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    }),
-  buildTaskContext: (input: BuildContextInput) =>
-    requireRedouMethod("buildTaskContext")(input),
-  sendChatMessage: (input: SendMessageInput) =>
-    requireRedouMethod("sendMessage")(input),
-  updateQueuedChatMessage: (input: QueuedMessageUpdateInput) =>
-    requireRedouMethod("updateQueuedMessage")(input),
-  stopChatRun: (runId: string) =>
-    requireRedouMethod("stopRun")(runId),
-  stopChatTask: (projectId: string, taskId: string) =>
-    requireRedouMethod("stopTaskRun")(projectId, taskId),
-  onAgentEvent: (callback: (payload: AgentEventEnvelope) => void) =>
-    requireRedouMethod("onAgentEvent")(callback),
-  onAnalysisEvent: (callback: (payload: AnalysisBenchmarkEvent) => void) =>
-    requireRedouMethod("onAnalysisEvent")(callback),
-};
-
+export const api = redouApi;
 export interface ActionResponse {
   name: string;
   ok: boolean;
@@ -1311,7 +1192,7 @@ export interface ToolsetInfo {
   tools: string[];
 }
 
-// ── Model info types ──────────────────────────────────────────────────
+// 鈹€鈹€ Model info types 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export interface ModelInfoResponse {
   model: string;
@@ -1329,7 +1210,7 @@ export interface ModelInfoResponse {
   };
 }
 
-// ── Model options / assignment types ──────────────────────────────────
+// 鈹€鈹€ Model options / assignment types 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export interface ModelOptionProvider {
   name: string;
@@ -1454,7 +1335,7 @@ export interface ModelAssignmentResponse {
   reset?: boolean;
 }
 
-// ── OAuth provider types ────────────────────────────────────────────────
+// 鈹€鈹€ OAuth provider types 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export interface OAuthProviderStatus {
   logged_in: boolean;
@@ -1482,7 +1363,7 @@ export interface OAuthProvidersResponse {
   providers: OAuthProvider[];
 }
 
-/** Discriminated union — the shape of /start depends on the flow. */
+/** Discriminated union 鈥?the shape of /start depends on the flow. */
 export type OAuthStartResponse =
   | {
       session_id: string;
@@ -1512,7 +1393,7 @@ export interface OAuthPollResponse {
   expires_at?: number | null;
 }
 
-// ── Dashboard theme types ──────────────────────────────────────────────
+// 鈹€鈹€ Dashboard theme types 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export interface DashboardThemeSummary {
   description: string;
@@ -1528,7 +1409,7 @@ export interface DashboardThemesResponse {
   themes: DashboardThemeSummary[];
 }
 
-// ── Dashboard plugin types ─────────────────────────────────────────────
+// 鈹€鈹€ Dashboard plugin types 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 export interface PluginManifestResponse {
   name: string;

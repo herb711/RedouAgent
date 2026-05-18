@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Brain, Eye, Gauge, Lightbulb, Wrench } from "lucide-react";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import type { ModelInfoResponse } from "@/lib/api";
 import { formatTokenCount } from "@/lib/format";
 import { useI18n } from "@/i18n";
@@ -53,7 +53,7 @@ export function ModelInfoCard({
     if (fetchKey === lastFetchKeyRef.current) return;
     lastFetchKeyRef.current = fetchKey;
     setLoading(true);
-    api
+    redouApi
       .getModelInfo()
       .then(setInfo)
       .catch(() => setInfo(null))

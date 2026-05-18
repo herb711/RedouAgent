@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { fetchJSON } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
@@ -74,7 +74,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetchJSON<{ language?: string }>("/api/dashboard/language")
+    redouApi.settings.getLanguage()
       .then((result) => {
         if (cancelled) return;
         const next = result.language && isLocale(result.language)
@@ -84,7 +84,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
         persistLocale(next);
       })
       .catch(() => {
-        // Keep the local/default language if the dashboard API is not ready yet.
+        // Keep the local/default language if the desktop bridge is not ready yet.
       });
     return () => {
       cancelled = true;
@@ -94,12 +94,8 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   const setLocale = useCallback((l: Locale) => {
     setLocaleState(l);
     persistLocale(l);
-    void fetchJSON<{ ok: boolean; language: Locale }>("/api/dashboard/language", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ language: l }),
-    }).catch(() => {
-      // Local choice still applies for this browser session.
+    void redouApi.settings.setLanguage(l).catch(() => {
+      // Local choice still applies for this renderer session.
     });
   }, []);
 

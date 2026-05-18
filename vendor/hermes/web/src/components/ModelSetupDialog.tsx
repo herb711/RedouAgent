@@ -12,7 +12,7 @@ import {
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Input } from "@/components/ui/input";
-import { api, notifyModelOptionsChanged, type ModelSetupProvider } from "@/lib/api";
+import { redouApi, notifyModelOptionsChanged, type ModelSetupProvider } from "@/lib/api";
 import { useI18n } from "@/i18n";
 
 interface Props {
@@ -109,7 +109,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
 
   useEffect(() => {
     closedRef.current = false;
-    api
+    redouApi
       .getModelSetupCatalog()
       .then((payload) => {
         if (closedRef.current) return;
@@ -233,7 +233,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
         : [selectedModel, ...modelChoices]
     ).filter(Boolean);
     try {
-      const result = await api.refreshModelSetupModels({
+      const result = await redouApi.refreshModelSetupModels({
         provider: selectedProvider.provider,
         model: selectedModel.trim(),
         base_url: baseUrl.trim(),
@@ -291,7 +291,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
         : [selectedModel, ...modelChoices]
     ).filter(Boolean);
     try {
-      await api.setupMainModel({
+      await redouApi.setupMainModel({
         provider: selectedProvider.provider,
         model: selectedModel.trim(),
         base_url: baseUrl.trim(),

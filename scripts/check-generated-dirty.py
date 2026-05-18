@@ -46,7 +46,24 @@ def git_status(root: Path, paths: list[str]) -> list[str]:
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
-def scan_debris(root: Path) -> list[str]:
+def git_tracked_paths(root: Path) -> set[str]:
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z"],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return set()
+    if result.returncode != 0:
+        return set()
+    return {item for item in result.stdout.split("\0") if item}
+
+
+def scan_debris(root: Path, tracked_paths: set[str] | None = None) -> list[str]:
+    tracked_paths = tracked_paths or set()
     findings: list[str] = []
     for current, dirnames, filenames in os.walk(root):
         current_path = Path(current)
@@ -59,7 +76,10 @@ def scan_debris(root: Path) -> list[str]:
                 dirnames.remove(dirname)
         for filename in filenames:
             if any(filename.endswith(suffix) for suffix in DEBRIS_FILE_SUFFIXES):
-                findings.append((current_path / filename).relative_to(root).as_posix())
+                rel_file = (current_path / filename).relative_to(root).as_posix()
+                if filename.endswith(".lnk") and rel_file in tracked_paths:
+                    continue
+                findings.append(rel_file)
     return findings
 
 
@@ -71,7 +91,8 @@ def main(argv: list[str] | None = None) -> int:
 
     root = Path(args.root).resolve()
     dirty = git_status(root, GENERATED_PATHS)
-    debris = [] if args.allow_debris else scan_debris(root)
+    tracked_paths = set() if args.allow_debris else git_tracked_paths(root)
+    debris = [] if args.allow_debris else scan_debris(root, tracked_paths)
 
     if dirty:
         print("Generated artifacts have uncommitted changes:")

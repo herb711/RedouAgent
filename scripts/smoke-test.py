@@ -99,14 +99,16 @@ def cleanup_test_debris() -> None:
 
 def assert_path_contract() -> None:
     service = ROOT / "apps" / "desktop" / "src" / "services" / "redouLocalService.cjs"
+    service_impl = ROOT / "apps" / "desktop" / "src" / "services" / "local-service" / "index.cjs"
     packager = HERMES / "hermes_cli" / "redou_task_skill_packager.py"
     docs = ROOT / "docs" / "architecture" / "source-and-generated-paths.md"
     readme = ROOT / "README.md"
-    for required in [service, packager, docs, readme]:
+    for required in [service, service_impl, packager, docs, readme]:
         if not required.exists():
             raise SystemExit(f"required path contract file is missing: {required.relative_to(ROOT)}")
 
-    service_text = service.read_text(encoding="utf-8")
+    facade_text = service.read_text(encoding="utf-8")
+    service_text = service_impl.read_text(encoding="utf-8")
     packager_text = packager.read_text(encoding="utf-8")
     docs_text = docs.read_text(encoding="utf-8")
     readme_text = readme.read_text(encoding="utf-8")
@@ -118,9 +120,12 @@ def assert_path_contract() -> None:
         "targetSkillsDir: this.projectSkillsDir(project)",
         "const promptDir = path.join(workspace, REDOU_CONTEXT_DIR, REDOU_ANALYSIS_DIR, \"prompts\");",
     ]
+    if 'module.exports = require("./local-service/index.cjs");' not in facade_text:
+        raise SystemExit("redouLocalService.cjs must remain a thin local-service facade")
+
     missing = [snippet for snippet in required_snippets if snippet not in service_text]
     if missing:
-        raise SystemExit("path contract snippets are missing from redouLocalService.cjs:\n" + "\n".join(missing))
+        raise SystemExit("path contract snippets are missing from local-service/index.cjs:\n" + "\n".join(missing))
 
     if "targetSkillsDir" not in packager_text or "REDOU_PROJECT_SKILLS_DIR" not in packager_text:
         raise SystemExit("Hermes task skill packager must validate/use the project skill target path")
@@ -129,7 +134,7 @@ def assert_path_contract() -> None:
     if "docs/architecture/source-and-generated-paths.md" not in readme_text:
         raise SystemExit("README must link to the runtime data path contract")
 
-    scanned_files = [service, ROOT / "README.md"]
+    scanned_files = [service, service_impl, ROOT / "README.md"]
     for path in scanned_files:
         text = path.read_text(encoding="utf-8")
         if ".redou-analysis" in text:
@@ -176,7 +181,8 @@ def main() -> int:
 
     node = shutil.which("node")
     if node:
-        run("Desktop service syntax", [node, "--check", "apps/desktop/src/services/redouLocalService.cjs"])
+        run("Desktop service facade syntax", [node, "--check", "apps/desktop/src/services/redouLocalService.cjs"])
+        run("Desktop local service syntax", [node, "--check", "apps/desktop/src/services/local-service/index.cjs"])
         run("Desktop task skill client syntax", [node, "--check", "apps/desktop/src/services/redouTaskSkillClient.cjs"])
         run("Desktop main syntax", [node, "--check", "apps/desktop/src/main.cjs"])
         desktop_tests = sorted(str(path.relative_to(ROOT)) for path in (ROOT / "apps" / "desktop" / "tests").glob("*.test.cjs"))

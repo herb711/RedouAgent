@@ -302,6 +302,7 @@ export interface Translations {
       logging: string;
       discord: string;
       auxiliary: string;
+      [key: string]: string;
     };
   };
 

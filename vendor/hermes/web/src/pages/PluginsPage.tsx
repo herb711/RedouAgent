@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ExternalLink, RefreshCw, Puzzle, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router-dom";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import type { HubAgentPluginRow, PluginsHubResponse } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
@@ -41,7 +41,7 @@ export default function PluginsPage() {
   const { setEnd } = usePageHeader();
 
   const loadHub = useCallback(() => {
-    return api
+    return redouApi
       .getPluginsHub()
       .then((h) => {
         setHub(h);
@@ -81,7 +81,7 @@ export default function PluginsPage() {
     }
     setInstallBusy(true);
     try {
-      const r = await api.installAgentPlugin({
+      const r = await redouApi.installAgentPlugin({
         identifier: id,
         force: installForce,
         enable: installEnable,
@@ -102,7 +102,7 @@ export default function PluginsPage() {
   const onRescan = async () => {
     setRescanBusy(true);
     try {
-      const rc = await api.rescanPlugins();
+      const rc = await redouApi.rescanPlugins();
       showToast(
         `${t.pluginsPage.refreshDashboard} (${rc.count})`,
         "success",
@@ -118,7 +118,7 @@ export default function PluginsPage() {
   const onSaveProviders = async () => {
     setProviderBusy(true);
     try {
-      await api.savePluginProviders({
+      await redouApi.savePluginProviders({
         memory_provider:
           memorySel === MEMORY_PROVIDER_BUILTIN ? "" : memorySel,
         context_engine: contextSel,
@@ -449,7 +449,7 @@ function PluginRowCard(props: PluginRowCardProps) {
               size="sm"
               onClick={() => {
                 void setRuntimeLoading(row.name, async () => {
-                  await api.enableAgentPlugin(row.name);
+                  await redouApi.enableAgentPlugin(row.name);
                   showToast(t.pluginsPage.enableRuntime, "success");
                 });
               }}
@@ -464,7 +464,7 @@ function PluginRowCard(props: PluginRowCardProps) {
               size="sm"
               onClick={() => {
                 void setRuntimeLoading(row.name, async () => {
-                  await api.disableAgentPlugin(row.name);
+                  await redouApi.disableAgentPlugin(row.name);
                   showToast(t.pluginsPage.disableRuntime, "success");
                 });
               }}
@@ -494,7 +494,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                 size="sm"
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.updateAgentPlugin(row.name);
+                    await redouApi.updateAgentPlugin(row.name);
                     showToast(t.pluginsPage.updateGit, "success");
                   });
                 }}
@@ -512,7 +512,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                 title={row.user_hidden ? t.pluginsPage.showInSidebar : t.pluginsPage.hideFromSidebar}
                 onClick={() => {
                   void setRuntimeLoading(row.name, async () => {
-                    await api.setPluginVisibility(row.name, !row.user_hidden);
+                    await redouApi.setPluginVisibility(row.name, !row.user_hidden);
                   });
                 }}
               >
@@ -541,7 +541,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                   if (!ok) return;
 
                   void setRuntimeLoading(row.name, async () => {
-                    await api.removeAgentPlugin(row.name);
+                    await redouApi.removeAgentPlugin(row.name);
                     showToast(`${row.name} removed`, "success");
                   });
                 }}

@@ -5,7 +5,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@/components/NouiTypography";
-import { api } from "@/lib/api";
+import { redouApi } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@/hooks/useToast";
@@ -89,7 +89,7 @@ export default function CronPage() {
   const [creating, setCreating] = useState(false);
 
   const loadJobs = useCallback(() => {
-    api
+    redouApi
       .getCronJobs()
       .then(setJobs)
       .catch(() => showToast(t.common.loading, "error"))
@@ -107,7 +107,7 @@ export default function CronPage() {
     }
     setCreating(true);
     try {
-      await api.createCronJob({
+      await redouApi.createCronJob({
         prompt: prompt.trim(),
         schedule: schedule.trim(),
         name: name.trim() || undefined,
@@ -130,13 +130,13 @@ export default function CronPage() {
     try {
       const isPaused = getJobState(job) === "paused";
       if (isPaused) {
-        await api.resumeCronJob(job.id);
+        await redouApi.resumeCronJob(job.id);
         showToast(
           `${t.cron.resume}: "${truncateText(getJobTitle(job), 30)}"`,
           "success",
         );
       } else {
-        await api.pauseCronJob(job.id);
+        await redouApi.pauseCronJob(job.id);
         showToast(
           `${t.cron.pause}: "${truncateText(getJobTitle(job), 30)}"`,
           "success",
@@ -150,7 +150,7 @@ export default function CronPage() {
 
   const handleTrigger = async (job: CronJob) => {
     try {
-      await api.triggerCronJob(job.id);
+      await redouApi.triggerCronJob(job.id);
       showToast(
         `${t.cron.triggerNow}: "${truncateText(getJobTitle(job), 30)}"`,
         "success",
@@ -166,7 +166,7 @@ export default function CronPage() {
       async (id: string) => {
         const job = jobs.find((j) => j.id === id);
         try {
-          await api.deleteCronJob(id);
+          await redouApi.deleteCronJob(id);
           showToast(
             `${t.common.delete}: "${job ? truncateText(getJobTitle(job), 30) : id}"`,
             "success",

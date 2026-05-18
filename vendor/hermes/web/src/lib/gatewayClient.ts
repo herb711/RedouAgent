@@ -106,88 +106,17 @@ export class GatewayClient {
   async connect(token?: string): Promise<void> {
     if (this._state === "open" || this._state === "connecting") return;
     this.setState("connecting");
-
-    const resolved = token ?? window.__HERMES_SESSION_TOKEN__ ?? "";
-    if (!resolved) {
-      this.setState("error");
-      throw new Error(
-        "Session token not available — page must be served by the Hermes dashboard",
-      );
-    }
-
-    const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(
-      `${scheme}//${location.host}/api/ws?token=${encodeURIComponent(resolved)}`,
+    void token;
+    this.setState("error");
+    throw new Error(
+      "Legacy dashboard WebSocket transport is disabled in Redou Desktop. " +
+        "TODO: route sidebar gateway requests through Electron IPC or remove this legacy sidebar.",
     );
-    this.ws = ws;
-
-    // Register message + close BEFORE awaiting open — the server emits
-    // `gateway.ready` immediately after accept, so a listener attached
-    // after the open promise resolves can race past it and drop the
-    // initial skin payload.
-    ws.addEventListener("message", (ev) => {
-      try {
-        this.dispatch(JSON.parse(ev.data));
-      } catch {
-        /* malformed frame — ignore */
-      }
-    });
-
-    ws.addEventListener("close", () => {
-      this.setState("closed");
-      this.rejectAllPending(new Error("WebSocket closed"));
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      const onOpen = () => {
-        ws.removeEventListener("error", onError);
-        this.setState("open");
-        resolve();
-      };
-      const onError = () => {
-        ws.removeEventListener("open", onOpen);
-        this.setState("error");
-        reject(new Error("WebSocket connection failed"));
-      };
-      ws.addEventListener("open", onOpen, { once: true });
-      ws.addEventListener("error", onError, { once: true });
-    });
   }
 
   close() {
     this.ws?.close();
     this.ws = null;
-  }
-
-  private dispatch(msg: Record<string, unknown>) {
-    const id = msg.id as string | undefined;
-
-    if (id !== undefined && this.pending.has(id)) {
-      const p = this.pending.get(id)!;
-      this.pending.delete(id);
-      clearTimeout(p.timer);
-
-      const err = msg.error as { message?: string } | undefined;
-      if (err) p.reject(new Error(err.message ?? "request failed"));
-      else p.resolve(msg.result);
-      return;
-    }
-
-    if (msg.method !== "event") return;
-
-    const params = (msg.params ?? {}) as GatewayEvent;
-    if (typeof params.type !== "string") return;
-
-    for (const cb of this.listeners.get(params.type) ?? []) cb(params);
-    for (const cb of this.listeners.get(ANY) ?? []) cb(params);
-  }
-
-  private rejectAllPending(err: Error) {
-    for (const p of this.pending.values()) {
-      clearTimeout(p.timer);
-      p.reject(err);
-    }
-    this.pending.clear();
   }
 
   /** Send a JSON-RPC request. Rejects on error response or timeout. */
@@ -225,11 +154,5 @@ export class GatewayClient {
         reject(e instanceof Error ? e : new Error(String(e)));
       }
     });
-  }
-}
-
-declare global {
-  interface Window {
-    __HERMES_SESSION_TOKEN__?: string;
   }
 }
