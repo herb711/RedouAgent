@@ -2,9 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, Languages } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
-import { useI18n } from "@/i18n/context";
-import { LOCALE_META } from "@/i18n";
-import type { Locale } from "@/i18n";
+import { LOCALE_META, useI18n, type Locale } from "@/i18n";
 
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();

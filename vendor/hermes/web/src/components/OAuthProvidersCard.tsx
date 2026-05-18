@@ -58,7 +58,10 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const { t } = useI18n();
 
   const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
+
+  useEffect(() => {
+    onErrorRef.current = onError;
+  }, [onError]);
 
   const refresh = useCallback(() => {
     setLoading(true);
@@ -70,7 +73,8 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   }, []);
 
   useEffect(() => {
-    refresh();
+    const timer = window.setTimeout(refresh, 0);
+    return () => window.clearTimeout(timer);
   }, [refresh]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {

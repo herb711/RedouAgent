@@ -53,25 +53,18 @@ export default function PluginsPage() {
   }, [showToast, t.common.loading]);
 
   useEffect(() => {
-    setLoading(true);
-    void loadHub().finally(() => setLoading(false));
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      void loadHub().finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
   }, [loadHub]);
-
-  useEffect(() => {
-    setEnd(
-      <Button
-        ghost
-        size="sm"
-        className="shrink-0 gap-2"
-        disabled={loading || rescanBusy}
-        onClick={() => void onRescan()}
-      >
-        {rescanBusy ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
-        {t.pluginsPage.refreshDashboard}
-      </Button>,
-    );
-    return () => setEnd(null);
-  }, [loading, rescanBusy, setEnd, t.pluginsPage.refreshDashboard]);
 
   const onInstall = async () => {
     const id = installId.trim();
@@ -99,7 +92,7 @@ export default function PluginsPage() {
     }
   };
 
-  const onRescan = async () => {
+  const onRescan = useCallback(async () => {
     setRescanBusy(true);
     try {
       const rc = await redouApi.rescanPlugins();
@@ -113,7 +106,23 @@ export default function PluginsPage() {
     } finally {
       setRescanBusy(false);
     }
-  };
+  }, [loadHub, showToast, t.pluginsPage.refreshDashboard]);
+
+  useEffect(() => {
+    setEnd(
+      <Button
+        ghost
+        size="sm"
+        className="shrink-0 gap-2"
+        disabled={loading || rescanBusy}
+        onClick={() => void onRescan()}
+      >
+        {rescanBusy ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
+        {t.pluginsPage.refreshDashboard}
+      </Button>,
+    );
+    return () => setEnd(null);
+  }, [loading, onRescan, rescanBusy, setEnd, t.pluginsPage.refreshDashboard]);
 
   const onSaveProviders = async () => {
     setProviderBusy(true);

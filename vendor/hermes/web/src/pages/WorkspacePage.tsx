@@ -366,6 +366,13 @@ type LoadState = {
   sessions: SessionInfo[];
 };
 
+type SelectedTaskMessageSource = {
+  key: string;
+  projectId: string;
+  taskId: string;
+  version: number;
+};
+
 type TaskEventView = {
   command: string;
   id: string;
@@ -659,6 +666,29 @@ function timestampMs(value: unknown, fallback = Date.now()): number {
   }
   const parsed = Date.parse(String(value || ""));
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function findSelectedTaskMessageSource(
+  selectedTaskKey: string | null,
+  projects: ChatProject[],
+): SelectedTaskMessageSource | null {
+  if (!selectedTaskKey) return null;
+  for (const project of projects) {
+    for (const task of project.tasks || []) {
+      if (taskKey(project.id, task.id) === selectedTaskKey) {
+        return {
+          key: selectedTaskKey,
+          projectId: project.id,
+          taskId: task.id,
+          version: timestampMs(
+            task.updatedAt ?? task.updated_at ?? task.createdAt ?? task.created_at,
+            0,
+          ),
+        };
+      }
+    }
+  }
+  return null;
 }
 
 function taskCreatedMs(task: ChatTask): number {
@@ -1395,28 +1425,16 @@ export default function WorkspacePage() {
     }, 350);
   }, [refresh]);
 
-  const selectedTaskMessageSource = useMemo(() => {
-    if (!selectedTaskKey) return null;
-    for (const project of state.projects) {
-      for (const task of project.tasks || []) {
-        if (taskKey(project.id, task.id) === selectedTaskKey) {
-          return {
-            key: selectedTaskKey,
-            projectId: project.id,
-            taskId: task.id,
-            version: timestampMs(
-              task.updatedAt ?? task.updated_at ?? task.createdAt ?? task.created_at,
-              0,
-            ),
-          };
-        }
-      }
-    }
-    return null;
-  }, [selectedTaskKey, state.projects]);
+  const selectedTaskMessageSource = useMemo(
+    () => findSelectedTaskMessageSource(selectedTaskKey, state.projects),
+    [selectedTaskKey, state.projects],
+  );
 
   useEffect(() => {
-    void refresh();
+    const timer = window.setTimeout(() => {
+      void refresh();
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [refresh]);
 
   useEffect(() => {
@@ -1473,51 +1491,49 @@ export default function WorkspacePage() {
   }, [state.sessions]);
 
   useEffect(() => {
-    if (!selectedTaskMessageSource) {
-      setSelectedMessages((prev) =>
-        prev.key === null && !prev.loading && prev.messages.length === 0 && !prev.error
-          ? prev
-          : { error: null, key: null, loading: false, messages: [] },
-      );
-      return;
-    }
-    const { key, projectId, taskId } = selectedTaskMessageSource;
     let cancelled = false;
-    setSelectedMessages((prev) => ({
-      error: null,
-      key,
-      loading: prev.key !== key,
-      messages: prev.key === key ? prev.messages : [],
-    }));
-    redouApi
-      .getChatTaskMessages(projectId, taskId)
-      .then((result) => {
-        if (cancelled) return;
-        setSelectedMessages({
-          error: result.warnings?.[0] ?? null,
-          key,
-          loading: false,
-          messages: result.messages ?? [],
+    const timer = window.setTimeout(() => {
+      if (!selectedTaskMessageSource) {
+        setSelectedMessages((prev) =>
+          prev.key === null && !prev.loading && prev.messages.length === 0 && !prev.error
+            ? prev
+            : { error: null, key: null, loading: false, messages: [] },
+        );
+        return;
+      }
+      const { key, projectId, taskId } = selectedTaskMessageSource;
+      setSelectedMessages((prev) => ({
+        error: null,
+        key,
+        loading: prev.key !== key,
+        messages: prev.key === key ? prev.messages : [],
+      }));
+      redouApi
+        .getChatTaskMessages(projectId, taskId)
+        .then((result) => {
+          if (cancelled) return;
+          setSelectedMessages({
+            error: result.warnings?.[0] ?? null,
+            key,
+            loading: false,
+            messages: result.messages ?? [],
+          });
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setSelectedMessages({
+            error: errorMessage(error),
+            key,
+            loading: false,
+            messages: [],
+          });
         });
-      })
-      .catch((error) => {
-        if (cancelled) return;
-        setSelectedMessages({
-          error: errorMessage(error),
-          key,
-          loading: false,
-          messages: [],
-        });
-      });
+    }, 0);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, [
-    selectedTaskMessageSource?.key,
-    selectedTaskMessageSource?.projectId,
-    selectedTaskMessageSource?.taskId,
-    selectedTaskMessageSource?.version,
-  ]);
+  }, [selectedTaskMessageSource]);
 
   const taskViewModels = useMemo(() => {
     return state.projects.flatMap((project) =>
@@ -1533,20 +1549,23 @@ export default function WorkspacePage() {
   }, [copy, selectedMessages.key, selectedMessages.messages, sessionByTask, state.projects]);
 
   useEffect(() => {
-    if (taskViewModels.length === 0) {
-      if (selectedTaskKey) setSelectedTaskKey(null);
-      return;
-    }
-    if (selectedTaskKey && taskViewModels.some((task) => task.key === selectedTaskKey)) return;
-    const currentKey =
-      state.currentProjectId && state.currentTaskId
-        ? taskKey(state.currentProjectId, state.currentTaskId)
-        : null;
-    const nextKey =
-      (currentKey && taskViewModels.some((task) => task.key === currentKey)
-        ? currentKey
-        : null) ?? taskViewModels[0].key;
-    setSelectedTaskKey(nextKey);
+    const timer = window.setTimeout(() => {
+      if (taskViewModels.length === 0) {
+        if (selectedTaskKey) setSelectedTaskKey(null);
+        return;
+      }
+      if (selectedTaskKey && taskViewModels.some((task) => task.key === selectedTaskKey)) return;
+      const currentKey =
+        state.currentProjectId && state.currentTaskId
+          ? taskKey(state.currentProjectId, state.currentTaskId)
+          : null;
+      const nextKey =
+        (currentKey && taskViewModels.some((task) => task.key === currentKey)
+          ? currentKey
+          : null) ?? taskViewModels[0].key;
+      setSelectedTaskKey(nextKey);
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [selectedTaskKey, state.currentProjectId, state.currentTaskId, taskViewModels]);
 
   const selectedTask = useMemo(

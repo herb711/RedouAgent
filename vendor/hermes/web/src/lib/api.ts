@@ -349,31 +349,44 @@ const redouApiCore = {
         "OAuth provider management",
         "use the system browser plus localhost/custom-protocol callback and store tokens in the OS keychain",
       ),
-    disconnectOAuthProvider: (_providerId: string) =>
-      unsupportedDesktopFeature<{ ok: boolean }>(
+    disconnectOAuthProvider: (_providerId: string) => {
+      void _providerId;
+      return unsupportedDesktopFeature<{ ok: boolean }>(
         "OAuth disconnect",
         "add a desktop auth bridge that updates Hermes auth storage without web_server.py",
-      ),
-    startOAuthLogin: (_providerId: string) =>
-      unsupportedDesktopFeature<OAuthStartResponse>(
+      );
+    },
+    startOAuthLogin: (_providerId: string) => {
+      void _providerId;
+      return unsupportedDesktopFeature<OAuthStartResponse>(
         "OAuth login",
         "use system browser plus localhost/custom-protocol callback and OS keychain persistence",
-      ),
-    submitOAuthCode: (_providerId: string, _sessionId: string, _code: string) =>
-      unsupportedDesktopFeature<OAuthSubmitResponse>(
+      );
+    },
+    submitOAuthCode: (_providerId: string, _sessionId: string, _code: string) => {
+      void _providerId;
+      void _sessionId;
+      void _code;
+      return unsupportedDesktopFeature<OAuthSubmitResponse>(
         "OAuth code submit",
         "replace dashboard session-token flow with a desktop auth bridge",
-      ),
-    pollOAuthSession: (_providerId: string, _sessionId: string) =>
-      unsupportedDesktopFeature<OAuthPollResponse>(
+      );
+    },
+    pollOAuthSession: (_providerId: string, _sessionId: string) => {
+      void _providerId;
+      void _sessionId;
+      return unsupportedDesktopFeature<OAuthPollResponse>(
         "OAuth polling",
         "replace dashboard polling with desktop-owned callback state",
-      ),
-    cancelOAuthSession: (_sessionId: string) =>
-      unsupportedDesktopFeature<{ ok: boolean }>(
+      );
+    },
+    cancelOAuthSession: (_sessionId: string) => {
+      void _sessionId;
+      return unsupportedDesktopFeature<{ ok: boolean }>(
         "OAuth session cancellation",
         "replace dashboard session storage with desktop-owned auth state",
-      ),
+      );
+    },
   },
   system: {
     restartGateway: () =>
@@ -386,11 +399,13 @@ const redouApiCore = {
         "Hermes update",
         "wire an explicit Electron updater flow instead of the legacy dashboard action endpoint",
       ),
-    getActionStatus: (_name: string, _lines = 200) =>
-      unsupportedDesktopFeature<ActionStatusResponse>(
+    getActionStatus: (_name: string, _lines = 200) => {
+      void _lines;
+      return unsupportedDesktopFeature<ActionStatusResponse>(
         "Legacy action status",
         "track desktop-owned background actions in Electron main if needed",
-      ),
+      );
+    },
   },
 } as const;
 

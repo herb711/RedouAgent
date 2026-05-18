@@ -18,7 +18,7 @@ import {
   Layers3,
   Wrench,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 interface Props {
   channel: string;
@@ -86,7 +86,9 @@ export function ChatTaskToolbar({
     taskId: selectedTaskId,
   });
 
-  selectedIdsRef.current = { projectId: selectedProjectId, taskId: selectedTaskId };
+  useLayoutEffect(() => {
+    selectedIdsRef.current = { projectId: selectedProjectId, taskId: selectedTaskId };
+  }, [selectedProjectId, selectedTaskId]);
 
   const providerOptions = useMemo(() => {
     const syntheticProviders: ModelOptionProvider[] = [];

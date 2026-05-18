@@ -1124,7 +1124,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const { t, locale } = useI18n();
   const copy = CHAT_COPY[locale];
 
-  selectedIdsRef.current = { projectId: selectedProjectId, taskId: selectedTaskId };
+  useLayoutEffect(() => {
+    selectedIdsRef.current = { projectId: selectedProjectId, taskId: selectedTaskId };
+  }, [selectedProjectId, selectedTaskId]);
 
   const isCurrentSelection = useCallback((projectId: string | null, taskId: string | null) => {
     const current = selectedIdsRef.current;
@@ -1325,7 +1327,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   useEffect(() => {
     if (runMode === "plan" && deliveryMode === "guide") {
-      setDeliveryMode("queue");
+      const timer = window.setTimeout(() => setDeliveryMode("queue"), 0);
+      return () => window.clearTimeout(timer);
     }
   }, [deliveryMode, runMode]);
 

@@ -57,6 +57,8 @@ import { PluginSlot } from "@/plugins";
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
+type ConfigSchema = Record<string, Record<string, unknown>>;
+
 const CATEGORY_ICONS: Record<
   string,
   React.ComponentType<{ className?: string }>
@@ -98,16 +100,28 @@ function CategoryIcon({
   return <Icon className={className ?? "h-4 w-4"} />;
 }
 
+function categoriesFromSchema(
+  schema: ConfigSchema | null,
+  categoryOrder: string[],
+): string[] {
+  if (!schema) return [];
+  const allCats = [
+    ...new Set(
+      Object.values(schema).map((s) => String(s.category ?? "general")),
+    ),
+  ];
+  const ordered = categoryOrder.filter((c) => allCats.includes(c));
+  const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
+  return [...ordered, ...extra];
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
 export default function ConfigPage() {
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
-  const [schema, setSchema] = useState<Record<
-    string,
-    Record<string, unknown>
-  > | null>(null);
+  const [schema, setSchema] = useState<ConfigSchema | null>(null);
   const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
   const [defaults, setDefaults] = useState<Record<string, unknown> | null>(
     null,
@@ -196,34 +210,39 @@ export default function ConfigPage() {
   // Set active category when categories load
   useEffect(() => {
     if (categoryOrder.length > 0 && !activeCategory) {
-      setActiveCategory(categoryOrder[0]);
+      const timer = window.setTimeout(() => setActiveCategory(categoryOrder[0]), 0);
+      return () => window.clearTimeout(timer);
     }
   }, [categoryOrder, activeCategory]);
 
   // Load YAML when switching to YAML mode
   useEffect(() => {
-    if (yamlMode) {
+    if (!yamlMode) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
       setYamlLoading(true);
       redouApi
         .getConfigRaw()
-        .then((resp) => setYamlText(resp.yaml))
-        .catch(() => showToast(t.config.failedToLoadRaw, "error"))
-        .finally(() => setYamlLoading(false));
-    }
-  }, [yamlMode]);
+        .then((resp) => {
+          if (!cancelled) setYamlText(resp.yaml);
+        })
+        .catch(() => {
+          if (!cancelled) showToast(t.config.failedToLoadRaw, "error");
+        })
+        .finally(() => {
+          if (!cancelled) setYamlLoading(false);
+        });
+    }, 0);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [showToast, t.config.failedToLoadRaw, yamlMode]);
 
   /* ---- Categories ---- */
-  const categories = useMemo(() => {
-    if (!schema) return [];
-    const allCats = [
-      ...new Set(
-        Object.values(schema).map((s) => String(s.category ?? "general")),
-      ),
-    ];
-    const ordered = categoryOrder.filter((c) => allCats.includes(c));
-    const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
-    return [...ordered, ...extra];
-  }, [schema, categoryOrder]);
+  const categories = categoriesFromSchema(schema, categoryOrder);
 
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {

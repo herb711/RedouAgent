@@ -731,9 +731,13 @@ export default function AnalyticsPage() {
 
   useEffect(() => {
     if (!hasLiveBenchmarks(benchmarks)) return;
-    setNowMs(Date.now());
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1000);
-    return () => window.clearInterval(timer);
+    const tick = () => setNowMs(Date.now());
+    const initialTimer = window.setTimeout(tick, 0);
+    const timer = window.setInterval(tick, 1000);
+    return () => {
+      window.clearTimeout(initialTimer);
+      window.clearInterval(timer);
+    };
   }, [benchmarks]);
 
   useEffect(() => {

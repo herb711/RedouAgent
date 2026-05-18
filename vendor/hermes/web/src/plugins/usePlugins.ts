@@ -39,7 +39,8 @@ export function usePlugins() {
     for (const manifest of manifests) {
       setPluginLoadError(manifest.name, "DESKTOP_ASSET_LOADER_MISSING");
     }
-    setLoading(false);
+    const timer = window.setTimeout(() => setLoading(false), 0);
+    return () => window.clearTimeout(timer);
   }, [manifests]);
 
   // Listen for plugin registrations and resolve them against manifests.

@@ -710,6 +710,8 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
       icon: RotateCw,
       label: t.status.restartGateway,
       runningLabel: t.status.restartingGateway,
+      disabled: true,
+      disabledReason: "当前桌面版暂未支持重启 Gateway",
       spin: true,
     },
     {
@@ -750,7 +752,7 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
       <SidebarStatusStrip />
 
       <ul className="flex flex-col">
-        {items.map(({ action, disabled: itemDisabled, icon: Icon, label, runningLabel, spin }) => {
+        {items.map(({ action, disabled: itemDisabled, disabledReason, icon: Icon, label, runningLabel, spin }) => {
           const isPending = pendingAction === action;
           const isActionRunning =
             activeAction === action && isRunning && !isPending;
@@ -759,10 +761,11 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
           const disabled = Boolean(itemDisabled) || (isBusy && !busy);
 
           return (
-            <li key={action}>
+            <li key={action} title={disabledReason}>
               <ListItem
                 onClick={() => handleClick(action, Boolean(itemDisabled))}
                 disabled={disabled}
+                title={disabledReason}
                 aria-busy={busy}
                 active={busy}
                 className={cn(
@@ -830,5 +833,6 @@ interface SystemActionItem {
   label: string;
   runningLabel: string;
   disabled?: boolean;
+  disabledReason?: string;
   spin: boolean;
 }

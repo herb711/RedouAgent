@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useState,
   type ReactNode,
@@ -10,18 +8,11 @@ import { redouApi } from "@/lib/api";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
+import { I18nContext, type I18nContextValue } from "./i18n-context";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   zh,
   en,
-};
-
-export const LOCALE_META: Record<
-  Locale,
-  { name: string; shortName: string }
-> = {
-  zh: { name: "中文", shortName: "中" },
-  en: { name: "English", shortName: "EN" },
 };
 
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
@@ -56,18 +47,6 @@ function persistLocale(locale: Locale): void {
 function getInitialLocale(): Locale {
   return storedLocale() ?? "zh";
 }
-
-interface I18nContextValue {
-  locale: Locale;
-  setLocale: (l: Locale) => void;
-  t: Translations;
-}
-
-const I18nContext = createContext<I18nContextValue>({
-  locale: "zh",
-  setLocale: () => {},
-  t: zh,
-});
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
@@ -110,8 +89,4 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       {children}
     </I18nContext.Provider>
   );
-}
-
-export function useI18n() {
-  return useContext(I18nContext);
 }

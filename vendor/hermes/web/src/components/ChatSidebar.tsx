@@ -123,10 +123,13 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   // Redou Desktop. TODO: route this sidebar through IPC if it is mounted again.
   useEffect(() => {
     void channel;
-    setError(
-      "Legacy dashboard event stream is disabled in Redou Desktop. " +
-        "TODO: route sidebar events through Electron IPC before re-enabling this panel.",
-    );
+    const timer = window.setTimeout(() => {
+      setError(
+        "Legacy dashboard event stream is disabled in Redou Desktop. " +
+          "TODO: route sidebar events through Electron IPC before re-enabling this panel.",
+      );
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [channel, version]);
 
   const reconnect = useCallback(() => {

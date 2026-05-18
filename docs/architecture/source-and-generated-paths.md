@@ -166,6 +166,26 @@ python scripts/check-generated-dirty.py
 python scripts/smoke-test.py
 ```
 
+`smoke-test.py` is a development validation suite. For the full async gateway
+checks, install Hermes dev dependencies in the Python environment used for
+smoke validation:
+
+```bash
+python -m pip install -e vendor/hermes[dev]
+```
+
+On Windows, use the helper scripts instead of modifying the Redou runtime venv:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/setup-dev-smoke-venv.ps1
+powershell -ExecutionPolicy Bypass -File scripts/run-check-all-dev.ps1
+```
+
+See `docs/development/smoke-tests.md` for the development venv workflow.
+
+If that environment intentionally omits test-only packages, set
+`REDOU_SMOKE_SKIP_ASYNC=1` to skip only the async gateway smoke tests.
+
 `check-path-contract.py` verifies that project-local rules, messages, and skills
 stay under `.redou`, and that old root compatibility shims remain removed.
 

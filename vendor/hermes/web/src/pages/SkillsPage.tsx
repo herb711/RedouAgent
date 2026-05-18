@@ -134,14 +134,17 @@ export default function SkillsPage() {
       })
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [showToast, t.common.loading]);
 
   useEffect(() => {
-    const validKeys = new Set(skills.map((skill) => skillKey(skill)));
-    setSelectedSkillKeys((prev) => {
-      const next = new Set([...prev].filter((key) => validKeys.has(key)));
-      return next.size === prev.size ? prev : next;
-    });
+    const timer = window.setTimeout(() => {
+      const validKeys = new Set(skills.map((skill) => skillKey(skill)));
+      setSelectedSkillKeys((prev) => {
+        const next = new Set([...prev].filter((key) => validKeys.has(key)));
+        return next.size === prev.size ? prev : next;
+      });
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [skills]);
 
   const selectedSkills = useMemo(
