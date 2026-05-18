@@ -55,7 +55,7 @@ export const tr: Translations = {
     closeNavigation: "Gezintiyi kapat",
     closeModelTools: "Modeli ve araçları kapat",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Aktif Oturumlar:",
     gatewayStatusLabel: "Ağ Geçidi Durumu:",
@@ -72,7 +72,6 @@ export const tr: Translations = {
       config: "Yapılandırma",
       cron: "Cron",
       documentation: "Dokümantasyon",
-      keys: "Anahtarlar",
       logs: "Günlükler",
       models: "Modeller",
       plugins: "Eklentiler",
@@ -216,7 +215,7 @@ export const tr: Translations = {
     installHeading: "GitHub / Git URL'sinden yükle",
     installHint: "owner/repo kısayolunu veya tam https:// ya da git@ klon URL'sini kullanın.",
     memoryProviderLabel: "Bellek sağlayıcısı",
-    missingEnvWarn: "Eklenti çalışmadan önce bunları Anahtarlar bölümünde ayarlayın:",
+    missingEnvWarn: "Eklenti çalışmadan önce bu ortam değişkenlerini ayarlayın:",
     noDashboardTab: "Pano sekmesi yok",
     openTab: "Aç",
     orphanHeading: "Yalnızca pano uzantıları (eşleşen agent plugin.yaml yok)",
@@ -300,26 +299,6 @@ export const tr: Translations = {
       discord: "Discord",
       auxiliary: "Yardımcı",
     },
-  },
-
-  env: {
-    changesNote: "Değişiklikler diske hemen kaydedilir. Aktif oturumlar yeni anahtarları otomatik olarak alır.",
-    confirmClearMessage:
-      "Bu değişken için saklanan değer .env dosyanızdan kaldırılacak. Bu işlem arayüzden geri alınamaz.",
-    confirmClearTitle: "Bu anahtar temizlensin mi?",
-    description: "Şurada saklanan API anahtarlarını ve sırları yönetin",
-    hideAdvanced: "Gelişmişi Gizle",
-    showAdvanced: "Gelişmişi Göster",
-    llmProviders: "LLM Sağlayıcıları",
-    providersConfigured: "{configured}/{total} sağlayıcı yapılandırıldı",
-    getKey: "Anahtar al",
-    notConfigured: "{count} yapılandırılmamış",
-    notSet: "Ayarlanmadı",
-    keysCount: "{count} anahtar",
-    enterValue: "Değer girin...",
-    replaceCurrentValue: "Mevcut değeri değiştir ({preview})",
-    showValue: "Gerçek değeri göster",
-    hideValue: "Değeri gizle",
   },
 
   oauth: {

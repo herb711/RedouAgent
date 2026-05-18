@@ -72,7 +72,6 @@ export interface Translations {
       config: string;
       cron: string;
       documentation: string;
-      keys: string;
       logs: string;
       models: string;
       plugins: string;
@@ -304,26 +303,6 @@ export interface Translations {
       discord: string;
       auxiliary: string;
     };
-  };
-
-  // ── Env / Keys page ──
-  env: {
-    changesNote: string;
-    confirmClearMessage: string;
-    confirmClearTitle: string;
-    description: string;
-    enterValue: string;
-    getKey: string;
-    hideAdvanced: string;
-    hideValue: string;
-    keysCount: string;
-    llmProviders: string;
-    notConfigured: string;
-    notSet: string;
-    providersConfigured: string;
-    replaceCurrentValue: string;
-    showAdvanced: string;
-    showValue: string;
   };
 
   // ── OAuth ──

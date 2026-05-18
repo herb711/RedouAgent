@@ -55,7 +55,7 @@ export const it: Translations = {
     closeNavigation: "Chiudi navigazione",
     closeModelTools: "Chiudi modello e strumenti",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Sessioni attive:",
     gatewayStatusLabel: "Stato gateway:",
@@ -72,7 +72,6 @@ export const it: Translations = {
       config: "Configurazione",
       cron: "Cron",
       documentation: "Documentazione",
-      keys: "Chiavi",
       logs: "Log",
       models: "Modelli",
       plugins: "Plugin",
@@ -216,7 +215,7 @@ export const it: Translations = {
     installHeading: "Installa da GitHub / URL Git",
     installHint: "Usa la forma breve owner/repo o un URL clone https:// o git@ completo.",
     memoryProviderLabel: "Provider di memoria",
-    missingEnvWarn: "Imposta queste variabili in Chiavi prima di eseguire il plugin:",
+    missingEnvWarn: "Imposta queste variabili d'ambiente prima di eseguire il plugin:",
     noDashboardTab: "Nessuna scheda nel dashboard",
     openTab: "Apri",
     orphanHeading: "Estensioni solo dashboard (nessuna corrispondenza con plugin.yaml)",
@@ -300,26 +299,6 @@ export const it: Translations = {
       discord: "Discord",
       auxiliary: "Ausiliario",
     },
-  },
-
-  env: {
-    changesNote: "Le modifiche vengono salvate immediatamente su disco. Le sessioni attive rilevano automaticamente le nuove chiavi.",
-    confirmClearMessage:
-      "Il valore memorizzato per questa variabile sarà rimosso dal tuo file .env. Non può essere annullato dall'interfaccia.",
-    confirmClearTitle: "Cancellare questa chiave?",
-    description: "Gestisci chiavi API e segreti memorizzati in",
-    hideAdvanced: "Nascondi avanzate",
-    showAdvanced: "Mostra avanzate",
-    llmProviders: "Provider LLM",
-    providersConfigured: "{configured} di {total} provider configurati",
-    getKey: "Ottieni chiave",
-    notConfigured: "{count} non configurat{s}",
-    notSet: "Non impostato",
-    keysCount: "{count} chiav{s}",
-    enterValue: "Inserisci valore...",
-    replaceCurrentValue: "Sostituisci valore corrente ({preview})",
-    showValue: "Mostra valore reale",
-    hideValue: "Nascondi valore",
   },
 
   oauth: {

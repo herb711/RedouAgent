@@ -84,6 +84,14 @@ interface PlanReview {
   createdAt: string;
 }
 
+interface QueuedInput {
+  id: string;
+  content: string;
+  createdAt: string;
+  runMode: RunMode;
+  attachments: ChatAttachment[];
+}
+
 const CHAT_COPY = {
   zh: {
     projects: "项目",
@@ -109,6 +117,15 @@ const CHAT_COPY = {
       queueTitle: "排到当前任务完成后执行",
       guideTitle: "插入到当前运行中的后续步骤",
       queued: (count: number) => `${count} 条排队中`,
+    },
+    queuedInput: {
+      title: "已排队",
+      detail: "当前运行完成后发送",
+      guide: "引导",
+      guideTitle: "改为引导当前运行",
+      guideDisabled: "只有无附件的执行消息可以改为引导",
+      delete: "删除",
+      deleteTitle: "从队列中删除这条消息",
     },
     runMode: {
       execute: "执行",
@@ -221,6 +238,15 @@ const CHAT_COPY = {
       queueTitle: "Run after the current task turn finishes",
       guideTitle: "Steer the active run on its next step",
       queued: (count: number) => `${count} queued`,
+    },
+    queuedInput: {
+      title: "Queued",
+      detail: "Sends after the current run",
+      guide: "Guide",
+      guideTitle: "Convert to guidance for the active run",
+      guideDisabled: "Only text-only execute messages can become guidance",
+      delete: "Delete",
+      deleteTitle: "Remove this message from the queue",
     },
     runMode: {
       execute: "Execute",
@@ -712,6 +738,98 @@ function eventFromMessage(message: ChatTaskMessage): AgentEvent | null {
 
 function eventMetadata(event: AgentEvent | null): Record<string, unknown> {
   return event?.metadata && typeof event.metadata === "object" ? event.metadata : {};
+}
+
+function messageMetadata(message: ChatTaskMessage): Record<string, unknown> {
+  return message.metadata && typeof message.metadata === "object" ? message.metadata : {};
+}
+
+function inputEnvelopeFromMessage(message: ChatTaskMessage): Record<string, unknown> | null {
+  const envelope = messageMetadata(message).inputEnvelope;
+  return isRecord(envelope) ? envelope : null;
+}
+
+function queuedInputFromMessage(message: ChatTaskMessage): QueuedInput | null {
+  if (message.role !== "user") return null;
+  const metadata = messageMetadata(message);
+  const envelope = inputEnvelopeFromMessage(message);
+  const deliveryMode = String(metadata.deliveryMode ?? envelope?.deliveryMode ?? "").trim().toLowerCase();
+  const status = String(envelope?.status ?? metadata.status ?? "pending").trim().toLowerCase();
+  const id = String(metadata.queueId ?? envelope?.id ?? "").trim();
+  if (deliveryMode !== "queue" || status !== "pending" || !id) return null;
+  return {
+    id,
+    content: message.content,
+    createdAt: message.createdAt,
+    runMode: metadata.runMode === "plan" ? "plan" : "execute",
+    attachments: Array.isArray(message.attachments) ? message.attachments : [],
+  };
+}
+
+function isPendingQueuedInputMessage(message: ChatTaskMessage): boolean {
+  return queuedInputFromMessage(message) !== null;
+}
+
+function isQueueBookkeepingMessage(message: ChatTaskMessage): boolean {
+  const event = eventFromMessage(message);
+  return event?.type === "queue_update" && Boolean(eventMetadata(event).queueState);
+}
+
+function messageDisplayTimestampMs(message: ChatTaskMessage): number {
+  const metadata = messageMetadata(message);
+  const envelope = inputEnvelopeFromMessage(message);
+  const deliveryMode = String(metadata.deliveryMode ?? envelope?.deliveryMode ?? "").trim().toLowerCase();
+  const consumedAt = deliveryMode === "queue" ? timestampMs(envelope?.consumedAt) : null;
+  return consumedAt ?? timestampMs(message.createdAt) ?? 0;
+}
+
+function visibleChatMessages(messages: ChatTaskMessage[]): ChatTaskMessage[] {
+  return messages
+    .map((message, index) => ({ message, index, timestamp: messageDisplayTimestampMs(message) }))
+    .filter((item) => !isPendingQueuedInputMessage(item.message) && !isQueueBookkeepingMessage(item.message))
+    .sort((a, b) => a.timestamp - b.timestamp || a.index - b.index)
+    .map((item) => item.message);
+}
+
+function queuedInputsFromMessages(messages: ChatTaskMessage[]): QueuedInput[] {
+  const byId = new Map<string, QueuedInput>();
+  for (const message of messages) {
+    const queued = queuedInputFromMessage(message);
+    if (queued) byId.set(queued.id, queued);
+  }
+  return Array.from(byId.values()).sort(
+    (a, b) => (timestampMs(a.createdAt) ?? 0) - (timestampMs(b.createdAt) ?? 0),
+  );
+}
+
+function removeQueuedInputMessage(messages: ChatTaskMessage[], queueId: string): ChatTaskMessage[] {
+  return messages.filter((message) => queuedInputFromMessage(message)?.id !== queueId);
+}
+
+function markQueuedInputMessageStarted(
+  messages: ChatTaskMessage[],
+  queueId: string,
+  runId: string | undefined,
+): ChatTaskMessage[] {
+  const consumedAt = new Date().toISOString();
+  return messages.map((message) => {
+    if (queuedInputFromMessage(message)?.id !== queueId) return message;
+    const metadata = messageMetadata(message);
+    const envelope = inputEnvelopeFromMessage(message);
+    return {
+      ...message,
+      metadata: {
+        ...metadata,
+        ...(runId ? { runId } : {}),
+        inputEnvelope: {
+          ...(envelope ?? {}),
+          ...(runId ? { runId } : {}),
+          status: "consumed",
+          consumedAt,
+        },
+      },
+    };
+  });
 }
 
 function eventRunKey(event: AgentEvent | null, message: ChatTaskMessage): string {
@@ -1219,8 +1337,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setCurrentRunId(payload.runId);
       }
       if (event.type === "queue_update") {
+        const metadata = eventMetadata(event);
+        const queueId = String(metadata.queueId || "").trim();
+        const queueState = String(metadata.queueState || "").trim();
+        const activeRunId = String(metadata.activeRunId || payload.runId || "").trim() || undefined;
         setQueuedCount(Math.max(0, Number(event.queued || 0)));
-        setMessages((current) => appendAgentEvent(current, event));
+        setMessages((current) => {
+          if (!queueId) return appendAgentEvent(current, event);
+          if (queueState === "deleted" || queueState === "guided") {
+            return appendAgentEvent(removeQueuedInputMessage(current, queueId), event);
+          }
+          if (queueState === "started") {
+            return appendAgentEvent(markQueuedInputMessageStarted(current, queueId, activeRunId), event);
+          }
+          return appendAgentEvent(current, event);
+        });
         setRunState("running");
         return;
       }
@@ -1359,6 +1490,54 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const agentBusy = runState === "thinking" || runState === "running";
   const activeRunId = currentRunId ?? selectedTask?.active_run_id ?? null;
   const stopDisabled = !activeRunId && !(agentBusy && selectedProjectId && selectedTaskId);
+  const displayMessages = useMemo(() => visibleChatMessages(messages), [messages]);
+  const queuedInputs = useMemo(() => queuedInputsFromMessages(messages), [messages]);
+
+  const appendQueuedInput = useCallback(
+    ({
+      attachments,
+      queueId,
+      requestedDeliveryMode,
+      runMode: inputRunMode,
+      targetRunId,
+      userInput,
+    }: {
+      attachments: ChatAttachment[];
+      queueId: string;
+      requestedDeliveryMode: DeliveryMode;
+      runMode: RunMode;
+      targetRunId?: string;
+      userInput: string;
+    }) => {
+      const queuedAt = new Date().toISOString();
+      setMessages((current) => [
+        ...removeQueuedInputMessage(current, queueId),
+        {
+          role: "user",
+          content: userInput,
+          createdAt: queuedAt,
+          metadata: {
+            projectId: selectedProjectId,
+            taskId: selectedTaskId,
+            runMode: inputRunMode,
+            deliveryMode: "queue",
+            requestedDeliveryMode,
+            queueId,
+            queuedAt,
+            inputEnvelope: {
+              id: queueId,
+              text: userInput,
+              deliveryMode: "queue",
+              status: "pending",
+              ...(targetRunId ? { targetRunId } : {}),
+            },
+          },
+          attachments,
+        },
+      ]);
+    },
+    [selectedProjectId, selectedTaskId],
+  );
 
   const send = useCallback(async (options: { riskConfirmed?: boolean } = {}) => {
     if (!selectedProjectId || !selectedTaskId) {
@@ -1388,23 +1567,23 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setStreaming("");
     setError(null);
     if (!busy) setRunState("thinking");
-    setMessages((current) => [
-      ...current,
-      {
-        role: "user",
-        content: userInput,
-        createdAt: new Date().toISOString(),
-        metadata: {
-          projectId: selectedProjectId,
-          taskId: selectedTaskId,
-          runMode,
-          deliveryMode: busy ? effectiveDeliveryMode : "immediate",
-          ...(busy && effectiveDeliveryMode === "queue" ? { queued: true } : {}),
-          ...(busy && effectiveDeliveryMode === "guide" ? { guided: true } : {}),
+    if (!busy) {
+      setMessages((current) => [
+        ...current,
+        {
+          role: "user",
+          content: userInput,
+          createdAt: new Date().toISOString(),
+          metadata: {
+            projectId: selectedProjectId,
+            taskId: selectedTaskId,
+            runMode,
+            deliveryMode: "immediate",
+          },
+          attachments,
         },
-        attachments,
-      },
-    ]);
+      ]);
+    }
     try {
       const response = await api.sendChatMessage({
         projectId: selectedProjectId,
@@ -1417,6 +1596,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
       if (response.queueDepth !== undefined) {
         setQueuedCount(Math.max(0, Number(response.queueDepth || 0)));
+      }
+      if (busy && response.queued && response.queueId) {
+        appendQueuedInput({
+          attachments,
+          queueId: response.queueId,
+          requestedDeliveryMode: effectiveDeliveryMode,
+          runMode,
+          targetRunId: response.runId,
+          userInput,
+        });
       }
       if (response.warning) setError(response.warning);
       setCurrentRunId(response.ok ? response.runId : null);
@@ -1432,7 +1621,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setRunState("error");
       setMessages((current) => appendAgentEvent(current, event));
     }
-  }, [copy.selectProjectTaskBeforeSending, deliveryMode, draft, pendingAttachments, runMode, runState, selectedProjectId, selectedTaskId]);
+  }, [appendQueuedInput, copy.selectProjectTaskBeforeSending, deliveryMode, draft, pendingAttachments, runMode, runState, selectedProjectId, selectedTaskId]);
 
   const executePlan = useCallback(async (plan: PlanReview) => {
     if (!selectedProjectId || !selectedTaskId) {
@@ -1450,23 +1639,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setStreaming("");
     setError(null);
     if (!busy) setRunState("thinking");
-    setMessages((current) => [
-      ...current,
-      {
-        role: "user",
-        content: userInput,
-        createdAt: new Date().toISOString(),
-        metadata: {
-          projectId: selectedProjectId,
-          taskId: selectedTaskId,
-          runMode: "execute",
-          planReviewId: plan.id,
-          deliveryMode: busy ? effectiveDeliveryMode : "immediate",
-          ...(busy ? { queued: true } : {}),
+    if (!busy) {
+      setMessages((current) => [
+        ...current,
+        {
+          role: "user",
+          content: userInput,
+          createdAt: new Date().toISOString(),
+          metadata: {
+            projectId: selectedProjectId,
+            taskId: selectedTaskId,
+            runMode: "execute",
+            planReviewId: plan.id,
+            deliveryMode: "immediate",
+          },
+          attachments: [],
         },
-        attachments: [],
-      },
-    ]);
+      ]);
+    }
     try {
       const response = await api.sendChatMessage({
         projectId: selectedProjectId,
@@ -1479,6 +1669,16 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       });
       if (response.queueDepth !== undefined) {
         setQueuedCount(Math.max(0, Number(response.queueDepth || 0)));
+      }
+      if (busy && response.queued && response.queueId) {
+        appendQueuedInput({
+          attachments: [],
+          queueId: response.queueId,
+          requestedDeliveryMode: effectiveDeliveryMode,
+          runMode: "execute",
+          targetRunId: response.runId,
+          userInput,
+        });
       }
       if (response.warning) setError(response.warning);
       setCurrentRunId(response.ok ? response.runId : null);
@@ -1494,7 +1694,31 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setRunState("error");
       setMessages((current) => appendAgentEvent(current, event));
     }
-  }, [copy.planReview, copy.selectProjectTaskBeforeSending, runState, selectedProjectId, selectedTaskId]);
+  }, [appendQueuedInput, copy.planReview, copy.selectProjectTaskBeforeSending, runState, selectedProjectId, selectedTaskId]);
+
+  const updateQueuedInput = useCallback(async (queued: QueuedInput, action: "delete" | "guide") => {
+    if (!selectedProjectId || !selectedTaskId) return;
+    setError(null);
+    try {
+      const response = await api.updateQueuedChatMessage({
+        projectId: selectedProjectId,
+        taskId: selectedTaskId,
+        queueId: queued.id,
+        action,
+      });
+      if (response.queueDepth !== undefined) {
+        setQueuedCount(Math.max(0, Number(response.queueDepth || 0)));
+      }
+      if (!response.ok) {
+        if (response.message) setError(response.message);
+        return;
+      }
+      setMessages((current) => removeQueuedInputMessage(current, queued.id));
+      if (response.runId) setCurrentRunId(response.runId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [selectedProjectId, selectedTaskId]);
 
   const adjustPlan = useCallback((plan: PlanReview) => {
     setDraft(`${copy.planReview.adjustDraft}\n`);
@@ -1609,7 +1833,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   const applyRuleCandidate = useCallback(async () => {
     if (!selectedProject || !selectedTask) return;
-    const candidate = makeRuleCandidate(selectedProject, selectedTask, messages);
+    const candidate = makeRuleCandidate(selectedProject, selectedTask, displayMessages);
     if (!candidate) return;
     const key = `${candidate.scope}:${candidate.content}`;
     setApplyingRuleCandidateKey(key);
@@ -1637,7 +1861,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     } finally {
       setApplyingRuleCandidateKey((current) => (current === key ? null : current));
     }
-  }, [messages, selectedProject, selectedTask]);
+  }, [displayMessages, selectedProject, selectedTask]);
 
   const statusLabel =
     runState === "thinking"
@@ -1651,10 +1875,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             : runState === "done"
               ? copy.status.done
               : copy.status.idle;
-  const ruleCandidate = makeRuleCandidate(selectedProject, selectedTask, messages);
+  const ruleCandidate = makeRuleCandidate(selectedProject, selectedTask, displayMessages);
   const ruleCandidateKey = ruleCandidate ? `${ruleCandidate.scope}:${ruleCandidate.content}` : null;
-  const latestTodoPlan = useMemo(() => latestTodoPlanFromMessages(messages), [messages]);
-  const latestPlanReview = useMemo(() => latestPlanReviewFromMessages(messages), [messages]);
+  const latestTodoPlan = useMemo(() => latestTodoPlanFromMessages(displayMessages), [displayMessages]);
+  const latestPlanReview = useMemo(() => latestPlanReviewFromMessages(displayMessages), [displayMessages]);
   const visiblePlanReview =
     latestPlanReview &&
     !dismissedPlanReviewIds.has(latestPlanReview.id) &&
@@ -1760,10 +1984,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               >
                 {!selectedTask ? (
                   <EmptyChat />
-                ) : messages.length === 0 && !streaming ? (
+                ) : displayMessages.length === 0 && !streaming && queuedInputs.length === 0 ? (
                   <EmptyChat title={copy.newTask} detail={copy.newTaskDetail} />
                 ) : (
-                  messages.map((message, index) => (
+                  displayMessages.map((message, index) => (
                     <MessageBubble key={`${message.createdAt}-${index}`} message={message} />
                   ))
                 )}
@@ -1847,6 +2071,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   onRemove={(id) =>
                     setPendingAttachments((current) => current.filter((item) => item.id !== id))
                   }
+                />
+              )}
+              {queuedInputs.length > 0 && (
+                <QueuedInputTray
+                  items={queuedInputs}
+                  activeRun={agentBusy}
+                  onDelete={(item) => void updateQueuedInput(item, "delete")}
+                  onGuide={(item) => void updateQueuedInput(item, "guide")}
                 />
               )}
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -2068,6 +2300,74 @@ function PlanReviewCard({
           </Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function QueuedInputTray({
+  activeRun,
+  items,
+  onDelete,
+  onGuide,
+}: {
+  activeRun: boolean;
+  items: QueuedInput[];
+  onDelete(item: QueuedInput): void;
+  onGuide(item: QueuedInput): void;
+}) {
+  const { locale } = useI18n();
+  const copy = CHAT_COPY[locale].queuedInput;
+  return (
+    <div className="mb-2 space-y-2" aria-live="polite">
+      {items.map((item, index) => {
+        const canGuide = activeRun && item.runMode === "execute" && item.attachments.length === 0;
+        return (
+          <div
+            key={item.id}
+            className="rounded-md border border-warning/35 bg-warning/5 px-2.5 py-2 text-xs shadow-sm"
+          >
+            <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+              <div className="inline-flex min-w-0 items-center gap-2 font-medium text-warning">
+                <ListPlus className="h-3.5 w-3.5 shrink-0" />
+                <span>{copy.title}</span>
+                <span className="text-muted-foreground">#{index + 1}</span>
+                <span className="text-muted-foreground">{copy.detail}</span>
+              </div>
+              <div className="flex shrink-0 items-center gap-1.5">
+                <Button
+                  outlined
+                  size="sm"
+                  type="button"
+                  disabled={!canGuide}
+                  onClick={() => onGuide(item)}
+                  title={canGuide ? copy.guideTitle : copy.guideDisabled}
+                  aria-label={canGuide ? copy.guideTitle : copy.guideDisabled}
+                  className="h-7 px-2 text-[11px]"
+                >
+                  <CornerDownRight className="mr-1 h-3.5 w-3.5" />
+                  {copy.guide}
+                </Button>
+                <Button
+                  ghost
+                  size="sm"
+                  type="button"
+                  onClick={() => onDelete(item)}
+                  title={copy.deleteTitle}
+                  aria-label={copy.deleteTitle}
+                  className="h-7 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+                >
+                  <X className="mr-1 h-3.5 w-3.5" />
+                  {copy.delete}
+                </Button>
+              </div>
+            </div>
+            <div className="max-h-16 overflow-y-auto whitespace-pre-wrap break-words rounded border border-border/50 bg-background/35 px-2 py-1.5 text-sm leading-5 text-midground">
+              {item.content}
+            </div>
+            {item.attachments.length > 0 && <AttachmentList attachments={item.attachments} />}
+          </div>
+        );
+      })}
     </div>
   );
 }

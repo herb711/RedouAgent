@@ -55,7 +55,7 @@ export const uk: Translations = {
     closeNavigation: "Закрити навігацію",
     closeModelTools: "Закрити модель та інструменти",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Активні сесії:",
     gatewayStatusLabel: "Стан шлюзу:",
@@ -72,7 +72,6 @@ export const uk: Translations = {
       config: "Конфігурація",
       cron: "Cron",
       documentation: "Документація",
-      keys: "Ключі",
       logs: "Журнали",
       models: "Моделі",
       plugins: "Плагіни",
@@ -216,7 +215,7 @@ export const uk: Translations = {
     installHeading: "Встановити з GitHub / Git URL",
     installHint: "Використовуйте скорочення owner/repo або повну https:// чи git@ URL для клонування.",
     memoryProviderLabel: "Постачальник пам'яті",
-    missingEnvWarn: "Встановіть їх у Keys, перш ніж плагін зможе працювати:",
+    missingEnvWarn: "Встановіть ці змінні середовища, перш ніж плагін зможе працювати:",
     noDashboardTab: "Немає вкладки панелі",
     openTab: "Відкрити",
     orphanHeading: "Розширення лише для панелі (без відповідного agent plugin.yaml)",
@@ -300,26 +299,6 @@ export const uk: Translations = {
       discord: "Discord",
       auxiliary: "Додатково",
     },
-  },
-
-  env: {
-    changesNote: "Зміни одразу зберігаються на диск. Активні сесії автоматично підхоплюють нові ключі.",
-    confirmClearMessage:
-      "Збережене значення цієї змінної буде видалено з вашого .env-файлу. Цю дію не можна скасувати з UI.",
-    confirmClearTitle: "Очистити цей ключ?",
-    description: "Керуйте API-ключами та секретами, що зберігаються в",
-    hideAdvanced: "Сховати розширене",
-    showAdvanced: "Показати розширене",
-    llmProviders: "Постачальники LLM",
-    providersConfigured: "Налаштовано {configured} з {total} постачальників",
-    getKey: "Отримати ключ",
-    notConfigured: "{count} не налаштовано",
-    notSet: "Не задано",
-    keysCount: "{count} ключ(ів)",
-    enterValue: "Введіть значення...",
-    replaceCurrentValue: "Замінити поточне значення ({preview})",
-    showValue: "Показати справжнє значення",
-    hideValue: "Сховати значення",
   },
 
   oauth: {

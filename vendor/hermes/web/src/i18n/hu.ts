@@ -55,7 +55,7 @@ export const hu: Translations = {
     closeNavigation: "Navigáció bezárása",
     closeModelTools: "Modell és eszközök bezárása",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Aktív munkamenetek:",
     gatewayStatusLabel: "Átjáró állapota:",
@@ -72,7 +72,6 @@ export const hu: Translations = {
       config: "Beállítások",
       cron: "Cron",
       documentation: "Dokumentáció",
-      keys: "Kulcsok",
       logs: "Naplók",
       models: "Modellek",
       plugins: "Bővítmények",
@@ -216,7 +215,7 @@ export const hu: Translations = {
     installHeading: "Telepítés GitHubról / Git URL-ről",
     installHint: "Használjon owner/repo rövidítést vagy teljes https:// vagy git@ klónozási URL-t.",
     memoryProviderLabel: "Memória-szolgáltató",
-    missingEnvWarn: "Állítsa be ezeket a Kulcsok között, mielőtt a bővítmény futhatna:",
+    missingEnvWarn: "Állítsa be ezeket a környezeti változókat, mielőtt a bővítmény futhatna:",
     noDashboardTab: "Nincs vezérlőpult-fül",
     openTab: "Megnyitás",
     orphanHeading: "Csak vezérlőpult-bővítmények (nincs egyező agent plugin.yaml)",
@@ -300,26 +299,6 @@ export const hu: Translations = {
       discord: "Discord",
       auxiliary: "Kiegészítő",
     },
-  },
-
-  env: {
-    changesNote: "A változások azonnal mentésre kerülnek a lemezre. Az aktív munkamenetek automatikusan átveszik az új kulcsokat.",
-    confirmClearMessage:
-      "A változó tárolt értéke törlődik a .env fájlból. Ez a felületről nem vonható vissza.",
-    confirmClearTitle: "Törli ezt a kulcsot?",
-    description: "API-kulcsok és titkok kezelése a következő helyen:",
-    hideAdvanced: "Speciális elrejtése",
-    showAdvanced: "Speciális megjelenítése",
-    llmProviders: "LLM-szolgáltatók",
-    providersConfigured: "{configured} / {total} szolgáltató beállítva",
-    getKey: "Kulcs lekérése",
-    notConfigured: "{count} nincs beállítva",
-    notSet: "Nincs beállítva",
-    keysCount: "{count} kulcs{s}",
-    enterValue: "Adjon meg értéket...",
-    replaceCurrentValue: "Jelenlegi érték cseréje ({preview})",
-    showValue: "Tényleges érték megjelenítése",
-    hideValue: "Érték elrejtése",
   },
 
   oauth: {

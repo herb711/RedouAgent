@@ -55,7 +55,7 @@ export const fr: Translations = {
     closeNavigation: "Fermer la navigation",
     closeModelTools: "Fermer modèle et outils",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Sessions actives:",
     gatewayStatusLabel: "État de la passerelle:",
@@ -72,7 +72,6 @@ export const fr: Translations = {
       config: "Configuration",
       cron: "Cron",
       documentation: "Documentation",
-      keys: "Clés",
       logs: "Journaux",
       models: "Modèles",
       plugins: "Plugins",
@@ -216,7 +215,7 @@ export const fr: Translations = {
     installHeading: "Installer depuis GitHub / URL Git",
     installHint: "Utilisez le raccourci owner/repo ou une URL de clonage complète https:// ou git@.",
     memoryProviderLabel: "Fournisseur de mémoire",
-    missingEnvWarn: "Définissez ces variables dans Clés avant que le plugin puisse s'exécuter:",
+    missingEnvWarn: "Définissez ces variables d'environnement avant que le plugin puisse s'exécuter :",
     noDashboardTab: "Aucun onglet de tableau de bord",
     openTab: "Ouvrir",
     orphanHeading: "Extensions du tableau de bord uniquement (aucune correspondance plugin.yaml d'agent)",
@@ -300,26 +299,6 @@ export const fr: Translations = {
       discord: "Discord",
       auxiliary: "Auxiliaire",
     },
-  },
-
-  env: {
-    changesNote: "Les modifications sont enregistrées sur le disque immédiatement. Les sessions actives récupèrent les nouvelles clés automatiquement.",
-    confirmClearMessage:
-      "La valeur stockée pour cette variable sera supprimée de votre fichier .env. Cette action ne peut pas être annulée depuis l'interface.",
-    confirmClearTitle: "Effacer cette clé ?",
-    description: "Gérer les clés API et les secrets stockés dans",
-    hideAdvanced: "Masquer les options avancées",
-    showAdvanced: "Afficher les options avancées",
-    llmProviders: "Fournisseurs LLM",
-    providersConfigured: "{configured} sur {total} fournisseurs configurés",
-    getKey: "Obtenir la clé",
-    notConfigured: "{count} non configuré",
-    notSet: "Non défini",
-    keysCount: "{count} clé{s}",
-    enterValue: "Saisir une valeur...",
-    replaceCurrentValue: "Remplacer la valeur actuelle ({preview})",
-    showValue: "Afficher la valeur réelle",
-    hideValue: "Masquer la valeur",
   },
 
   oauth: {

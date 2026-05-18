@@ -40,8 +40,8 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
-  label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  label: "AGENT Teal",
+  description: "Classic dark teal — the canonical AGENT look",
   palette: {
     background: { hex: "#041c1c", alpha: 1 },
     midground: { hex: "#ffe6cb", alpha: 1 },
@@ -130,6 +130,32 @@ export const monoTheme: DashboardTheme = {
   },
 };
 
+export const paperTheme: DashboardTheme = {
+  name: "paper",
+  label: "Paper",
+  description: "White canvas with black text",
+  palette: {
+    background: { hex: "#fbfbf8", alpha: 1 },
+    midground: { hex: "#111111", alpha: 1 },
+    foreground: { hex: "#000000", alpha: 0 },
+    warmGlow: "rgba(0, 0, 0, 0)",
+    noiseOpacity: 0,
+  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: DEFAULT_LAYOUT,
+  componentStyles: {
+    backdrop: {
+      fillerOpacity: "0",
+    },
+  },
+  colorOverrides: {
+    destructive: "#dc2626",
+    destructiveForeground: "#ffffff",
+    success: "#15803d",
+    warning: "#b45309",
+  },
+};
+
 export const cyberpunkTheme: DashboardTheme = {
   name: "cyberpunk",
   label: "Cyberpunk",
@@ -190,8 +216,8 @@ export const roseTheme: DashboardTheme = {
  */
 export const defaultLargeTheme: DashboardTheme = {
   name: "default-large",
-  label: "Hermes Teal (Large)",
-  description: "Hermes Teal with bigger fonts and roomier spacing",
+  label: "AGENT Teal (Large)",
+  description: "AGENT Teal with bigger fonts and roomier spacing",
   palette: defaultTheme.palette,
   typography: {
     ...DEFAULT_TYPOGRAPHY,
@@ -207,6 +233,7 @@ export const defaultLargeTheme: DashboardTheme = {
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
+  paper: paperTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

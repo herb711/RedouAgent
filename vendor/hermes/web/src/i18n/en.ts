@@ -55,7 +55,7 @@ export const en: Translations = {
     closeNavigation: "Close navigation",
     closeModelTools: "Close model and tools",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Active Runs:",
     gatewayStatusLabel: "Gateway Status:",
@@ -72,7 +72,6 @@ export const en: Translations = {
       config: "Config",
       cron: "Cron",
       documentation: "Documentation",
-      keys: "Keys",
       logs: "Logs",
       models: "Models",
       plugins: "Plugins",
@@ -216,7 +215,7 @@ export const en: Translations = {
     installHeading: "Install from GitHub / Git URL",
     installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL.",
     memoryProviderLabel: "Memory provider",
-    missingEnvWarn: "Set these in Keys before the plugin can run:",
+    missingEnvWarn: "Set these environment variables before the plugin can run:",
     noDashboardTab: "No dashboard tab",
     openTab: "Open",
     orphanHeading: "Dashboard-only extensions (no agent plugin.yaml match)",
@@ -300,26 +299,6 @@ export const en: Translations = {
       discord: "Discord",
       auxiliary: "Auxiliary",
     },
-  },
-
-  env: {
-    changesNote: "Changes are saved to disk immediately. Active sessions pick up new keys automatically.",
-    confirmClearMessage:
-      "The stored value for this variable will be removed from your .env file. This cannot be undone from the UI.",
-    confirmClearTitle: "Clear this key?",
-    description: "Manage API keys and secrets stored in",
-    hideAdvanced: "Hide Advanced",
-    showAdvanced: "Show Advanced",
-    llmProviders: "LLM Providers",
-    providersConfigured: "{configured} of {total} providers configured",
-    getKey: "Get key",
-    notConfigured: "{count} not configured",
-    notSet: "Not set",
-    keysCount: "{count} key{s}",
-    enterValue: "Enter value...",
-    replaceCurrentValue: "Replace current value ({preview})",
-    showValue: "Show real value",
-    hideValue: "Hide value",
   },
 
   oauth: {

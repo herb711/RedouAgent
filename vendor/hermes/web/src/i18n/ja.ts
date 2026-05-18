@@ -55,7 +55,7 @@ export const ja: Translations = {
     closeNavigation: "ナビゲーションを閉じる",
     closeModelTools: "モデルとツールを閉じる",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "アクティブなセッション:",
     gatewayStatusLabel: "ゲートウェイの状態:",
@@ -72,7 +72,6 @@ export const ja: Translations = {
       config: "設定",
       cron: "Cron",
       documentation: "ドキュメント",
-      keys: "キー",
       logs: "ログ",
       models: "モデル",
       plugins: "プラグイン",
@@ -216,7 +215,7 @@ export const ja: Translations = {
     installHeading: "GitHub / Git URL からインストール",
     installHint: "owner/repo の短縮形、または完全な https:// もしくは git@ クローン URL を使用してください。",
     memoryProviderLabel: "メモリプロバイダー",
-    missingEnvWarn: "プラグインを実行する前にこれらをキーに設定してください:",
+    missingEnvWarn: "プラグインを実行する前にこれらの環境変数を設定してください:",
     noDashboardTab: "ダッシュボードタブなし",
     openTab: "開く",
     orphanHeading: "ダッシュボード専用拡張 (該当する agent plugin.yaml なし)",
@@ -300,26 +299,6 @@ export const ja: Translations = {
       discord: "Discord",
       auxiliary: "補助",
     },
-  },
-
-  env: {
-    changesNote: "変更は即座にディスクへ保存されます。アクティブなセッションは新しいキーを自動的に取得します。",
-    confirmClearMessage:
-      "この変数の保存値が .env ファイルから削除されます。この操作は UI から取り消せません。",
-    confirmClearTitle: "このキーをクリアしますか？",
-    description: "API キーとシークレットを管理します。保存先:",
-    hideAdvanced: "詳細設定を隠す",
-    showAdvanced: "詳細設定を表示",
-    llmProviders: "LLM プロバイダー",
-    providersConfigured: "{configured} / {total} プロバイダーが設定済み",
-    getKey: "キーを取得",
-    notConfigured: "{count} 件未設定",
-    notSet: "未設定",
-    keysCount: "{count} キー{s}",
-    enterValue: "値を入力...",
-    replaceCurrentValue: "現在の値を置き換える ({preview})",
-    showValue: "実際の値を表示",
-    hideValue: "値を非表示",
   },
 
   oauth: {

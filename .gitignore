@@ -9,7 +9,6 @@ __pycache__/
 *.bak
 *.swp
 *.swo
-*.lnk
 .DS_Store
 Thumbs.db
 .env

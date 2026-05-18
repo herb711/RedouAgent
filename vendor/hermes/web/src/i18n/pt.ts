@@ -55,7 +55,7 @@ export const pt: Translations = {
     closeNavigation: "Fechar navegação",
     closeModelTools: "Fechar modelo e ferramentas",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Sessões ativas:",
     gatewayStatusLabel: "Estado do gateway:",
@@ -72,7 +72,6 @@ export const pt: Translations = {
       config: "Configuração",
       cron: "Cron",
       documentation: "Documentação",
-      keys: "Chaves",
       logs: "Registos",
       models: "Modelos",
       plugins: "Plugins",
@@ -216,7 +215,7 @@ export const pt: Translations = {
     installHeading: "Instalar a partir de GitHub / URL Git",
     installHint: "Use a forma curta owner/repo ou um URL completo de clone https:// ou git@.",
     memoryProviderLabel: "Fornecedor de memória",
-    missingEnvWarn: "Defina os seguintes em Chaves antes de o plugin poder executar:",
+    missingEnvWarn: "Defina estas variáveis de ambiente antes de o plugin poder executar:",
     noDashboardTab: "Sem separador no dashboard",
     openTab: "Abrir",
     orphanHeading: "Extensões só de dashboard (sem plugin.yaml de agente correspondente)",
@@ -300,26 +299,6 @@ export const pt: Translations = {
       discord: "Discord",
       auxiliary: "Auxiliar",
     },
-  },
-
-  env: {
-    changesNote: "As alterações são guardadas em disco imediatamente. As sessões ativas detetam novas chaves automaticamente.",
-    confirmClearMessage:
-      "O valor armazenado para esta variável será removido do seu ficheiro .env. Esta ação não pode ser anulada a partir da UI.",
-    confirmClearTitle: "Limpar esta chave?",
-    description: "Gerir chaves de API e segredos armazenados em",
-    hideAdvanced: "Ocultar avançadas",
-    showAdvanced: "Mostrar avançadas",
-    llmProviders: "Fornecedores LLM",
-    providersConfigured: "{configured} de {total} fornecedores configurados",
-    getKey: "Obter chave",
-    notConfigured: "{count} não configurado(s)",
-    notSet: "Não definido",
-    keysCount: "{count} chave{s}",
-    enterValue: "Introduzir valor...",
-    replaceCurrentValue: "Substituir valor atual ({preview})",
-    showValue: "Mostrar valor real",
-    hideValue: "Ocultar valor",
   },
 
   oauth: {

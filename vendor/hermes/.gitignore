@@ -16,7 +16,6 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
-*.lnk
 
 # Large build artifacts
 desktop/node_modules/

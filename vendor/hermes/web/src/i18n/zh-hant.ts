@@ -55,7 +55,7 @@ export const zhHant: Translations = {
     closeNavigation: "關閉導覽",
     closeModelTools: "關閉模型與工具",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "使用中工作階段：",
     gatewayStatusLabel: "閘道狀態：",
@@ -72,7 +72,6 @@ export const zhHant: Translations = {
       config: "設定",
       cron: "排程任務",
       documentation: "文件",
-      keys: "金鑰",
       logs: "日誌",
       models: "模型",
       plugins: "外掛管理",
@@ -216,7 +215,7 @@ export const zhHant: Translations = {
     installHeading: "從 GitHub / Git URL 安裝",
     installHint: "可使用 owner/repo 簡寫或完整的 https:// 或 git@ 複製網址。",
     memoryProviderLabel: "記憶提供者",
-    missingEnvWarn: "請先在「金鑰」頁面設定下列項目，外掛才能執行：",
+    missingEnvWarn: "請先設定下列環境變數，外掛才能執行：",
     noDashboardTab: "無儀表板分頁",
     openTab: "開啟",
     orphanHeading: "僅儀表板擴充功能（無對應的 agent plugin.yaml）",
@@ -300,26 +299,6 @@ export const zhHant: Translations = {
       discord: "Discord",
       auxiliary: "輔助",
     },
-  },
-
-  env: {
-    changesNote: "變更會立即儲存到磁碟。使用中的工作階段將自動取得新金鑰。",
-    confirmClearMessage:
-      "此變數已儲存的值將從 .env 檔案中移除。無法從介面復原。",
-    confirmClearTitle: "清除此金鑰？",
-    description: "管理儲存於下列位置的 API 金鑰與密鑰",
-    hideAdvanced: "隱藏進階選項",
-    showAdvanced: "顯示進階選項",
-    llmProviders: "LLM 提供者",
-    providersConfigured: "已設定 {configured}/{total} 個提供者",
-    getKey: "取得金鑰",
-    notConfigured: "{count} 個未設定",
-    notSet: "未設定",
-    keysCount: "{count} 個金鑰",
-    enterValue: "輸入值...",
-    replaceCurrentValue: "取代目前值（{preview}）",
-    showValue: "顯示實際值",
-    hideValue: "隱藏值",
   },
 
   oauth: {

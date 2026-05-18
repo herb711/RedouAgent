@@ -2,7 +2,7 @@
 Hermes Agent — Web UI server.
 
 Provides a FastAPI backend serving the Vite/React frontend and REST API
-endpoints for managing configuration, environment variables, and sessions.
+endpoints for managing configuration and sessions.
 
 Usage:
     python -m hermes_cli.main web          # Start on http://127.0.0.1:9119
@@ -35,7 +35,6 @@ from hermes_cli import __version__, __release_date__
 from hermes_cli.config import (
     cfg_get,
     DEFAULT_CONFIG,
-    OPTIONAL_ENV_VARS,
     get_config_path,
     get_env_path,
     get_hermes_home,
@@ -43,9 +42,7 @@ from hermes_cli.config import (
     load_env,
     save_config,
     save_env_value,
-    remove_env_value,
     check_config_version,
-    redact_key,
 )
 from hermes_cli.redou_context import (
     REDOU_APP_DATA_ENV,
@@ -88,11 +85,6 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
-
-# Simple rate limiter for the reveal endpoint
-_reveal_timestamps: List[float] = []
-_REVEAL_MAX_PER_WINDOW = 5
-_REVEAL_WINDOW_SECONDS = 30
 
 # CORS: restrict to localhost origins only.  The web UI is intended to run
 # locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
@@ -447,19 +439,6 @@ CONFIG_SCHEMA = _ordered_schema
 
 class ConfigUpdate(BaseModel):
     config: dict
-
-
-class EnvVarUpdate(BaseModel):
-    key: str
-    value: str
-
-
-class EnvVarDelete(BaseModel):
-    key: str
-
-
-class EnvVarReveal(BaseModel):
-    key: str
 
 
 class ModelAssignment(BaseModel):
@@ -2433,79 +2412,6 @@ async def update_config(body: ConfigUpdate):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/env")
-async def get_env_vars():
-    env_on_disk = load_env()
-    result = {}
-    for var_name, info in OPTIONAL_ENV_VARS.items():
-        value = env_on_disk.get(var_name)
-        result[var_name] = {
-            "is_set": bool(value),
-            "redacted_value": redact_key(value) if value else None,
-            "description": info.get("description", ""),
-            "url": info.get("url"),
-            "category": info.get("category", ""),
-            "is_password": info.get("password", False),
-            "tools": info.get("tools", []),
-            "advanced": info.get("advanced", False),
-        }
-    return result
-
-
-@app.put("/api/env")
-async def set_env_var(body: EnvVarUpdate):
-    try:
-        save_env_value(body.key, body.value)
-        return {"ok": True, "key": body.key}
-    except Exception:
-        _log.exception("PUT /api/env failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.delete("/api/env")
-async def remove_env_var(body: EnvVarDelete):
-    try:
-        removed = remove_env_value(body.key)
-        if not removed:
-            raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
-        return {"ok": True, "key": body.key}
-    except HTTPException:
-        raise
-    except Exception:
-        _log.exception("DELETE /api/env failed")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-@app.post("/api/env/reveal")
-async def reveal_env_var(body: EnvVarReveal, request: Request):
-    """Return the real (unredacted) value of a single env var.
-
-    Protected by:
-    - Ephemeral session token (generated per server start, injected into SPA)
-    - Rate limiting (max 5 reveals per 30s window)
-    - Audit logging
-    """
-    # --- Token check ---
-    _require_token(request)
-
-    # --- Rate limit ---
-    now = time.time()
-    cutoff = now - _REVEAL_WINDOW_SECONDS
-    _reveal_timestamps[:] = [t for t in _reveal_timestamps if t > cutoff]
-    if len(_reveal_timestamps) >= _REVEAL_MAX_PER_WINDOW:
-        raise HTTPException(status_code=429, detail="Too many reveal requests. Try again shortly.")
-    _reveal_timestamps.append(now)
-
-    # --- Reveal ---
-    env_on_disk = load_env()
-    value = env_on_disk.get(body.key)
-    if value is None:
-        raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
-
-    _log.info("env/reveal: %s", body.key)
-    return {"key": body.key, "value": value}
-
-
 # ---------------------------------------------------------------------------
 # OAuth provider endpoints — status + disconnect (Phase 1)
 # ---------------------------------------------------------------------------
@@ -2774,7 +2680,7 @@ async def list_oauth_providers():
 
 @app.delete("/api/providers/oauth/{provider_id}")
 async def disconnect_oauth_provider(provider_id: str, request: Request):
-    """Disconnect an OAuth provider. Token-protected (matches /env/reveal)."""
+    """Disconnect an OAuth provider. Token-protected."""
     _require_token(request)
 
     valid_ids = {p["id"] for p in _OAUTH_PROVIDER_CATALOG}
@@ -4771,8 +4677,9 @@ def mount_spa(application: FastAPI):
 # Built-in dashboard themes — label + description only.  The actual color
 # definitions live in the frontend (web/src/themes/presets.ts).
 _BUILTIN_DASHBOARD_THEMES = [
-    {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
-    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
+    {"name": "default",       "label": "AGENT Teal",          "description": "Classic dark teal — the canonical AGENT look"},
+    {"name": "default-large", "label": "AGENT Teal (Large)",  "description": "AGENT Teal with bigger fonts and roomier spacing"},
+    {"name": "paper",         "label": "Paper",               "description": "White canvas with black text"},
     {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
     {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
     {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},

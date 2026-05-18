@@ -55,7 +55,7 @@ export const ko: Translations = {
     closeNavigation: "내비게이션 닫기",
     closeModelTools: "모델 및 도구 닫기",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "활성 세션:",
     gatewayStatusLabel: "게이트웨이 상태:",
@@ -72,7 +72,6 @@ export const ko: Translations = {
       config: "설정",
       cron: "Cron",
       documentation: "문서",
-      keys: "키",
       logs: "로그",
       models: "모델",
       plugins: "플러그인",
@@ -216,7 +215,7 @@ export const ko: Translations = {
     installHeading: "GitHub / Git URL에서 설치",
     installHint: "owner/repo 약어 또는 전체 https:// 또는 git@ 클론 URL을 사용하세요.",
     memoryProviderLabel: "메모리 제공자",
-    missingEnvWarn: "플러그인을 실행하기 전에 Keys에서 다음 항목을 설정하세요:",
+    missingEnvWarn: "플러그인을 실행하기 전에 다음 환경 변수를 설정하세요:",
     noDashboardTab: "대시보드 탭 없음",
     openTab: "열기",
     orphanHeading: "대시보드 전용 확장 (일치하는 agent plugin.yaml 없음)",
@@ -300,26 +299,6 @@ export const ko: Translations = {
       discord: "Discord",
       auxiliary: "보조",
     },
-  },
-
-  env: {
-    changesNote: "변경 사항은 즉시 디스크에 저장됩니다. 활성 세션은 자동으로 새 키를 가져옵니다.",
-    confirmClearMessage:
-      "이 변수에 대해 저장된 값이 .env 파일에서 제거됩니다. UI에서는 이 작업을 되돌릴 수 없습니다.",
-    confirmClearTitle: "이 키를 지우시겠습니까?",
-    description: "다음 위치에 저장된 API 키와 비밀을 관리합니다",
-    hideAdvanced: "고급 숨기기",
-    showAdvanced: "고급 표시",
-    llmProviders: "LLM 제공자",
-    providersConfigured: "{configured}/{total} 제공자가 구성됨",
-    getKey: "키 받기",
-    notConfigured: "{count}개 구성되지 않음",
-    notSet: "설정되지 않음",
-    keysCount: "{count}개 키",
-    enterValue: "값 입력...",
-    replaceCurrentValue: "현재 값 교체 ({preview})",
-    showValue: "실제 값 표시",
-    hideValue: "값 숨기기",
   },
 
   oauth: {

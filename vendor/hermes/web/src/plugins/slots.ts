@@ -48,8 +48,6 @@ import React, { Fragment, useEffect, useState } from "react";
  *  - `plugins:bottom`    — bottom of /plugins page
  *  - `config:top`       — top of /config page
  *  - `config:bottom`    — bottom of /config page
- *  - `env:top`          — top of /env (Keys) page
- *  - `env:bottom`       — bottom of /env (Keys) page
  *  - `docs:top`         — top of /docs page (above the docs iframe)
  *  - `docs:bottom`      — bottom of /docs page
  *  - `chat:top`         — top of /chat page (above the composer, when embedded chat is on)
@@ -80,8 +78,6 @@ export const KNOWN_SLOT_NAMES = [
   "plugins:bottom",
   "config:top",
   "config:bottom",
-  "env:top",
-  "env:bottom",
   "docs:top",
   "docs:bottom",
   "chat:top",

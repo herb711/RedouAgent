@@ -55,7 +55,7 @@ export const de: Translations = {
     closeNavigation: "Navigation schließen",
     closeModelTools: "Modell und Werkzeuge schließen",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Aktive Sitzungen:",
     gatewayStatusLabel: "Gateway-Status:",
@@ -72,7 +72,6 @@ export const de: Translations = {
       config: "Konfiguration",
       cron: "Cron",
       documentation: "Dokumentation",
-      keys: "Schlüssel",
       logs: "Protokolle",
       models: "Modelle",
       plugins: "Plugins",
@@ -216,7 +215,7 @@ export const de: Translations = {
     installHeading: "Aus GitHub / Git-URL installieren",
     installHint: "Verwende owner/repo-Kurzform oder eine vollständige https:// oder git@ Klon-URL.",
     memoryProviderLabel: "Speicheranbieter",
-    missingEnvWarn: "Setze diese unter Schlüssel, bevor das Plugin laufen kann:",
+    missingEnvWarn: "Setze diese Umgebungsvariablen, bevor das Plugin laufen kann:",
     noDashboardTab: "Kein Dashboard-Tab",
     openTab: "Öffnen",
     orphanHeading: "Nur-Dashboard-Erweiterungen (keine Übereinstimmung mit Agent plugin.yaml)",
@@ -300,26 +299,6 @@ export const de: Translations = {
       discord: "Discord",
       auxiliary: "Hilfs",
     },
-  },
-
-  env: {
-    changesNote: "Änderungen werden sofort auf der Festplatte gespeichert. Aktive Sitzungen übernehmen neue Schlüssel automatisch.",
-    confirmClearMessage:
-      "Der gespeicherte Wert für diese Variable wird aus deiner .env-Datei entfernt. Dies kann über die UI nicht rückgängig gemacht werden.",
-    confirmClearTitle: "Diesen Schlüssel löschen?",
-    description: "Verwalte API-Schlüssel und Geheimnisse, die hier gespeichert sind",
-    hideAdvanced: "Erweitert ausblenden",
-    showAdvanced: "Erweitert anzeigen",
-    llmProviders: "LLM-Anbieter",
-    providersConfigured: "{configured} von {total} Anbietern konfiguriert",
-    getKey: "Schlüssel holen",
-    notConfigured: "{count} nicht konfiguriert",
-    notSet: "Nicht gesetzt",
-    keysCount: "{count} Schlüssel",
-    enterValue: "Wert eingeben...",
-    replaceCurrentValue: "Aktuellen Wert ersetzen ({preview})",
-    showValue: "Echten Wert anzeigen",
-    hideValue: "Wert ausblenden",
   },
 
   oauth: {

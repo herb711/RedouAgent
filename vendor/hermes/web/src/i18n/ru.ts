@@ -55,7 +55,7 @@ export const ru: Translations = {
     closeNavigation: "Закрыть навигацию",
     closeModelTools: "Закрыть модель и инструменты",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Активные сессии:",
     gatewayStatusLabel: "Статус шлюза:",
@@ -72,7 +72,6 @@ export const ru: Translations = {
       config: "Конфигурация",
       cron: "Cron",
       documentation: "Документация",
-      keys: "Ключи",
       logs: "Журналы",
       models: "Модели",
       plugins: "Плагины",
@@ -216,7 +215,7 @@ export const ru: Translations = {
     installHeading: "Установка из GitHub / Git URL",
     installHint: "Используйте сокращение owner/repo или полный https:// или git@ URL для клонирования.",
     memoryProviderLabel: "Провайдер памяти",
-    missingEnvWarn: "Задайте эти переменные в разделе «Ключи», прежде чем плагин сможет работать:",
+    missingEnvWarn: "Задайте эти переменные окружения, прежде чем плагин сможет работать:",
     noDashboardTab: "Нет вкладки в панели",
     openTab: "Открыть",
     orphanHeading: "Расширения только для панели (без соответствующего plugin.yaml агента)",
@@ -300,26 +299,6 @@ export const ru: Translations = {
       discord: "Discord",
       auxiliary: "Вспомогательные",
     },
-  },
-
-  env: {
-    changesNote: "Изменения сохраняются на диск немедленно. Активные сессии автоматически подхватывают новые ключи.",
-    confirmClearMessage:
-      "Сохранённое значение этой переменной будет удалено из вашего файла .env. Это нельзя отменить из интерфейса.",
-    confirmClearTitle: "Очистить этот ключ?",
-    description: "Управление API-ключами и секретами, хранящимися в",
-    hideAdvanced: "Скрыть расширенные",
-    showAdvanced: "Показать расширенные",
-    llmProviders: "Провайдеры LLM",
-    providersConfigured: "Настроено {configured} из {total} провайдеров",
-    getKey: "Получить ключ",
-    notConfigured: "{count} не настроено",
-    notSet: "Не задано",
-    keysCount: "{count} ключ{s}",
-    enterValue: "Введите значение...",
-    replaceCurrentValue: "Заменить текущее значение ({preview})",
-    showValue: "Показать реальное значение",
-    hideValue: "Скрыть значение",
   },
 
   oauth: {

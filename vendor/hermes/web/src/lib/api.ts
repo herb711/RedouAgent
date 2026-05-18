@@ -156,6 +156,7 @@ declare global {
       ) => Promise<ContextFileUpdateResponse>;
       buildTaskContext?: (input: BuildContextInput) => Promise<BuiltContext>;
       sendMessage?: (input: SendMessageInput) => Promise<SendMessageResponse>;
+      updateQueuedMessage?: (input: QueuedMessageUpdateInput) => Promise<QueuedMessageUpdateResponse>;
       stopRun?: (runId: string) => Promise<{ ok: boolean; message?: string }>;
       stopTaskRun?: (projectId: string, taskId: string) => Promise<{ ok: boolean; message?: string }>;
       onAgentEvent?: (
@@ -394,30 +395,6 @@ export const api = {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ yaml_text }),
         }),
-  getEnvVars: () => fetchJSON<Record<string, EnvVarInfo>>("/api/env"),
-  setEnvVar: (key: string, value: string) =>
-    fetchJSON<{ ok: boolean }>("/api/env", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key, value }),
-    }),
-  deleteEnvVar: (key: string) =>
-    fetchJSON<{ ok: boolean }>("/api/env", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key }),
-    }),
-  revealEnvVar: async (key: string) => {
-    const token = await getSessionToken();
-    return fetchJSON<{ key: string; value: string }>("/api/env/reveal", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        [SESSION_HEADER]: token,
-      },
-      body: JSON.stringify({ key }),
-    });
-  },
 
   // Cron jobs
   getCronJobs: () => fetchJSON<CronJob[]>("/api/cron/jobs"),
@@ -610,6 +587,8 @@ export const api = {
     requireRedouMethod("buildTaskContext")(input),
   sendChatMessage: (input: SendMessageInput) =>
     requireRedouMethod("sendMessage")(input),
+  updateQueuedChatMessage: (input: QueuedMessageUpdateInput) =>
+    requireRedouMethod("updateQueuedMessage")(input),
   stopChatRun: (runId: string) =>
     requireRedouMethod("stopRun")(runId),
   stopChatTask: (projectId: string, taskId: string) =>
@@ -992,22 +971,27 @@ export interface SendMessageResponse {
   context?: BuiltContext["metadata"];
 }
 
+export interface QueuedMessageUpdateInput {
+  projectId: string;
+  taskId: string;
+  queueId: string;
+  action: "delete" | "guide";
+}
+
+export interface QueuedMessageUpdateResponse {
+  ok: boolean;
+  message?: string;
+  deleted?: boolean;
+  guided?: boolean;
+  runId?: string;
+  queueDepth?: number;
+}
+
 export interface PaginatedSessions {
   sessions: SessionInfo[];
   total: number;
   limit: number;
   offset: number;
-}
-
-export interface EnvVarInfo {
-  is_set: boolean;
-  redacted_value: string | null;
-  description: string;
-  url: string | null;
-  category: string;
-  is_password: boolean;
-  tools: string[];
-  advanced: boolean;
 }
 
 export interface SessionMessage {

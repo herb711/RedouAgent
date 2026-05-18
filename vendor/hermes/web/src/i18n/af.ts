@@ -55,7 +55,7 @@ export const af: Translations = {
     closeNavigation: "Maak navigasie toe",
     closeModelTools: "Maak model en gereedskap toe",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Aktiewe Sessies:",
     gatewayStatusLabel: "Gateway-status:",
@@ -72,7 +72,6 @@ export const af: Translations = {
       config: "Konfigurasie",
       cron: "Cron",
       documentation: "Dokumentasie",
-      keys: "Sleutels",
       logs: "Logs",
       models: "Modelle",
       plugins: "Inproppe",
@@ -216,7 +215,7 @@ export const af: Translations = {
     installHeading: "Installeer vanaf GitHub / Git-URL",
     installHint: "Gebruik owner/repo-kortvorm of 'n volledige https:// of git@ kloon-URL.",
     memoryProviderLabel: "Geheueverskaffer",
-    missingEnvWarn: "Stel hierdie in Sleutels voordat die inprop kan loop:",
+    missingEnvWarn: "Stel hierdie omgewingsveranderlikes in voordat die inprop kan loop:",
     noDashboardTab: "Geen dashboard-oortjie",
     openTab: "Maak oop",
     orphanHeading: "Slegs-dashboard-uitbreidings (geen ooreenstemmende agent plugin.yaml nie)",
@@ -300,26 +299,6 @@ export const af: Translations = {
       discord: "Discord",
       auxiliary: "Hulpmiddels",
     },
-  },
-
-  env: {
-    changesNote: "Veranderinge word onmiddellik na skyf gestoor. Aktiewe sessies tel nuwe sleutels outomaties op.",
-    confirmClearMessage:
-      "Die gestoorde waarde vir hierdie veranderlike sal uit jou .env-lêer verwyder word. Dit kan nie vanaf die UI ongedaan gemaak word nie.",
-    confirmClearTitle: "Vee hierdie sleutel uit?",
-    description: "Bestuur API-sleutels en geheime gestoor in",
-    hideAdvanced: "Versteek Gevorderd",
-    showAdvanced: "Wys Gevorderd",
-    llmProviders: "LLM-verskaffers",
-    providersConfigured: "{configured} van {total} verskaffers gekonfigureer",
-    getKey: "Kry sleutel",
-    notConfigured: "{count} nie gekonfigureer nie",
-    notSet: "Nie gestel nie",
-    keysCount: "{count} sleutel{s}",
-    enterValue: "Voer waarde in...",
-    replaceCurrentValue: "Vervang huidige waarde ({preview})",
-    showValue: "Wys werklike waarde",
-    hideValue: "Versteek waarde",
   },
 
   oauth: {

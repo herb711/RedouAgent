@@ -308,6 +308,10 @@ ipcMain.handle("redou:chat:send", (event, input) =>
   getLocalService().sendMessage(event.sender, input),
 );
 
+ipcMain.handle("redou:chat:queue:update", (event, input) =>
+  getLocalService().updateQueuedMessage(event.sender, input),
+);
+
 ipcMain.handle("redou:chat:stop", (event, runId) =>
   getLocalService().stopRun(runId, event.sender),
 );

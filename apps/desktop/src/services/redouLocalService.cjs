@@ -6642,6 +6642,190 @@ class RedouLocalService {
     return changed;
   }
 
+  removeQueuedUserInputMessage(projectId, taskId, queueId) {
+    const id = String(queueId || "").trim();
+    if (!id) return false;
+    const { task } = this.findProjectAndTask(projectId, taskId);
+    if (!task || !fs.existsSync(task.messagesPath)) return false;
+
+    let changed = false;
+    const lines = fs.readFileSync(task.messagesPath, "utf8").split(/\r?\n/);
+    const nextLines = [];
+    for (const line of lines) {
+      if (!line.trim()) {
+        nextLines.push(line);
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(line);
+        const metadata = parsed.metadata && typeof parsed.metadata === "object" ? parsed.metadata : {};
+        const envelope = metadata.inputEnvelope && typeof metadata.inputEnvelope === "object"
+          ? metadata.inputEnvelope
+          : null;
+        const matches =
+          String(metadata.queueId || "") === id ||
+          String(envelope?.id || "") === id;
+        const isPending =
+          !envelope ||
+          normalizeUserInputStatus(envelope.status, "pending") === "pending";
+        if (String(parsed.role || "").toLowerCase() === "user" && matches && isPending) {
+          changed = true;
+          continue;
+        }
+      } catch {
+        // Keep malformed lines intact; the loader will surface warnings.
+      }
+      nextLines.push(line);
+    }
+
+    if (changed) {
+      const content = nextLines
+        .filter((line, index) => line.trim() || index < nextLines.length - 1)
+        .join("\n")
+        .replace(/\n*$/, "");
+      fs.writeFileSync(task.messagesPath, content ? `${content}\n` : "", "utf8");
+    }
+    return changed;
+  }
+
+  updateQueuedMessage(webContents, input = {}) {
+    const projectId = String(input.projectId || "").trim();
+    const taskId = String(input.taskId || "").trim();
+    const queueId = String(input.queueId || "").trim();
+    const action = String(input.action || "").trim().toLowerCase();
+    if (!projectId || !taskId) throw new Error("Select a Project and Task before updating queued messages.");
+    if (!queueId) throw new Error("Queued message id is required.");
+    if (action !== "delete" && action !== "guide") {
+      throw new Error("Queued message action must be delete or guide.");
+    }
+
+    const { project, task } = this.findProjectAndTask(projectId, taskId);
+    if (!project || !task) throw new Error("Project or task not found");
+
+    const key = this.taskQueueKey(projectId, taskId);
+    const queue = this.taskQueues.get(key) || [];
+    const index = queue.findIndex((item) => String(item?.id || "") === queueId);
+    if (index < 0) {
+      return {
+        ok: false,
+        message: "Queued message was not found. It may have already started.",
+        queueDepth: this.queueDepth(projectId, taskId),
+      };
+    }
+
+    const queued = queue[index];
+    const emitTarget = webContents || queued.webContents;
+    const activeRun = this.activeRunForTask(projectId, taskId);
+    const removeFromQueue = () => {
+      queue.splice(index, 1);
+      if (queue.length > 0) {
+        this.taskQueues.set(key, queue);
+      } else {
+        this.taskQueues.delete(key);
+      }
+    };
+
+    if (action === "delete") {
+      removeFromQueue();
+      this.removeQueuedUserInputMessage(projectId, taskId, queueId);
+      this.emitQueueUpdate(
+        emitTarget,
+        projectId,
+        taskId,
+        activeRun?.runId || queueId,
+        "Queued message deleted.",
+        { queueId, queueState: "deleted", activeRunId: activeRun?.runId || null },
+      );
+      return {
+        ok: true,
+        deleted: true,
+        queueDepth: this.queueDepth(projectId, taskId),
+      };
+    }
+
+    if (!activeRun) {
+      return {
+        ok: false,
+        message: "No active run is available for guidance.",
+        queueDepth: this.queueDepth(projectId, taskId),
+      };
+    }
+
+    const queuedInput = queued.input && typeof queued.input === "object" ? queued.input : {};
+    const attachments = Array.isArray(queuedInput.attachments) ? queuedInput.attachments : [];
+    const runMode = normalizeRunMode(queuedInput.runMode || input.runMode, "execute");
+    if (runMode !== "execute") {
+      return {
+        ok: false,
+        message: "Plan requests cannot be converted into guidance.",
+        queueDepth: this.queueDepth(projectId, taskId),
+      };
+    }
+    if (attachments.length > 0) {
+      return {
+        ok: false,
+        message: "Queued messages with attachments cannot be converted into guidance.",
+        queueDepth: this.queueDepth(projectId, taskId),
+      };
+    }
+
+    const userInput = String(queuedInput.userInput || "");
+    const guideId = crypto.randomUUID();
+    const consumedAt = isoNow();
+    const envelope = createUserInputEnvelope({
+      id: guideId,
+      text: userInput,
+      runId: activeRun.runId,
+      deliveryMode: "guide",
+      status: "completed",
+      targetRunId: activeRun.runId,
+      consumedAt,
+    });
+    try {
+      this.writeRunControl(activeRun, {
+        type: "steer",
+        text: userInput,
+        guideId,
+        riskConfirmed: queuedInput.riskConfirmed === true,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+        queueDepth: this.queueDepth(projectId, taskId),
+      };
+    }
+
+    removeFromQueue();
+    this.removeQueuedUserInputMessage(projectId, taskId, queueId);
+    this.appendTaskMessage(projectId, taskId, "event", `Guidance for active run: ${redact(userInput)}`, {
+      riskConfirmed: queuedInput.riskConfirmed === true,
+      runMode,
+      eventType: "control_event",
+      controlEvent: true,
+      controlEventType: "guide",
+      deliveryMode: "guide",
+      guideId,
+      guidedRunId: activeRun.runId,
+      inputEnvelope: envelope,
+      convertedFromQueueId: queueId,
+    });
+    this.emitQueueUpdate(
+      emitTarget,
+      projectId,
+      taskId,
+      activeRun.runId,
+      "Queued message inserted into the active run.",
+      { queueId, guideId, guided: true, activeRunId: activeRun.runId, queueState: "guided" },
+    );
+    return {
+      ok: true,
+      guided: true,
+      runId: activeRun.runId,
+      queueDepth: this.queueDepth(projectId, taskId),
+    };
+  }
+
   getGlobalContextFile(kind) {
     const paths = this.ensureGlobalFiles();
     if (kind !== "rules" && kind !== "user") {
@@ -7621,7 +7805,7 @@ class RedouLocalService {
         taskId,
         response.runId,
         "Queued message started.",
-        { queueId: next.id, source: next.source, activeRunId: response.runId },
+        { queueId: next.id, source: next.source, activeRunId: response.runId, queueState: "started" },
       );
       if (!response.ok) {
         setImmediate(() => this.startNextQueuedMessage(projectId, taskId));
@@ -7961,7 +8145,7 @@ class RedouLocalService {
             taskId,
             runId,
             "Guidance arrived after the final answer and was moved to the next turn.",
-            { queueId: queued.id, source: queued.source },
+            { queueId: queued.id, source: queued.source, queueState: "queued" },
           );
         }
       }
@@ -8154,7 +8338,7 @@ class RedouLocalService {
           taskId,
           activeRun.runId,
           "Guidance inserted into the active run.",
-          { guideId, guided: true, activeRunId: activeRun.runId },
+          { guideId, guided: true, activeRunId: activeRun.runId, queueState: "guided" },
         );
         return {
           ok: true,
@@ -8182,7 +8366,7 @@ class RedouLocalService {
           taskId,
           activeRun.runId,
           "Guidance could not be inserted and was queued for the next turn.",
-          { queueId: queued.id, guideId, warning },
+          { queueId: queued.id, guideId, warning, queueState: "queued" },
         );
         return {
           ok: true,
@@ -8235,7 +8419,7 @@ class RedouLocalService {
           : deliveryMode === "guide" && runMode === "plan"
             ? "Plan requests are queued for the next turn."
           : "Message queued for the next turn.",
-        { queueId: queued.id, activeRunId: activeRun.runId },
+        { queueId: queued.id, activeRunId: activeRun.runId, queueState: "queued" },
       );
       return {
         ok: true,

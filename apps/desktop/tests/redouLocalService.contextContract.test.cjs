@@ -126,6 +126,57 @@ test("queued messages are excluded until their own turn becomes current", () => 
   assert.equal(built.metadata.contextValidation.ok, true);
 });
 
+test("queued messages can be deleted before they start", () => {
+  const { service, project, task } = makeService();
+  addActiveRun(service, project, task);
+  const queued = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "delete this queued request",
+  });
+
+  const response = service.updateQueuedMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    queueId: queued.queueId,
+    action: "delete",
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.deleted, true);
+  assert.equal(response.queueDepth, 0);
+  const loaded = service.getChatTaskMessages(project.id, task.id);
+  assert.equal(loaded.messages.some((message) => message.role === "user" && message.content === "delete this queued request"), false);
+});
+
+test("queued messages can be converted into guidance", () => {
+  const { service, project, task } = makeService();
+  const active = addActiveRun(service, project, task);
+  const queued = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "turn this queued request into guidance",
+  });
+
+  const response = service.updateQueuedMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    queueId: queued.queueId,
+    action: "guide",
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.guided, true);
+  assert.equal(response.queueDepth, 0);
+  assert.equal(active.writes.length, 1);
+  assert.match(active.writes[0], /turn this queued request into guidance/);
+  const loaded = service.getChatTaskMessages(project.id, task.id);
+  assert.equal(loaded.messages.some((message) => message.role === "user" && message.content === "turn this queued request into guidance"), false);
+  const control = loaded.messages.find((message) => message.metadata.convertedFromQueueId === queued.queueId);
+  assert.ok(control);
+  assert.equal(control.metadata.inputEnvelope.deliveryMode, "guide");
+});
+
 test("guide delivery is stored as a control event and never as ordinary user history", () => {
   const { service, project, task } = makeService();
   const active = addActiveRun(service, project, task);

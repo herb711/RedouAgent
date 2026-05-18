@@ -55,7 +55,7 @@ export const ga: Translations = {
     closeNavigation: "Dún an nascleanúint",
     closeModelTools: "Dún an samhail agus na huirlisí",
     footer: {
-      org: "Nous Research",
+      org: "Shiyu Zhu",
     },
     activeSessionsLabel: "Seisiúin gníomhacha:",
     gatewayStatusLabel: "Stádas an gateway:",
@@ -72,7 +72,6 @@ export const ga: Translations = {
       config: "Cumraíocht",
       cron: "Cron",
       documentation: "Doiciméadú",
-      keys: "Eochracha",
       logs: "Logaí",
       models: "Samhlacha",
       plugins: "Plugins",
@@ -216,7 +215,7 @@ export const ga: Translations = {
     installHeading: "Suiteáil ó GitHub / URL Git",
     installHint: "Úsáid an gearrshamhail owner/repo nó URL clóin iomlán https:// nó git@.",
     memoryProviderLabel: "Soláthraí cuimhne",
-    missingEnvWarn: "Socraigh iad seo in Eochracha sular féidir leis an plugin rith:",
+    missingEnvWarn: "Socraigh na hathróga timpeallachta seo sular féidir leis an mbreiseán rith:",
     noDashboardTab: "Gan cluaisín dashboard",
     openTab: "Oscail",
     orphanHeading: "Síntí dashboard amháin (gan meaitseáil le agent plugin.yaml)",
@@ -300,26 +299,6 @@ export const ga: Translations = {
       discord: "Discord",
       auxiliary: "Cúntach",
     },
-  },
-
-  env: {
-    changesNote: "Sábháiltear athruithe chuig an diosca láithreach. Aimsíonn seisiúin ghníomhacha eochracha nua go huathoibríoch.",
-    confirmClearMessage:
-      "Bainfear an luach stóráilte don athróg seo ó do chomhad .env. Ní féidir é seo a chealú ón UI.",
-    confirmClearTitle: "Glan an eochair seo?",
-    description: "Bainistigh eochracha API agus rúin atá stóráilte i",
-    hideAdvanced: "Folaigh Ardroghanna",
-    showAdvanced: "Taispeáin Ardroghanna",
-    llmProviders: "Soláthraithe LLM",
-    providersConfigured: "{configured} as {total} soláthraí cumraithe",
-    getKey: "Faigh eochair",
-    notConfigured: "{count} gan cumrú",
-    notSet: "Gan socrú",
-    keysCount: "{count} eochai{s}",
-    enterValue: "Cuir luach isteach...",
-    replaceCurrentValue: "Athchuir an luach reatha ({preview})",
-    showValue: "Taispeáin an fíorluach",
-    hideValue: "Folaigh an luach",
   },
 
   oauth: {
