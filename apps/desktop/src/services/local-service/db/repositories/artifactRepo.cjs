@@ -13,6 +13,14 @@ class ArtifactRepository {
     return target;
   }
 
+  copyFileAtomic(source, target) {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+    fs.copyFileSync(source, tmp);
+    fs.renameSync(tmp, target);
+    return target;
+  }
+
   exists(file) {
     return fs.existsSync(file);
   }

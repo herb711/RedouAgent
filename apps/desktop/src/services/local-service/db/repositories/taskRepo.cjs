@@ -44,6 +44,11 @@ class TaskRepository {
     writeJsonAtomic(this.projectJsonPath(project.id), project);
     return project;
   }
+
+  writeTaskMetadata(task) {
+    writeJsonAtomic(path.join(task.appDataPath, "task.json"), task);
+    return task;
+  }
 }
 
 module.exports = {

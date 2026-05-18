@@ -2102,6 +2102,17 @@ def _cron_create(payload: Dict[str, Any]) -> Dict[str, Any]:
     )
 
 
+def _cron_update(payload: Dict[str, Any]) -> Dict[str, Any]:
+    from cron.jobs import update_job
+
+    job_id = _require_nonempty_id(payload)
+    updates = {k: v for k, v in payload.items() if k not in {"id", "job_id"}}
+    job = update_job(job_id, updates)
+    if not job:
+        raise ValueError("cron job not found")
+    return job
+
+
 def _cron_pause(payload: Dict[str, Any]) -> Dict[str, Any]:
     from cron.jobs import pause_job
 
@@ -2390,6 +2401,8 @@ def handle(action: str, payload: Dict[str, Any]) -> Any:
         return _cron_list()
     if action == "cron_create":
         return _cron_create(payload)
+    if action == "cron_update":
+        return _cron_update(payload)
     if action == "cron_pause":
         return _cron_pause(payload)
     if action == "cron_resume":

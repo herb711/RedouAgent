@@ -1,14 +1,26 @@
+// Local-service facade boundary:
+// - index.cjs owns local service wiring, dependency injection, public API routing, and compatibility glue.
+// - Database schema and persistence details live under db/ and db/repositories/.
+// - Process spawning, run tracking, and process termination live in processes/processManager.cjs.
+// - Schedule CRUD, polling, and trigger orchestration live in scheduler/schedulerService.cjs.
+// - Task context assembly, context policy, compression hooks, and attachment formatting live in context/contextBuilder.cjs.
+// - Status/session/usage/analysis read models live in analytics/analyticsService.cjs.
+// - Settings, theme/language, and dashboard config routing live in settings/settingsService.cjs.
+// - Plugin hub/runtime actions live in plugins/pluginService.cjs; skills and task skill packaging live in skills/skillService.cjs.
+// - Local event publishing and lifecycle init/dispose/health behavior live in eventBus.cjs and lifecycle.cjs.
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
-const { createLocalDatabase } = require("./db/index.cjs");
-const { REDOU_EVENTS, createEventBus } = require("./eventBus.cjs");
+const { createLocalDb } = require("./db/index.cjs");
+const { createEventBus } = require("./eventBus.cjs");
 const { LifecycleService } = require("./lifecycle.cjs");
 const { AnalyticsService } = require("./analytics/analyticsService.cjs");
 const { ContextBuilder } = require("./context/contextBuilder.cjs");
-const { ProcessManager, terminateProcessTree } = require("./processes/processManager.cjs");
+const { ProcessManager } = require("./processes/processManager.cjs");
 const { SchedulerService } = require("./scheduler/schedulerService.cjs");
-const { TASK_SKILL_CATEGORY, callHermesTaskSkillPackager } = require("../redouTaskSkillClient.cjs");
+const { SettingsService } = require("./settings/settingsService.cjs");
+const { PluginService } = require("./plugins/pluginService.cjs");
+const { SkillService } = require("./skills/skillService.cjs");
 
 const GLOBAL_USER_FILE = "USER.md";
 const GLOBAL_RULES_FILE = "GLOBAL_RULES.md";
@@ -986,19 +998,6 @@ function timestampMs(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function elapsedMsSince(value, nowMs = Date.now()) {
-  const startedMs = timestampMs(value);
-  return startedMs == null ? 0 : Math.max(0, nowMs - startedMs);
-}
-
-function isLiveAnalysisStatus(status) {
-  return ["queued", "running"].includes(String(status || "").toLowerCase());
-}
-
-function dateKeyFromSeconds(seconds) {
-  return new Date(timestampSeconds(seconds) * 1000).toISOString().slice(0, 10);
-}
-
 function usageFromMetadata(metadata = {}) {
   const meta = metadata && typeof metadata === "object" ? metadata : {};
   return {
@@ -1010,41 +1009,6 @@ function usageFromMetadata(metadata = {}) {
     apiCalls: toInt(meta.apiCalls ?? meta.api_calls),
     estimatedCostUsd: toNumber(meta.estimatedCostUsd ?? meta.estimated_cost_usd),
   };
-}
-
-function addUsage(target, usage = {}) {
-  target.inputTokens += toInt(usage.inputTokens);
-  target.outputTokens += toInt(usage.outputTokens);
-  target.cacheReadTokens += toInt(usage.cacheReadTokens);
-  target.cacheWriteTokens += toInt(usage.cacheWriteTokens);
-  target.reasoningTokens += toInt(usage.reasoningTokens);
-  target.apiCalls += toInt(usage.apiCalls);
-  target.estimatedCostUsd += toNumber(usage.estimatedCostUsd);
-  return target;
-}
-
-function emptyUsage() {
-  return {
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    reasoningTokens: 0,
-    apiCalls: 0,
-    estimatedCostUsd: 0,
-  };
-}
-
-function hasUsage(usage = {}) {
-  return (
-    toInt(usage.inputTokens) > 0 ||
-    toInt(usage.outputTokens) > 0 ||
-    toInt(usage.cacheReadTokens) > 0 ||
-    toInt(usage.cacheWriteTokens) > 0 ||
-    toInt(usage.reasoningTokens) > 0 ||
-    toInt(usage.apiCalls) > 0 ||
-    toNumber(usage.estimatedCostUsd) > 0
-  );
 }
 
 function mergeMetadata(message = {}) {
@@ -2713,7 +2677,7 @@ class RedouLocalService {
     this.activeAnalysisShellChildren = new Set();
     this.shuttingDown = false;
     this.eventBus = createEventBus();
-    this.db = createLocalDatabase({
+    this.db = createLocalDb({
       paths: {
         appDataRoot: () => this.appDataRoot(),
         globalDir: () => this.globalDir(),
@@ -2723,6 +2687,32 @@ class RedouLocalService {
       },
       activeRuns: this.activeRuns,
     });
+    this.settingsService = new SettingsService({ repos: this.db.repositories, eventBus: this.eventBus, dashboardBridge: (action, payload) => this.runDashboardBridge(action, payload) });
+    this.pluginService = new PluginService({ dashboardBridge: (action, payload) => this.runDashboardBridge(action, payload) });
+    this.skillService = new SkillService({
+      dashboardBridge: (action, payload) => this.runDashboardBridge(action, payload),
+      env: {
+        appDataRoot: () => this.appDataRoot(),
+        childEnv: (extra) => this.childEnv(extra),
+        projectRoot: () => this.projectRoot,
+        pythonPath: () => this.pythonPath,
+      },
+      helpers: {
+        appendTaskMessage: (projectId, taskId, role, content, metadata, attachments) => this.appendTaskMessage(projectId, taskId, role, content, metadata, attachments),
+        compact,
+        ensureProjectHermesProfile: (project) => this.ensureProjectHermesProfile(project),
+        findProjectAndTask: (projectId, taskId) => this.findProjectAndTask(projectId, taskId),
+        isoNow,
+        loadMessagesFile: (messagesPath, options) => this.loadMessagesFile(messagesPath, options),
+        projectContextDir: (project) => this.projectContextDir(project),
+        projectHermesHome: (project) => this.projectHermesHome(project),
+        projectProfileHomesForBridge: () => this.projectProfileHomesForBridge(),
+        projectSkillsDir: (project) => this.projectSkillsDir(project),
+        readText,
+        redact,
+      },
+      logger: this.log,
+    });
     this.processManager = new ProcessManager({
       activeRuns: this.activeRuns,
       eventBus: this.eventBus,
@@ -2731,10 +2721,78 @@ class RedouLocalService {
     this.schedulerService = new SchedulerService({
       dashboardBridge: (action, payload) => this.runDashboardBridge(action, payload),
       eventBus: this.eventBus,
+      repos: this.db.repositories,
+      processManager: this.processManager,
+      contextBuilder: () => this.contextBuilder,
+      logger: this.log,
     });
-    this.contextBuilder = new ContextBuilder({ host: this });
-    this.analyticsService = new AnalyticsService({ host: this });
-    this.lifecycle = new LifecycleService({ host: this });
+    this.contextBuilder = new ContextBuilder({
+      host: this,
+      repos: this.db.repositories,
+      logger: this.log,
+      options: {
+        recentMessageLimit: RECENT_MESSAGE_LIMIT,
+        recentMessageContentLimit: RECENT_MESSAGE_CONTENT_LIMIT,
+        defaultModelContextTokens: DEFAULT_MODEL_CONTEXT_TOKENS,
+        compactForceRatio: COMPACT_FORCE_RATIO,
+      },
+      helpers: {
+        appendDedupeRules,
+        applyTaskStateBudget,
+        classifyContextDirective,
+        compactMultiline,
+        compressTaskContext,
+        contextPercent,
+        ContextValidator,
+        createUserInputEnvelope,
+        defaultTaskState,
+        emptyTurnArtifacts,
+        ensureEmptyFile,
+        estimateContextTokens,
+        extractRulesFromTaskContextText,
+        getContextBudget,
+        hasTaskContextShape,
+        isControlEventMessage,
+        isImageMime,
+        isoNow,
+        mergeMetadata,
+        messageInputEnvelope,
+        mkdirp,
+        normalizeDeliveryMode,
+        normalizeTaskContextText,
+        parseTaskStateFromStructuredText,
+        promptTextFromMessages,
+        readTaskStateFile,
+        readText,
+        redact,
+        renderTaskContextMarkdown,
+        renderTaskStateStructuredMarkdown,
+        scrubCurrentRequestEcho,
+        SecretRedactor,
+        seedAttachmentArtifacts,
+        shouldCompactContext,
+        splitTaskContext,
+        taskEventsPathFromContextPath,
+        taskStatePathFromContextPath,
+        uniqueList,
+        writeTaskStateFiles,
+      },
+    });
+    this.analyticsService = new AnalyticsService({
+      host: this,
+      paths: {
+        hermesHome: () => this.hermesHome,
+      },
+      analysis: {
+        tasks: ANALYSIS_TASKS,
+        abilityKeys: ANALYSIS_ABILITY_KEYS,
+      },
+    });
+    this.lifecycle = new LifecycleService({
+      host: this,
+      eventBus: this.eventBus,
+      logger: this.log,
+    });
   }
 
   setPythonPath(pythonPath) {
@@ -2790,12 +2848,7 @@ class RedouLocalService {
   }
 
   activeRunForTask(projectId, taskId) {
-    for (const [runId, run] of this.activeRuns.entries()) {
-      if (run.projectId === projectId && run.taskId === taskId) {
-        return { runId, ...run };
-      }
-    }
-    return null;
+    return this.processManager.activeRunForTask(projectId, taskId);
   }
 
   markAnalysisInterrupted(item, reason = "Stopped because Redou Agent is closing.") {
@@ -2804,94 +2857,6 @@ class RedouLocalService {
 
   stopAllHermesActivity(reason = "Redou Agent is closing; stopping Hermes local runtime.") {
     return this.lifecycle.stopAllHermesActivity(reason);
-  }
-
-  _markAnalysisInterrupted(item, reason = "Stopped because Redou Agent is closing.") {
-    if (!item?.key) return;
-    const interruptedResult = this.updateAnalysisResult(item.key, (result) => ({
-      ...result,
-      status: "interrupted",
-      completedAt: result.completedAt || isoNow(),
-      updatedAt: isoNow(),
-      summary: reason,
-      tasks: (result.tasks || []).map((task) => {
-        if (!["queued", "running", "pending"].includes(String(task.status || "").toLowerCase())) {
-          return task;
-        }
-        return {
-          ...task,
-          status: task.status === "running" ? "interrupted" : task.status,
-          completedAt: task.status === "running" ? isoNow() : task.completedAt,
-          summary: task.status === "running" ? reason : task.summary,
-        };
-      }),
-    }));
-    this.syncAnalysisWorkspaceFinished(item, "interrupted", reason, interruptedResult);
-    this.emitAnalysisEvent(item.webContents, { type: "changed", runId: item.runId });
-  }
-
-  _stopAllHermesActivity(reason = "Redou Agent is closing; stopping Hermes local runtime.") {
-    this.shuttingDown = true;
-    const queuedMessages = Array.from(this.taskQueues.values()).reduce(
-      (count, queue) => count + (Array.isArray(queue) ? queue.length : 0),
-      0,
-    );
-    this.taskQueues.clear();
-
-    const stoppedRuns = [];
-    for (const [runId, run] of this.activeRuns.entries()) {
-      run.stopRequested = true;
-      terminateProcessTree(run.child, { force: true });
-      stoppedRuns.push(runId);
-      const event = {
-        type: "error",
-        message: reason,
-        metadata: {
-          runId,
-          projectId: run.projectId,
-          taskId: run.taskId,
-          shutdown: true,
-        },
-      };
-      try {
-        this.emitToRenderer(run.webContents, {
-          runId,
-          projectId: run.projectId,
-          taskId: run.taskId,
-          event,
-        });
-        this.persistEvent(run.projectId, run.taskId, event);
-      } catch {
-        // Shutdown cleanup should not be blocked by persistence or renderer state.
-      }
-    }
-    this.activeRuns.clear();
-
-    const queuedAnalysisRuns = this.analysisQueue.length;
-    this.analysisQueue = [];
-    const stoppedAnalysisRuns = [];
-    for (const item of this.activeAnalysisItems()) {
-      item.stopRequested = true;
-      stoppedAnalysisRuns.push(item.runId || item.key);
-      if (item.child) {
-        terminateProcessTree(item.child, { force: true });
-      }
-      this.markAnalysisInterrupted(item, reason);
-    }
-    for (const child of this.activeAnalysisShellChildren) {
-      terminateProcessTree(child, { force: true });
-    }
-    this.activeAnalysisShellChildren.clear();
-    this.activeAnalysisRuns.clear();
-    this.activeAnalysisRun = null;
-
-    return {
-      ok: true,
-      stoppedRuns,
-      stoppedAnalysisRuns,
-      queuedMessages,
-      queuedAnalysisRuns,
-    };
   }
 
   emitQueueUpdate(webContents, projectId, taskId, runId, message, metadata = {}) {
@@ -2922,11 +2887,15 @@ class RedouLocalService {
   }
 
   ensureInitialized() {
-    this.db.migrate();
-    this.ensureGlobalFiles();
-    for (const project of this.readAllProjects()) {
-      this.ensureProject(project);
-    }
+    return this.lifecycle.init();
+  }
+
+  dispose(reason = "Redou Agent is closing; stopping Hermes local runtime.") {
+    return this.lifecycle.dispose(reason);
+  }
+
+  healthCheck() {
+    return this.lifecycle.healthCheck();
   }
 
   ensureGlobalFiles() {
@@ -2947,13 +2916,9 @@ class RedouLocalService {
     return projects.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
   }
 
-  getState() {
-    return this.db.repositories.settings.getState();
-  }
+  getState() { return this.settingsService.getState(); }
 
-  saveState(state) {
-    return this.db.repositories.settings.saveState(state || {});
-  }
+  saveState(state) { return this.settingsService.saveState(state); }
 
   latestTaskForProject(project) {
     const tasks = Array.isArray(project?.tasks) ? project.tasks : [];
@@ -3093,44 +3058,16 @@ class RedouLocalService {
     ensureTextFile(normalized.contextPath, renderTaskContextMarkdown(readTaskStateFile(normalized.statePath)));
     this.ensureTaskContextShape(normalized.contextPath, normalized);
     ensureEmptyFile(normalized.messagesPath);
-    const taskJson = path.join(normalized.appDataPath, "task.json");
-    writeJsonAtomic(taskJson, normalized);
+    this.db.repositories.tasks.writeTaskMetadata(normalized);
     return normalized;
   }
 
   ensureTaskContextShape(taskContextPath, task = null) {
-    const current = readText(taskContextPath);
-    if (current.trim() && hasTaskContextShape(current)) {
-      const normalized = normalizeTaskContextText(current);
-      if (current !== normalized) fs.writeFileSync(taskContextPath, normalized, "utf8");
-      return normalized;
-    }
-    const statePath = task?.statePath || taskStatePathFromContextPath(taskContextPath);
-    let state = readTaskStateFile(statePath);
-    if (!fs.existsSync(statePath) && current.trim()) {
-      state = parseTaskStateFromStructuredText(splitTaskContext(current).structuredState);
-    }
-    const next = renderTaskContextMarkdown(state);
-    if (current !== next) {
-      fs.writeFileSync(taskContextPath, next, "utf8");
-    }
-    return next;
+    return this.contextBuilder.ensureTaskContextShape(taskContextPath, task);
   }
 
   ensureTaskStateShape(task) {
-    const statePath = task?.statePath || taskStatePathFromContextPath(task?.contextPath || "");
-    const eventsPath = task?.eventsPath || taskEventsPathFromContextPath(task?.contextPath || "");
-    mkdirp(path.dirname(statePath));
-    if (!fs.existsSync(eventsPath)) ensureEmptyFile(eventsPath);
-    let state = readTaskStateFile(statePath);
-    if (!fs.existsSync(statePath)) {
-      const contextText = readText(task.contextPath);
-      state = contextText.trim()
-        ? parseTaskStateFromStructuredText(splitTaskContext(contextText).structuredState)
-        : defaultTaskState();
-      writeTaskStateFiles(task, state);
-    }
-    return state;
+    return this.contextBuilder.ensureTaskStateShape(task);
   }
 
   desiredProjectProfileName(projectId) {
@@ -3239,60 +3176,27 @@ class RedouLocalService {
       .filter((item) => item.profile && item.profileHome);
   }
 
-  getConfig() {
-    return this.runDashboardBridge("get_config");
-  }
+  getConfig() { return this.settingsService.getConfig(); }
 
-  getConfigDefaults() {
-    return this.runDashboardBridge("get_defaults");
-  }
+  getConfigDefaults() { return this.settingsService.getConfigDefaults(); }
 
-  getConfigSchema() {
-    return this.runDashboardBridge("get_schema");
-  }
+  getConfigSchema() { return this.settingsService.getConfigSchema(); }
 
-  saveConfig(config) {
-    return this.runDashboardBridge("save_config", { config });
-  }
+  saveConfig(config) { return this.settingsService.saveConfig(config); }
 
-  getConfigRaw() {
-    return this.runDashboardBridge("get_config_raw");
-  }
+  getConfigRaw() { return this.settingsService.getConfigRaw(); }
 
-  saveConfigRaw(yamlText) {
-    return this.runDashboardBridge("save_config_raw", { yaml_text: yamlText });
-  }
+  saveConfigRaw(yamlText) { return this.settingsService.saveConfigRaw(yamlText); }
 
-  getSkills() {
-    return this.runDashboardBridge("get_skills", {
-      profileHomes: this.projectProfileHomesForBridge(),
-    });
-  }
+  getSkills() { return this.skillService.getSkills(); }
 
-  toggleSkill(name, enabled, scope = null) {
-    const payload = { name, enabled: Boolean(enabled) };
-    if (scope && typeof scope === "object") {
-      if (scope.profile) payload.profile = String(scope.profile);
-      if (scope.profileHome) payload.profileHome = String(scope.profileHome);
-      if (scope.path) payload.path = String(scope.path);
-    }
-    return this.runDashboardBridge("toggle_skill", payload);
-  }
+  toggleSkill(name, enabled, scope = null) { return this.skillService.toggleSkill(name, enabled, scope); }
 
-  deleteSkill(skill) {
-    const payload = skill && typeof skill === "object" ? { ...skill } : { name: skill };
-    return this.runDashboardBridge("delete_skill", payload);
-  }
+  deleteSkill(skill) { return this.skillService.deleteSkill(skill); }
 
-  mergeSkills(skills) {
-    return this.runDashboardBridge("merge_skills", {
-      skills: Array.isArray(skills) ? skills : [],
-    });
-  }
+  mergeSkills(skills) { return this.skillService.mergeSkills(skills); }
 
-  getToolsets() {
-    return this.runDashboardBridge("get_toolsets");
-  }
+  getToolsets() { return this.skillService.getToolsets(); }
 
   getModelInfo() {
     return this.runDashboardBridge("get_model_info");
@@ -3364,317 +3268,115 @@ class RedouLocalService {
   }
 
   getCronJobs() {
-    return this.schedulerService.list();
+    return this.schedulerService.listSchedules();
   }
 
   createCronJob(job) {
-    return this.schedulerService.create(job);
+    return this.schedulerService.createSchedule(job);
+  }
+
+  updateCronJob(id, updates = {}) {
+    return this.schedulerService.updateSchedule(id, updates);
   }
 
   pauseCronJob(id) {
-    return this.schedulerService.pause(id);
+    return this.schedulerService.pauseSchedule(id);
   }
 
   resumeCronJob(id) {
-    return this.schedulerService.resume(id);
+    return this.schedulerService.resumeSchedule(id);
   }
 
   triggerCronJob(id) {
-    return this.schedulerService.trigger(id);
+    return this.schedulerService.runNow(id);
   }
 
   deleteCronJob(id) {
-    return this.schedulerService.delete(id);
+    return this.schedulerService.deleteSchedule(id);
   }
 
-  getThemes() {
-    return this.runDashboardBridge("get_themes");
-  }
+  getThemes() { return this.settingsService.getThemes(); }
 
-  setTheme(name) {
-    return this.runDashboardBridge("set_theme", { name });
-  }
+  setTheme(name) { return this.settingsService.setTheme(name); }
 
-  getLanguage() {
-    return this.runDashboardBridge("get_language");
-  }
+  getLanguage() { return this.settingsService.getLanguage(); }
 
-  setLanguage(language) {
-    return this.runDashboardBridge("set_language", { language });
-  }
+  setLanguage(language) { return this.settingsService.setLanguage(language); }
 
-  getDashboardPlugins() {
-    return this.runDashboardBridge("get_dashboard_plugins");
-  }
+  getDashboardPlugins() { return this.pluginService.getDashboardPlugins(); }
 
-  rescanDashboardPlugins() {
-    return this.runDashboardBridge("rescan_dashboard_plugins");
-  }
+  rescanDashboardPlugins() { return this.pluginService.rescanDashboardPlugins(); }
 
-  getPluginsHub() {
-    return this.runDashboardBridge("get_plugins_hub");
-  }
+  getPluginsHub() { return this.pluginService.getPluginsHub(); }
 
-  installAgentPlugin(body) {
-    return this.runDashboardBridge(
-      "install_agent_plugin",
-      body && typeof body === "object" ? body : {},
-    );
-  }
+  installAgentPlugin(body) { return this.pluginService.installAgentPlugin(body); }
 
-  enableAgentPlugin(name) {
-    return this.runDashboardBridge("set_agent_plugin_enabled", { name, enabled: true });
-  }
+  enableAgentPlugin(name) { return this.pluginService.enableAgentPlugin(name); }
 
-  disableAgentPlugin(name) {
-    return this.runDashboardBridge("set_agent_plugin_enabled", { name, enabled: false });
-  }
+  disableAgentPlugin(name) { return this.pluginService.disableAgentPlugin(name); }
 
-  updateAgentPlugin(name) {
-    return this.runDashboardBridge("update_agent_plugin", { name });
-  }
+  updateAgentPlugin(name) { return this.pluginService.updateAgentPlugin(name); }
 
-  removeAgentPlugin(name) {
-    return this.runDashboardBridge("remove_agent_plugin", { name });
-  }
+  removeAgentPlugin(name) { return this.pluginService.removeAgentPlugin(name); }
 
-  savePluginProviders(body) {
-    return this.runDashboardBridge(
-      "save_plugin_providers",
-      body && typeof body === "object" ? body : {},
-    );
-  }
+  savePluginProviders(body) { return this.pluginService.savePluginProviders(body); }
 
-  setPluginVisibility(name, hidden) {
-    return this.runDashboardBridge("set_plugin_visibility", {
-      name,
-      hidden: Boolean(hidden),
-    });
-  }
+  setPluginVisibility(name, hidden) { return this.pluginService.setPluginVisibility(name, hidden); }
 
   getModelsAnalytics(days) {
     return this.analyticsService.getModelsAnalytics(days);
   }
 
   activeAnalysisItems() {
-    const items = [];
-    const seen = new Set();
-    const add = (item) => {
-      if (!item || typeof item !== "object") return;
-      const id = item.runId || item.key;
-      if (!id || seen.has(id)) return;
-      seen.add(id);
-      items.push(item);
-    };
-    for (const item of this.activeAnalysisRuns.values()) {
-      add(item);
-    }
-    add(this.activeAnalysisRun);
-    return items;
+    return this.analyticsService.activeAnalysisItems();
   }
 
   primaryActiveAnalysisRun() {
-    return this.activeAnalysisItems()[0] || null;
+    return this.analyticsService.primaryActiveAnalysisRun();
   }
 
   getStatus() {
-    const activeRuns = Array.from(this.activeRuns.entries()).map(([runId, run]) => ({
-      runId,
-      ...run,
-    }));
-    const activeAnalysisRuns = this.activeAnalysisItems();
-    const latestActivityMs = Math.max(
-      0,
-      ...activeRuns.map((run) => Number(run.lastActiveAtMs || run.startedAtMs || 0)),
-      activeAnalysisRuns.length > 0 ? Date.now() : 0,
-    );
-    const activeCount = activeRuns.length + activeAnalysisRuns.length;
-    const primaryRun = activeRuns[0] || null;
-    return {
-      active_sessions: activeCount,
-      config_path: path.join(this.hermesHome, "config.yaml"),
-      config_version: 0,
-      env_path: path.join(this.hermesHome, ".env"),
-      gateway_exit_reason: null,
-      gateway_health_url: null,
-      gateway_pid: primaryRun?.child?.pid || null,
-      gateway_platforms: {},
-      gateway_running: activeCount > 0,
-      gateway_state: activeCount > 0 ? "running" : "stopped",
-      gateway_updated_at: latestActivityMs ? new Date(latestActivityMs).toISOString() : null,
-      hermes_home: this.hermesHome,
-      latest_config_version: 0,
-      release_date: "",
-      version: "desktop",
-    };
+    return this.analyticsService.getStatus();
   }
 
   desktopSessionId(project, task) {
-    return `redou:${project.id}:${task.id}`;
+    return this.analyticsService.desktopSessionId(project, task);
   }
 
   findTaskByDesktopSessionId(sessionId) {
-    const target = String(sessionId || "");
-    for (const project of this.readAllProjects()) {
-      for (const task of project.tasks || []) {
-        if (
-          this.desktopSessionId(project, task) === target ||
-          (task.hermesSessionId && task.hermesSessionId === target) ||
-          (task.session_id && task.session_id === target)
-        ) {
-          return { project, task };
-        }
-      }
-    }
-    return { project: null, task: null };
+    return this.analyticsService.findTaskByDesktopSessionId(sessionId);
   }
 
   activeRunForTaskSnapshot(projectId, taskId) {
-    for (const [runId, run] of this.activeRuns.entries()) {
-      if (run.projectId === projectId && run.taskId === taskId) {
-        return { runId, ...run };
-      }
-    }
-    return null;
+    return this.analyticsService.activeRunForTaskSnapshot(projectId, taskId);
   }
 
   analysisRunForTaskSnapshot(projectId, taskId) {
-    for (const item of this.activeAnalysisItems()) {
-      if (item.projectId === projectId && item.taskId === taskId) {
-        const nowMs = Date.now();
-        return {
-          state: "running",
-          item,
-          startedAtMs: Number(item.analysisStartedAtMs || item.startedAtMs || nowMs),
-          lastActiveAtMs: Number(item.analysisLastActiveAtMs || item.analysisStartedAtMs || nowMs),
-        };
-      }
-    }
-    for (const item of this.analysisQueue) {
-      if (item.projectId === projectId && item.taskId === taskId) {
-        const queuedAtMs = timestampMs(item.queuedAt) || Date.now();
-        return {
-          state: "queued",
-          item,
-          startedAtMs: queuedAtMs,
-          lastActiveAtMs: queuedAtMs,
-        };
-      }
-    }
-    return null;
+    return this.analyticsService.analysisRunForTaskSnapshot(projectId, taskId);
   }
 
   hasAnalysisRunForTask(projectId, taskId = null) {
-    const matches = (item) => {
-      if (!item || item.projectId !== projectId) return false;
-      return !taskId || item.taskId === taskId;
-    };
-    return this.activeAnalysisItems().some(matches) || this.analysisQueue.some(matches);
+    return this.analyticsService.hasAnalysisRunForTask(projectId, taskId);
   }
 
   taskRuntimeSnapshot(projectId, taskId) {
-    const activeRun = this.activeRunForTaskSnapshot(projectId, taskId);
-    const analysisRun = this.analysisRunForTaskSnapshot(projectId, taskId);
-    if (analysisRun) {
-      return {
-        is_active: analysisRun.state === "running",
-        active_run_id: analysisRun.item.runId || null,
-        queue_depth: analysisRun.state === "queued" ? 1 : 0,
-        run_started_at: analysisRun.state === "running"
-          ? timestampSeconds(analysisRun.startedAtMs, nowSeconds())
-          : null,
-        last_active: timestampSeconds(analysisRun.lastActiveAtMs, nowSeconds()),
-        current_stage: analysisRun.item.currentTaskId || null,
-      };
-    }
-    const queueDepth = this.queueDepth(projectId, taskId);
-    const lastActiveMs = activeRun ? Number(activeRun.lastActiveAtMs || activeRun.startedAtMs || 0) : 0;
-    return {
-      is_active: Boolean(activeRun),
-      active_run_id: activeRun?.runId || null,
-      queue_depth: queueDepth,
-      run_started_at: activeRun
-        ? timestampSeconds(activeRun.startedAtMs || activeRun.startedAt, nowSeconds())
-        : null,
-      last_active: activeRun && lastActiveMs ? timestampSeconds(lastActiveMs, nowSeconds()) : null,
-      current_stage: activeRun?.currentStage || null,
-    };
+    return this.analyticsService.taskRuntimeSnapshot(projectId, taskId);
   }
 
   taskCompletionStatus(project, task, runtime) {
-    if (runtime?.is_active) return "running";
-    if (Number(runtime?.queue_depth || 0) > 0) return "queued";
-
-    const { messages } = this.loadMessagesFile(task.messagesPath, {
-      projectId: project.id,
-      taskId: task.id,
-    });
-    let doneStatus = null;
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const message = messages[index] || {};
-      const { combined, event, eventType } = mergeMetadata(message);
-      const role = String(message.role || "").toLowerCase();
-
-      if (eventType === "done") {
-        const exitCode = Number(combined.exitCode);
-        doneStatus =
-          combined.completed === false || (Number.isFinite(exitCode) && exitCode !== 0)
-            ? "failed"
-            : "completed";
-        continue;
-      }
-
-      if (eventType === "error") {
-        const text = [
-          message.content,
-          event.message,
-          combined.message,
-          combined.reason,
-        ].filter(Boolean).join(" ");
-        return /stopped|interrupted|cancelled|canceled|closing/i.test(text)
-          ? "interrupted"
-          : "failed";
-      }
-
-      if (eventType === "assistant_message" || role === "assistant") {
-        return "completed";
-      }
-
-      if (role === "user") {
-        return doneStatus || "idle";
-      }
-    }
-
-    return doneStatus || "idle";
+    return this.analyticsService.taskCompletionStatus(project, task, runtime);
   }
 
   decorateTaskRuntime(project, task) {
-    const runtime = this.taskRuntimeSnapshot(project.id, task.id);
-    return {
-      ...task,
-      ...runtime,
-      runtime_status: this.taskCompletionStatus(project, task, runtime),
-    };
+    return this.analyticsService.decorateTaskRuntime(project, task);
   }
 
   decorateProjectRuntime(project) {
-    return {
-      ...project,
-      tasks: (project.tasks || []).map((task) => this.decorateTaskRuntime(project, task)),
-    };
+    return this.analyticsService.decorateProjectRuntime(project);
   }
 
   activeRunUsage(run) {
-    if (!run) return emptyUsage();
-    return {
-      inputTokens: toInt(run.inputTokens) || toInt(run.contextTokens),
-      outputTokens: toInt(run.outputTokens) || toInt(run.outputEstimateTokens),
-      cacheReadTokens: toInt(run.cacheReadTokens),
-      cacheWriteTokens: toInt(run.cacheWriteTokens),
-      reasoningTokens: toInt(run.reasoningTokens),
-      apiCalls: toInt(run.apiCalls),
-      estimatedCostUsd: toNumber(run.estimatedCostUsd),
-    };
+    return this.analyticsService.activeRunUsage(run);
   }
 
   updateActiveRunFromEvent(run, event) {
@@ -3708,242 +3410,35 @@ class RedouLocalService {
   }
 
   usageForMessages(messages, activeRun = null) {
-    const byRun = new Map();
-    const ensure = (runId) => {
-      const key = String(runId || "stored");
-      if (!byRun.has(key)) {
-        byRun.set(key, {
-          done: emptyUsage(),
-          fallback: emptyUsage(),
-          hasDoneUsage: false,
-          hasFallbackUsage: false,
-        });
-      }
-      return byRun.get(key);
-    };
-
-    for (const message of messages || []) {
-      const { combined, eventType } = mergeMetadata(message);
-      const runId = combined.runId || combined.guidedRunId || "stored";
-      const usage = usageFromMetadata(combined);
-      const entry = ensure(runId);
-      if (eventType === "done") {
-        addUsage(entry.done, usage);
-        entry.hasDoneUsage = entry.hasDoneUsage || hasUsage(usage);
-      } else if (eventType === "assistant_message" || message.role === "assistant") {
-        addUsage(entry.fallback, usage);
-        entry.hasFallbackUsage = entry.hasFallbackUsage || hasUsage(usage);
-      }
-    }
-
-    const total = emptyUsage();
-    for (const entry of byRun.values()) {
-      if (entry.hasDoneUsage) {
-        addUsage(total, entry.done);
-      } else if (entry.hasFallbackUsage) {
-        addUsage(total, entry.fallback);
-      }
-    }
-    if (activeRun) {
-      addUsage(total, this.activeRunUsage(activeRun));
-    }
-    return total;
+    return this.analyticsService.usageForMessages(messages, activeRun);
   }
 
   toolCountForMessages(messages) {
-    return (messages || []).filter((message) => {
-      const { eventType } = mergeMetadata(message);
-      return eventType === "tool_start" || eventType === "command_start";
-    }).length;
+    return this.analyticsService.toolCountForMessages(messages);
   }
 
   latestContent(messages, roles) {
-    const wanted = new Set(roles);
-    for (let index = (messages || []).length - 1; index >= 0; index -= 1) {
-      const message = messages[index];
-      if (wanted.has(message.role) && String(message.content || "").trim()) {
-        return compact(message.content, 180);
-      }
-    }
-    return null;
+    return this.analyticsService.latestContent(messages, roles);
   }
 
   sessionRecordForTask(project, task) {
-    const { messages } = this.loadMessagesFile(task.messagesPath, {
-      projectId: project.id,
-      taskId: task.id,
-    });
-    const activeRun = this.activeRunForTaskSnapshot(project.id, task.id);
-    const queueDepth = this.queueDepth(project.id, task.id);
-    const firstMessage = messages[0] || null;
-    const lastMessage = messages[messages.length - 1] || null;
-    const { eventType: lastEventType } = mergeMetadata(lastMessage || {});
-    const created = timestampSeconds(firstMessage?.createdAt, task.created_at || project.created_at || nowSeconds());
-    const lastStored = timestampSeconds(lastMessage?.createdAt, task.updated_at || project.updated_at || created);
-    const lastActive = activeRun
-      ? timestampSeconds(activeRun.lastActiveAtMs || activeRun.startedAtMs, lastStored)
-      : lastStored;
-    const usage = this.usageForMessages(messages, activeRun);
-    const messageCount = messages.filter((message) =>
-      ["user", "assistant", "system", "tool"].includes(message.role),
-    ).length;
-    const model = [task.model_provider, task.model].filter(Boolean).join("/") || null;
-    return {
-      id: this.desktopSessionId(project, task),
-      source: "redou-desktop",
-      model,
-      title: `${project.name || "Project"} / ${task.title || "Task"}`,
-      started_at: created,
-      ended_at: activeRun ? null : lastActive,
-      last_active: lastActive,
-      is_active: Boolean(activeRun),
-      message_count: messageCount,
-      tool_call_count: this.toolCountForMessages(messages),
-      input_tokens: usage.inputTokens,
-      output_tokens: usage.outputTokens,
-      preview:
-        (activeRun ? "Hermes local runtime is running." : null) ||
-        (queueDepth > 0 ? `${queueDepth} queued message${queueDepth === 1 ? "" : "s"}.` : null) ||
-        this.latestContent(messages, ["assistant", "user"]) ||
-        null,
-      parent_session_id: task.hermesSessionId || null,
-      projectId: project.id,
-      taskId: task.id,
-      queue_depth: queueDepth,
-      last_event_type: lastEventType || null,
-      run_started_at: activeRun
-        ? timestampSeconds(activeRun.startedAtMs || activeRun.startedAt, lastActive)
-        : null,
-      cache_read_tokens: usage.cacheReadTokens,
-      cache_write_tokens: usage.cacheWriteTokens,
-      reasoning_tokens: usage.reasoningTokens,
-      api_calls: usage.apiCalls,
-      estimated_cost: usage.estimatedCostUsd,
-    };
+    return this.analyticsService.sessionRecordForTask(project, task);
   }
 
   desktopSessionRecords() {
-    this.ensureInitialized();
-    const records = [];
-    for (const project of this.readAllProjects()) {
-      for (const task of project.tasks || []) {
-        records.push(this.sessionRecordForTask(project, task));
-      }
-    }
-    return records.sort((a, b) => {
-      if (a.is_active !== b.is_active) return a.is_active ? -1 : 1;
-      return Number(b.last_active || 0) - Number(a.last_active || 0);
-    });
+    return this.analyticsService.desktopSessionRecords();
   }
 
   getSessions(limit = 20, offset = 0) {
-    const safeLimit = Math.max(1, Math.min(100, toInt(limit) || 20));
-    const safeOffset = Math.max(0, toInt(offset));
-    const records = this.desktopSessionRecords();
-    const sessions = records.slice(safeOffset, safeOffset + safeLimit).map((record) => ({
-      id: record.id,
-      source: record.source,
-      model: record.model,
-      title: record.title,
-      started_at: record.started_at,
-      ended_at: record.ended_at,
-      last_active: record.last_active,
-      is_active: record.is_active,
-      message_count: record.message_count,
-      tool_call_count: record.tool_call_count,
-      input_tokens: record.input_tokens,
-      output_tokens: record.output_tokens,
-      preview: record.preview,
-      parent_session_id: record.parent_session_id,
-      projectId: record.projectId,
-      taskId: record.taskId,
-      queue_depth: record.queue_depth,
-      last_event_type: record.last_event_type,
-      run_started_at: record.run_started_at,
-      api_calls: record.api_calls,
-    }));
-    return {
-      sessions,
-      total: records.length,
-      limit: safeLimit,
-      offset: safeOffset,
-    };
+    return this.analyticsService.getSessions(limit, offset);
   }
 
   dashboardMessageFromTaskMessage(message) {
-    const createdAt = timestampSeconds(message.createdAt);
-    const { event, eventType } = mergeMetadata(message);
-    if (["user", "assistant", "system", "tool"].includes(message.role)) {
-      return {
-        role: message.role,
-        content: message.content || null,
-        timestamp: createdAt,
-      };
-    }
-    if (eventType === "tool_start") {
-      return {
-        role: "assistant",
-        content: null,
-        timestamp: createdAt,
-        tool_calls: [
-          {
-            id: String(event.id || event.metadata?.toolCallId || crypto.randomUUID()),
-            function: {
-              name: String(event.name || "tool"),
-              arguments: JSON.stringify(event.input || {}),
-            },
-          },
-        ],
-      };
-    }
-    if (eventType === "command_start") {
-      return {
-        role: "assistant",
-        content: null,
-        timestamp: createdAt,
-        tool_calls: [
-          {
-            id: String(event.id || event.metadata?.toolCallId || crypto.randomUUID()),
-            function: {
-              name: "terminal",
-              arguments: JSON.stringify({
-                command: event.command || "",
-                cwd: event.cwd || "",
-              }),
-            },
-          },
-        ],
-      };
-    }
-    if (eventType === "tool_output" || eventType === "command_output") {
-      return {
-        role: "tool",
-        content: message.content || null,
-        timestamp: createdAt,
-        tool_name: String(event.name || event.metadata?.command || "tool"),
-        tool_call_id: String(event.id || event.metadata?.toolCallId || ""),
-      };
-    }
-    return {
-      role: "system",
-      content: message.content || null,
-      timestamp: createdAt,
-    };
+    return this.analyticsService.dashboardMessageFromTaskMessage(message);
   }
 
   getSessionMessages(sessionId) {
-    const { project, task } = this.findTaskByDesktopSessionId(sessionId);
-    if (!project || !task) {
-      return { session_id: String(sessionId || ""), messages: [] };
-    }
-    const { messages } = this.loadMessagesFile(task.messagesPath, {
-      projectId: project.id,
-      taskId: task.id,
-    });
-    return {
-      session_id: this.desktopSessionId(project, task),
-      messages: messages.map((message) => this.dashboardMessageFromTaskMessage(message)),
-    };
+    return this.analyticsService.getSessionMessages(sessionId);
   }
 
   getUsageAnalytics(days = 7) {
@@ -4254,78 +3749,23 @@ class RedouLocalService {
   }
 
   normalizeAnalysisAbilityScores(rawScores, derivedScores = null) {
-    const scores = {};
-    for (const key of ANALYSIS_ABILITY_KEYS) {
-      const value = rawScores?.[key];
-      scores[key] = value === undefined && derivedScores
-        ? clampScore(derivedScores[key])
-        : clampScore(value);
-    }
-    return scores;
+    return this.analyticsService.normalizeAnalysisAbilityScores(rawScores, derivedScores);
   }
 
   withLiveAnalysisTiming(result, nowMs = Date.now()) {
-    const hasLiveTask = result.tasks.some((task) => isLiveAnalysisStatus(task.status));
-    if (!isLiveAnalysisStatus(result.status) && !hasLiveTask) {
-      return result;
-    }
-
-    let taskDurationIsLive = false;
-    const tasks = result.tasks.map((task) => {
-      if (!isLiveAnalysisStatus(task.status) || !task.startedAt) {
-        return task;
-      }
-      const durationMs = Math.max(toInt(task.durationMs), elapsedMsSince(task.startedAt, nowMs));
-      if (durationMs <= toInt(task.durationMs)) {
-        return task;
-      }
-      taskDurationIsLive = true;
-      return { ...task, durationMs };
-    });
-    const totals = this.analysisTotals(tasks);
-    if (!taskDurationIsLive && isLiveAnalysisStatus(result.status) && result.startedAt) {
-      totals.durationMs = Math.max(totals.durationMs, elapsedMsSince(result.startedAt, nowMs));
-    }
-    return {
-      ...result,
-      tasks,
-      totals,
-    };
+    return this.analyticsService.withLiveAnalysisTiming(result, nowMs);
   }
 
   getAnalysisBenchmarks() {
     const store = this.readAnalysisStore();
-    const activeAnalysisRuns = this.activeAnalysisItems();
-    const primaryActiveRun = activeAnalysisRuns[0] || null;
-    const activeRunIds = new Set([
-      ...activeAnalysisRuns.map((item) => item.runId).filter(Boolean),
-      ...this.analysisQueue.map((item) => item.runId).filter(Boolean),
-    ]);
-    let changed = false;
-    const results = store.results.map((result) => {
-      if (result.status === "running" || result.status === "queued") {
-        if (!activeRunIds.has(result.runId)) {
-          changed = true;
-          return {
-            ...result,
-            status: "interrupted",
-            summary: result.summary || "This benchmark was interrupted before completion.",
-          };
-        }
-      }
-      return result;
+    const snapshot = this.analyticsService.buildAnalysisBenchmarksSnapshot(store, {
+      activeAnalysisRuns: this.activeAnalysisItems(),
+      analysisQueue: this.analysisQueue,
     });
-    if (changed) {
-      this.writeAnalysisStore({ ...store, results });
+    if (snapshot.changed) {
+      this.writeAnalysisStore({ ...store, results: snapshot.results });
     }
-    return {
-      version: 1,
-      tasks: ANALYSIS_TASKS,
-      results: results.map((result) => this.withLiveAnalysisTiming(result)),
-      activeRunId: primaryActiveRun?.runId || null,
-      activeRunIds: activeAnalysisRuns.map((item) => item.runId).filter(Boolean),
-      queueDepth: this.analysisQueue.length,
-    };
+    return snapshot.response;
   }
 
   normalizeAnalysisModelInput(input) {
@@ -4670,61 +4110,15 @@ class RedouLocalService {
   }
 
   runAnalysisShellCommand({ command, args = [], cwd, timeoutMs = 600000, env = {} }) {
-    return new Promise((resolve) => {
-      if (this.shuttingDown) {
-        resolve({ code: null, signal: "shutdown", error: "Redou Agent is closing.", output: "" });
-        return;
-      }
-      const startedAtMs = Date.now();
-      const child = this.processManager.spawn(command, args, {
-        cwd,
-        env: this.childEnv(env),
-        shell: false,
-        windowsHide: true,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let stdout = "";
-      let stderr = "";
-      let settled = false;
-      let timer = null;
-      this.activeAnalysisShellChildren.add(child);
-      const append = (current, chunk) => {
-        const next = current + chunk.toString();
-        return next.length > 200000 ? next.slice(next.length - 200000) : next;
-      };
-      const finish = (result) => {
-        if (settled) return;
-        settled = true;
-        this.activeAnalysisShellChildren.delete(child);
-        if (timer) clearTimeout(timer);
-        resolve({
-          ...result,
-          stdout,
-          stderr,
-          output: `${stdout}${stderr ? `\n${stderr}` : ""}`.trim(),
-          durationMs: Math.max(0, Date.now() - startedAtMs),
-        });
-      };
-      timer = setTimeout(() => {
-        try {
-          child.kill();
-        } catch {
-          // ignored
-        }
-        finish({ code: null, signal: "timeout", error: `Command timed out after ${timeoutMs}ms` });
-      }, timeoutMs);
-      child.stdout.on("data", (chunk) => {
-        stdout = append(stdout, chunk);
-      });
-      child.stderr.on("data", (chunk) => {
-        stderr = append(stderr, chunk);
-      });
-      child.on("error", (error) => {
-        finish({ code: null, signal: null, error: error.message });
-      });
-      child.on("exit", (code, signal) => {
-        finish({ code, signal, error: code === 0 ? "" : `Command exited with code ${code}` });
-      });
+    return this.processManager.runBufferedCommand({
+      command,
+      args,
+      cwd,
+      env: this.childEnv(env),
+      timeoutMs,
+      shutdown: this.shuttingDown,
+      shutdownResult: { code: null, signal: "shutdown", error: "Redou Agent is closing.", output: "" },
+      trackingSet: this.activeAnalysisShellChildren,
     });
   }
 
@@ -5517,31 +4911,7 @@ class RedouLocalService {
         ...(preparedRunDir ? { preparedRunDir } : {}),
         modelRunName: resolvedModelRunName,
       };
-      const child = this.processManager.spawn(this.pythonPath, [adapterPath], {
-        cwd: workspacePath,
-        env: this.childEnv({
-          HERMES_HOME: this.hermesHome,
-          REDOU_APP_DATA_ROOT: this.appDataRoot(),
-          REDOU_ANALYSIS_RUN_ID: runId,
-          REDOU_ANALYSIS_TASK_ID: task.id,
-          HERMES_INTERACTIVE: "1",
-          HERMES_EXEC_ASK: "",
-          PYTHONUTF8: "1",
-          PYTHONUNBUFFERED: "1",
-        }),
-        shell: false,
-        windowsHide: true,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-      const activeAnalysisItem = this.activeAnalysisRuns.get(runId);
-      if (activeAnalysisItem) {
-        activeAnalysisItem.child = child;
-        activeAnalysisItem.currentTaskId = task.id;
-      }
-
       const events = [];
-      let stdoutBuffer = "";
-      let stderrBuffer = "";
       let finalAssistantText = "";
       let doneMetadata = {};
       let childError = null;
@@ -5559,150 +4929,142 @@ class RedouLocalService {
         }
       };
 
-      const flushStdout = () => {
-        const lines = stdoutBuffer.split(/\r?\n/);
-        stdoutBuffer = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            recordEvent(JSON.parse(line));
-          } catch {
-            recordEvent({ type: "raw_log", content: line });
+      this.processManager.startJsonLineProcess({
+        command: this.pythonPath,
+        args: [adapterPath],
+        options: {
+          cwd: workspacePath,
+          env: this.childEnv({
+            HERMES_HOME: this.hermesHome,
+            REDOU_APP_DATA_ROOT: this.appDataRoot(),
+            REDOU_ANALYSIS_RUN_ID: runId,
+            REDOU_ANALYSIS_TASK_ID: task.id,
+            HERMES_INTERACTIVE: "1",
+            HERMES_EXEC_ASK: "",
+            PYTHONUTF8: "1",
+            PYTHONUNBUFFERED: "1",
+          }),
+          shell: false,
+          windowsHide: true,
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+        input: {
+          projectId: `analysis-${key}`,
+          taskId: task.id,
+          hermesProfile: "analysis",
+          hermesSessionId: `redou-analysis-${key}-${task.id}-${Date.now().toString(36)}`,
+          systemContext: "You are Hermes Agent running inside Redou Agent's local model benchmark harness.",
+          userContext: prompt,
+          attachments: [],
+          metadata,
+          riskConfirmed: true,
+          model,
+          provider,
+          workspacePath,
+          maxIterations: normalizeAnalysisMaxIterations(maxIterations, this.analysisDefaultMaxIterations()),
+        },
+        onStarted: (child) => {
+          const activeAnalysisItem = this.activeAnalysisRuns.get(runId);
+          if (activeAnalysisItem) {
+            activeAnalysisItem.child = child;
+            activeAnalysisItem.currentTaskId = task.id;
           }
-        }
-      };
-
-      const flushStderr = () => {
-        const lines = stderrBuffer.split(/\r?\n/);
-        stderrBuffer = lines.pop() || "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
+        },
+        onStdoutEvent: (event) => {
+          recordEvent(event);
+        },
+        onStderrLine: (line) => {
           recordEvent({ type: "raw_log", content: redact(line), metadata: { stream: "stderr", folded: true } });
-        }
-      };
-
-      child.stdout.on("data", (chunk) => {
-        stdoutBuffer += chunk.toString();
-        flushStdout();
-      });
-      child.stderr.on("data", (chunk) => {
-        stderrBuffer += chunk.toString();
-        flushStderr();
-      });
-      child.on("error", (error) => {
-        childError = error;
-      });
-      child.on("exit", async (code) => {
-        try {
-          const currentAnalysisItem = this.activeAnalysisRuns.get(runId);
-          if (currentAnalysisItem?.child === child) {
-            delete currentAnalysisItem.child;
-            delete currentAnalysisItem.currentTaskId;
-          }
-          if (stdoutBuffer.trim()) {
-            try {
-              recordEvent(JSON.parse(stdoutBuffer));
-            } catch {
-              recordEvent({ type: "raw_log", content: stdoutBuffer.trim() });
+        },
+        onError: (error) => {
+          childError = error;
+        },
+        onExit: async ({ code, child }) => {
+          try {
+            const currentAnalysisItem = this.activeAnalysisRuns.get(runId);
+            if (currentAnalysisItem?.child === child) {
+              delete currentAnalysisItem.child;
+              delete currentAnalysisItem.currentTaskId;
             }
-          }
-          if (stderrBuffer.trim()) {
-            recordEvent({ type: "raw_log", content: redact(stderrBuffer.trim()), metadata: { stream: "stderr", folded: true } });
-          }
 
-          const stopped = this.shuttingDown || currentAnalysisItem?.stopRequested === true;
-          let postProcessResult = null;
-          if (!stopped && typeof postProcessBeforeEvaluation === "function") {
-            try {
-              postProcessResult = await postProcessBeforeEvaluation({
-                events,
-                finalAssistantText,
-                doneMetadata,
-              });
-            } catch (error) {
-              const message = error instanceof Error ? error.message : String(error);
-              postProcessResult = {
-                status: "failed",
-                summary: `Batch post-processing failed: ${message}`,
-                error: message,
-              };
+            const stopped = this.shuttingDown || currentAnalysisItem?.stopRequested === true;
+            let postProcessResult = null;
+            if (!stopped && typeof postProcessBeforeEvaluation === "function") {
+              try {
+                postProcessResult = await postProcessBeforeEvaluation({
+                  events,
+                  finalAssistantText,
+                  doneMetadata,
+                });
+              } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                postProcessResult = {
+                  status: "failed",
+                  summary: `Batch post-processing failed: ${message}`,
+                  error: message,
+                };
+              }
             }
-          }
 
-          const completedAtMs = Date.now();
-          const durationMs = Math.max(0, completedAtMs - taskStartedAtMs);
-          const errors = events
-            .filter((event) => event.type === "error")
-            .map((event) => event.message || event.content)
-            .filter(Boolean);
-          const failureSummary = finalAssistantText || compact(errors.join(" "), 600);
-          const modelCallFailed = isAnalysisModelCallFailure(failureSummary);
-          const evaluation = skipInlineEvaluation || modelCallFailed
-            ? { score: 0, sections: [] }
-            : this.evaluateAnalysisTask(task.id, workspacePath, events, finalAssistantText, {
-                analysisEnvName,
-                modelRunName: resolvedModelRunName,
-              });
-          const postProcessFailed = postProcessResult?.status === "failed";
-          const status = analysisTaskProcessStatus({
-            stopped,
-            childError,
-            exitCode: code,
-            modelCallFailed,
-            postProcessFailed,
-            finalAssistantText,
-          });
-          const summary = stopped
-            ? "Stopped because Redou Agent is closing."
-            : [failureSummary, postProcessResult?.summary].filter(Boolean).join("\n\n");
-          const taskResult = {
-            id: task.id,
-            title: task.title,
-            capability: task.capability,
-            status,
-            startedAt: taskStartedAt,
-            completedAt: new Date(completedAtMs).toISOString(),
-            durationMs,
-            inputTokens: toInt(doneMetadata.inputTokens),
-            outputTokens: toInt(doneMetadata.outputTokens),
-            cacheReadTokens: toInt(doneMetadata.cacheReadTokens),
-            reasoningTokens: toInt(doneMetadata.reasoningTokens),
-            apiCalls: toInt(doneMetadata.apiCalls),
-            estimatedCostUsd: Number(doneMetadata.estimatedCostUsd || 0),
-            score: evaluation.score,
-            sections: evaluation.sections,
-            summary,
-            error: stopped
+            const completedAtMs = Date.now();
+            const durationMs = Math.max(0, completedAtMs - taskStartedAtMs);
+            const errors = events
+              .filter((event) => event.type === "error")
+              .map((event) => event.message || event.content)
+              .filter(Boolean);
+            const failureSummary = finalAssistantText || compact(errors.join(" "), 600);
+            const modelCallFailed = isAnalysisModelCallFailure(failureSummary);
+            const evaluation = skipInlineEvaluation || modelCallFailed
+              ? { score: 0, sections: [] }
+              : this.evaluateAnalysisTask(task.id, workspacePath, events, finalAssistantText, {
+                  analysisEnvName,
+                  modelRunName: resolvedModelRunName,
+                });
+            const postProcessFailed = postProcessResult?.status === "failed";
+            const status = analysisTaskProcessStatus({
+              stopped,
+              childError,
+              exitCode: code,
+              modelCallFailed,
+              postProcessFailed,
+              finalAssistantText,
+            });
+            const summary = stopped
               ? "Stopped because Redou Agent is closing."
-              : childError
-                ? childError.message
-                : modelCallFailed
-                  ? failureSummary
-                  : status === "failed"
-                  ? [errors.join("\n") || (code !== 0 ? `Exited with code ${code}` : ""), postProcessResult?.error].filter(Boolean).join("\n") || null
-                  : null,
-          };
-          resolve(taskResult);
-        } catch (error) {
-          reject(error);
-        }
+              : [failureSummary, postProcessResult?.summary].filter(Boolean).join("\n\n");
+            const taskResult = {
+              id: task.id,
+              title: task.title,
+              capability: task.capability,
+              status,
+              startedAt: taskStartedAt,
+              completedAt: new Date(completedAtMs).toISOString(),
+              durationMs,
+              inputTokens: toInt(doneMetadata.inputTokens),
+              outputTokens: toInt(doneMetadata.outputTokens),
+              cacheReadTokens: toInt(doneMetadata.cacheReadTokens),
+              reasoningTokens: toInt(doneMetadata.reasoningTokens),
+              apiCalls: toInt(doneMetadata.apiCalls),
+              estimatedCostUsd: Number(doneMetadata.estimatedCostUsd || 0),
+              score: evaluation.score,
+              sections: evaluation.sections,
+              summary,
+              error: stopped
+                ? "Stopped because Redou Agent is closing."
+                : childError
+                  ? childError.message
+                  : modelCallFailed
+                    ? failureSummary
+                    : status === "failed"
+                    ? [errors.join("\n") || (code !== 0 ? `Exited with code ${code}` : ""), postProcessResult?.error].filter(Boolean).join("\n") || null
+                    : null,
+            };
+            resolve(taskResult);
+          } catch (error) {
+            reject(error);
+          }
+        },
       });
-
-      child.stdin.write(JSON.stringify({
-        projectId: `analysis-${key}`,
-        taskId: task.id,
-        hermesProfile: "analysis",
-        hermesSessionId: `redou-analysis-${key}-${task.id}-${Date.now().toString(36)}`,
-        systemContext: "You are Hermes Agent running inside Redou Agent's local model benchmark harness.",
-        userContext: prompt,
-        attachments: [],
-        metadata,
-        riskConfirmed: true,
-        model,
-        provider,
-        workspacePath,
-        maxIterations: normalizeAnalysisMaxIterations(maxIterations, this.analysisDefaultMaxIterations()),
-      }) + "\n");
     });
   }
 
@@ -5878,92 +5240,11 @@ class RedouLocalService {
   }
 
   analysisTotals(tasks) {
-    return {
-      durationMs: tasks.reduce((sum, task) => sum + toInt(task.durationMs), 0),
-      inputTokens: tasks.reduce((sum, task) => sum + toInt(task.inputTokens), 0),
-      outputTokens: tasks.reduce((sum, task) => sum + toInt(task.outputTokens), 0),
-      cacheReadTokens: tasks.reduce((sum, task) => sum + toInt(task.cacheReadTokens), 0),
-      reasoningTokens: tasks.reduce((sum, task) => sum + toInt(task.reasoningTokens), 0),
-      apiCalls: tasks.reduce((sum, task) => sum + toInt(task.apiCalls), 0),
-      estimatedCostUsd: tasks.reduce((sum, task) => sum + Number(task.estimatedCostUsd || 0), 0),
-    };
+    return this.analyticsService.analysisTotals(tasks);
   }
 
   analysisAbilityScores(tasks) {
-    const byTask = Object.fromEntries(tasks.map((task) => [task.id, task]));
-    const section = (taskId, sectionId) => {
-      const found = byTask[taskId]?.sections?.find((item) => item.id === sectionId);
-      return found ? clampScore(found.score) : 0;
-    };
-    const score = (taskId) => clampScore(byTask[taskId]?.score);
-    const weightedScore = (items) => clampScore(
-      items.reduce((sum, item) => sum + clampScore(item.score) * item.weight, 0) /
-        Math.max(1, items.reduce((sum, item) => sum + item.weight, 0)),
-    );
-    return {
-      environmentConstraints: weightedScore([
-        { score: score("task1"), weight: 0.45 },
-        { score: section("task2", "container_execution"), weight: 0.08 },
-        { score: section("task3", "container_execution"), weight: 0.08 },
-        { score: section("task4", "container_check"), weight: 0.07 },
-        { score: section("task5", "container_execution"), weight: 0.08 },
-        { score: section("task6", "container_execution"), weight: 0.08 },
-        { score: section("task7", "container_execution"), weight: 0.06 },
-        { score: section("task8", "container_execution"), weight: 0.06 },
-        { score: section("task9", "container_execution"), weight: 0.04 },
-      ]),
-      projectDelivery: weightedScore([
-        { score: score("task2"), weight: 0.45 },
-        { score: section("task6", "automated_tests"), weight: 0.2 },
-        { score: section("task7", "automated_tests"), weight: 0.15 },
-        { score: section("task9", "automated_tests"), weight: 0.15 },
-        { score: section("task2", "verification"), weight: 0.05 },
-      ]),
-      debugRepair: weightedScore([
-        { score: score("task3"), weight: 0.25 },
-        { score: section("task3", "bug_loop"), weight: 0.15 },
-        { score: section("task5", "automated_tests"), weight: 0.3 },
-        { score: section("task8", "automated_tests"), weight: 0.3 },
-      ]),
-      frameworkExtension: weightedScore([
-        { score: section("task2", "features"), weight: 0.2 },
-        { score: section("task6", "automated_tests"), weight: 0.4 },
-        { score: section("task9", "automated_tests"), weight: 0.4 },
-      ]),
-      parsingEdgeCases: weightedScore([
-        { score: section("task7", "automated_tests"), weight: 0.45 },
-        { score: section("task8", "automated_tests"), weight: 0.35 },
-        { score: section("task3", "function_coverage"), weight: 0.2 },
-      ]),
-      verificationIteration: clampScore(averageScore([
-        { score: section("task1", "environment_verification") },
-        { score: section("task2", "verification") },
-        { score: section("task3", "bug_loop") },
-        { score: section("task4", "container_check") },
-        { score: section("task5", "official_submission") },
-        { score: section("task6", "official_submission") },
-        { score: section("task7", "official_submission") },
-        { score: section("task8", "official_submission") },
-        { score: section("task9", "official_submission") },
-      ])),
-      researchProduct: weightedScore([
-        { score: score("task4"), weight: 0.55 },
-        { score: section("task4", "sources"), weight: 0.15 },
-        { score: section("task4", "comparison"), weight: 0.15 },
-        { score: section("task4", "product_plan"), weight: 0.15 },
-      ]),
-      documentationReproducibility: clampScore(averageScore([
-        { score: section("task1", "documentation") },
-        { score: section("task2", "report") },
-        { score: section("task3", "log_report") },
-        { score: section("task4", "report_saved") },
-        { score: section("task5", "report") },
-        { score: section("task6", "report") },
-        { score: section("task7", "report") },
-        { score: section("task8", "report") },
-        { score: section("task9", "report") },
-      ])),
-    };
+    return this.analyticsService.analysisAbilityScores(tasks);
   }
 
   rootModelConfigBlock() {
@@ -6435,92 +5716,14 @@ class RedouLocalService {
     };
   }
 
-  callHermesTaskSkillPackager(project, payload) {
-    const cwd = project.path && fs.existsSync(project.path) ? project.path : this.projectRoot;
-    return callHermesTaskSkillPackager({
-      pythonPath: this.pythonPath,
-      cwd,
-      env: this.childEnv({
-        HERMES_HOME: this.projectHermesHome(project),
-        REDOU_APP_DATA_ROOT: this.appDataRoot(),
-        REDOU_PROJECT_ID: project.id,
-        REDOU_PROJECT_HERMES_HOME: this.projectHermesHome(project),
-        REDOU_PROJECT_SKILLS_DIR: this.projectSkillsDir(project),
-        REDOU_HERMES_PROFILE: project.hermesProfile,
-        PYTHONUTF8: "1",
-        PYTHONUNBUFFERED: "1",
-      }),
-      payload: {
-        ...payload,
-        workspacePath: cwd,
-        projectRoot: this.projectContextDir(project),
-        targetSkillsDir: this.projectSkillsDir(project),
-      },
-    });
-  }
+  callHermesTaskSkillPackager(project, payload) { return this.skillService.callHermesTaskSkillPackager(project, payload); }
 
   packageTaskSkill(projectId, taskId) {
-    const { project, task } = this.findProjectAndTask(projectId, taskId);
-    if (!project || !task) throw new Error("Project or task not found");
-
-    this.ensureProjectHermesProfile(project);
-    const packagedAt = isoNow();
-    const { messages, warnings } = this.loadMessagesFile(task.messagesPath, { projectId, taskId });
-    const packageResult = this.callHermesTaskSkillPackager(project, {
-      category: TASK_SKILL_CATEGORY,
-      packagedAt,
-      profileHome: this.projectHermesHome(project),
-      targetSkillsDir: this.projectSkillsDir(project),
-      project: {
-        id: project.id,
-        name: project.name,
-        path: project.path,
-        workspace_path: project.workspace_path,
-        hermesProfile: project.hermesProfile,
-      },
-      task: {
-        id: task.id,
-        title: task.title,
-        hermesSessionId: task.hermesSessionId,
-      },
-      projectRules: readText(project.rulesPath),
-      taskRules: readText(task.rulesPath),
-      taskContext: readText(task.contextPath),
-      messages,
-      warnings,
-    });
-
-    if (!packageResult?.success) {
-      throw new Error(`Hermes task skill packaging failed: ${compact(packageResult?.error || "unknown error", 600)}`);
-    }
-
-    const eventContent = `Packaged task as Hermes skill '${packageResult.skillName}' at ${packageResult.skillPath}`;
-    this.appendTaskMessage(project.id, task.id, "event", eventContent, {
-      eventType: "skill_packaged",
-      manager: "hermes_redou_task_skill_packager",
-      skillName: packageResult.skillName,
-      skillCategory: packageResult.skillCategory,
-      skillPath: packageResult.skillPath,
-      skillDir: packageResult.skillDir,
-      packagedAt,
-      packageAction: packageResult.packageAction,
-      relatedSkills: packageResult.relatedSkills || [],
-    });
-    const refreshed = this.findProjectAndTask(project.id, task.id);
-    this.log(`redou task packaged via hermes redou_task_skill_packager projectId=${project.id} taskId=${task.id} action=${packageResult.packageAction} skill=${packageResult.skillName} path=${redact(packageResult.skillPath)}`);
-    return {
-      ok: true,
-      project: refreshed.project || project,
-      task: refreshed.task || task,
-      skillName: packageResult.skillName,
-      skillCategory: packageResult.skillCategory,
-      skillDir: packageResult.skillDir,
-      skillPath: packageResult.skillPath,
-      references: packageResult.references || [],
-      packageAction: packageResult.packageAction,
-      relatedSkills: packageResult.relatedSkills || [],
-      warnings: packageResult.warnings || [],
-    };
+    return this.skillService.packageTaskSkill(
+      projectId,
+      taskId,
+      (project, payload) => this.callHermesTaskSkillPackager(project, payload),
+    );
   }
 
   setActiveChatTask(projectId, taskId) {
@@ -6821,138 +6024,31 @@ class RedouLocalService {
   }
 
   _getGlobalContextFile(kind) {
-    const paths = this.ensureGlobalFiles();
-    if (kind !== "rules" && kind !== "user") {
-      throw new Error("Unknown global context file");
-    }
-    const file = kind === "rules" ? paths.globalRulesPath : paths.userPath;
-    return { kind, path: file, content: readText(file) };
+    return this.contextBuilder.getGlobalFile(kind);
   }
 
   _updateGlobalContextFile(kind, content) {
-    const response = this.getGlobalContextFile(kind);
-    fs.writeFileSync(response.path, String(content || ""), "utf8");
-    return { ...response, content: String(content || ""), ok: true };
+    return this.contextBuilder.updateGlobalFile(kind, content);
   }
 
   _getProjectContextFile(projectId, kind) {
-    const project = this.readProject(projectId);
-    if (!project) throw new Error("Project not found");
-    const file = project.rulesPath;
-    return { kind: "rules", path: file, content: readText(file) };
+    return this.contextBuilder.getProjectFile(projectId, kind);
   }
 
   _updateProjectContextFile(projectId, kind, content) {
-    const response = this.getProjectContextFile(projectId, kind);
-    fs.writeFileSync(response.path, String(content || ""), "utf8");
-    return { ...response, content: String(content || ""), ok: true };
+    return this.contextBuilder.updateProjectFile(projectId, kind, content);
   }
 
   _getTaskContextFile(projectId, taskId, kind) {
-    const { task } = this.findProjectAndTask(projectId, taskId);
-    if (!task) throw new Error("Task not found");
-    const file = kind === "rules" ? task.rulesPath : task.contextPath;
-    if (kind !== "rules") {
-      this.ensureTaskContextShape(file, task);
-    }
-    return { kind, path: file, content: readText(file) };
+    return this.contextBuilder.getTaskFile(projectId, taskId, kind);
   }
 
   _updateTaskContextFile(projectId, taskId, kind, content) {
-    const { task } = this.findProjectAndTask(projectId, taskId);
-    if (!task) throw new Error("Task not found");
-    const response = this.getTaskContextFile(projectId, taskId, kind);
-    const nextContent = kind === "rules"
-      ? String(content || "")
-      : normalizeTaskContextText(content);
-    fs.writeFileSync(response.path, nextContent, "utf8");
-    if (kind !== "rules") {
-      const state = parseTaskStateFromStructuredText(splitTaskContext(nextContent).structuredState);
-      const statePath = task.statePath || taskStatePathFromContextPath(response.path);
-      fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
-    }
-    return { ...response, content: nextContent, ok: true };
+    return this.contextBuilder.updateTaskFile(projectId, taskId, kind, content);
   }
 
   _extractTaskContextRules(projectId, taskId, target = "task") {
-    const targetScope = target === "project" ? "project" : "task";
-    const { project, task } = this.findProjectAndTask(projectId, taskId);
-    if (!project || !task) throw new Error("Project or task not found");
-
-    const taskContext = normalizeTaskContextText(readText(task.contextPath));
-    const targetPath = targetScope === "project" ? project.rulesPath : task.rulesPath;
-    const targetLabel = targetScope === "project" ? "PROJECT_RULES.md" : "TASK_RULES.md";
-    let extractedRules = extractRulesFromTaskContextText(taskContext, targetScope);
-    let extractor = "structured-context";
-    const warnings = [];
-
-    if (!extractedRules.length) {
-      const modelResponse = this.runContextCompactModel(
-        {
-          projectId: project.id,
-          taskId: task.id,
-          hermesProfile: project.hermesProfile,
-          provider: task.model_provider,
-          model: task.model,
-          projectRules: readText(project.rulesPath),
-          taskRules: readText(task.rulesPath),
-          taskContext,
-          recentMessages: "",
-          attachments: "",
-          currentUserRequest: `Extract ${targetScope} rules from TASK_CONTEXT.md into ${targetLabel}.`,
-          compactReason: "manual-rule-extract",
-          budget: getContextBudget(this.rootModelContextTokens()),
-        },
-        project,
-      );
-      if (modelResponse?.ok && modelResponse.result && typeof modelResponse.result === "object") {
-        const modelRules = targetScope === "project"
-          ? modelResponse.result.project_rules_to_add
-          : modelResponse.result.task_rules_to_add;
-        extractedRules = uniqueList(modelRules || [], 50);
-        extractor = "model";
-      } else if (modelResponse?.error) {
-        warnings.push(modelResponse.error);
-      }
-    }
-
-    const rulesAdded = appendDedupeRules(targetPath, extractedRules);
-    if (!extractedRules.length) {
-      warnings.push("No candidate rules were found in TASK_CONTEXT.md.");
-    } else if (!rulesAdded.length) {
-      warnings.push(`All extracted rules were already present in ${targetLabel}.`);
-    }
-
-    const eventContent = rulesAdded.length
-      ? `Extracted ${rulesAdded.length} rule(s) from TASK_CONTEXT.md into ${targetLabel}.`
-      : `No new rules extracted from TASK_CONTEXT.md into ${targetLabel}.`;
-    this.appendTaskMessage(projectId, taskId, "event", eventContent, {
-      eventType: "rules_extracted",
-      target: targetScope,
-      targetPath,
-      sourcePath: task.contextPath,
-      extractor,
-      rulesAdded,
-      extractedRules,
-      warnings,
-    });
-    this.log(`redou task rules extracted projectId=${project.id} taskId=${task.id} target=${targetScope} added=${rulesAdded.length} extractor=${extractor} targetPath=${redact(targetPath)}`);
-
-    const refreshedProject = this.readProject(project.id) || project;
-    const refreshedTask =
-      refreshedProject.tasks.find((item) => item.id === task.id) || task;
-    return {
-      ok: true,
-      project: refreshedProject,
-      task: refreshedTask,
-      target: targetScope,
-      targetPath,
-      sourcePath: task.contextPath,
-      extractor,
-      extractedRules,
-      rulesAdded,
-      warnings,
-    };
+    return this.contextBuilder.extractTaskRules(projectId, taskId, target);
   }
 
   normalizeAttachmentRecord(record, uploadsPath) {
@@ -6981,7 +6077,7 @@ class RedouLocalService {
     if (!project || !task) throw new Error("Project or task not found");
     const attachments = [];
     const warnings = [];
-    mkdirp(task.uploadsPath);
+    this.db.repositories.artifacts.ensureDirectory(task.uploadsPath);
 
     for (const filePath of Array.isArray(filePaths) ? filePaths : []) {
       const source = String(filePath || "").trim();
@@ -6999,7 +6095,7 @@ class RedouLocalService {
         const id = crypto.randomUUID();
         const fileName = `${Date.now()}-${id.slice(0, 8)}-${safeAttachmentName(path.basename(source))}`;
         const storedPath = path.join(task.uploadsPath, fileName);
-        copyFileAtomic(source, storedPath);
+        this.db.repositories.artifacts.copyFileAtomic(source, storedPath);
         attachments.push({
           id,
           name: path.basename(source),
@@ -7027,187 +6123,47 @@ class RedouLocalService {
   }
 
   formatAttachmentSize(size) {
-    const value = Number(size || 0);
-    if (!Number.isFinite(value) || value <= 0) return "";
-    if (value < 1024) return `${value} B`;
-    if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
-    return `${(value / 1024 / 1024).toFixed(1)} MB`;
+    return this.contextBuilder.formatAttachmentSize(size);
   }
 
   formatAttachmentLine(attachment) {
-    if (!attachment || typeof attachment !== "object") return "";
-    const kind = isImageMime(attachment.mimeType) ? "image" : "file";
-    const details = [
-      attachment.mimeType ? `type=${attachment.mimeType}` : "",
-      this.formatAttachmentSize(attachment.size),
-    ].filter(Boolean).join(", ");
-    const locations = [
-      attachment.storedPath ? `storedPath=${attachment.storedPath}` : "",
-      attachment.originalPath ? `originalPath=${attachment.originalPath}` : "",
-    ].filter(Boolean).join("; ");
-    return [
-      `- [${kind}] ${attachment.name || "attachment"}${details ? ` (${details})` : ""}`,
-      locations ? `  ${locations}` : "",
-    ].filter(Boolean).join("\n");
+    return this.contextBuilder.formatAttachmentLine(attachment);
   }
 
   formatAttachmentsForContext(attachments = []) {
-    return (Array.isArray(attachments) ? attachments : [])
-      .map((attachment) => this.formatAttachmentLine(attachment))
-      .filter(Boolean)
-      .join("\n");
+    return this.contextBuilder.formatAttachmentsForContext(attachments);
   }
 
   attachmentOnlyRequestText(attachments = []) {
-    const count = Array.isArray(attachments) ? attachments.length : 0;
-    if (count <= 0) return "";
-    const imageCount = attachments.filter((attachment) => isImageMime(attachment.mimeType)).length;
-    const fileCount = count - imageCount;
-    const parts = [
-      imageCount ? `${imageCount} image${imageCount === 1 ? "" : "s"}` : "",
-      fileCount ? `${fileCount} file${fileCount === 1 ? "" : "s"}` : "",
-    ].filter(Boolean).join(" and ");
-    return `The user sent ${parts || `${count} attachment${count === 1 ? "" : "s"}`} without additional text. Use the attachment paths below as the current request.`;
+    return this.contextBuilder.attachmentOnlyRequestText(attachments);
   }
 
   renderRecentMessages(messages) {
-    return messages
-      .filter((message) => ["user", "assistant", "system", "tool"].includes(message.role))
-      .map((message) => {
-        const content = compactMultiline(message.content, RECENT_MESSAGE_CONTENT_LIMIT);
-        const attachments = this.formatAttachmentsForContext(message.attachments);
-        const parts = [`${message.role}: ${content}`.trim()];
-        if (attachments) parts.push(`Attachments:\n${attachments}`);
-        return parts.join("\n").trim();
-      })
-      .filter(Boolean)
-      .join("\n\n");
+    return this.contextBuilder.renderRecentMessages(messages);
   }
 
   applyContextDirective(projectId, taskId, userInput) {
-    const directive = classifyContextDirective(userInput);
-    if (!directive) return null;
-    const { project, task } = this.findProjectAndTask(projectId, taskId);
-    if (!project || !task) return null;
-    const targetPath =
-      directive.scope === "project"
-        ? project.rulesPath
-        : task.rulesPath;
-    const label =
-      directive.scope === "project"
-        ? "PROJECT_RULES.md"
-        : "TASK_RULES.md";
-    const added = appendDedupeRules(targetPath, [directive.content]);
-    const alreadyPresent = added.length === 0;
-    return {
-      ...directive,
-      targetPath,
-      label,
-      alreadyPresent,
-    };
+    return this.contextBuilder.applyContextDirective(projectId, taskId, userInput);
   }
 
   appendRawTurnLog(projectId, taskId, userInput, assistantText, options = {}) {
-    const { task } = this.findProjectAndTask(projectId, taskId);
-    if (!task) return null;
-    const user = String(userInput || "");
-    const assistant = String(assistantText || "");
-    if (!user.trim() && !assistant.trim()) return null;
-    const artifacts = options.artifacts && typeof options.artifacts === "object"
-      ? options.artifacts
-      : emptyTurnArtifacts();
-    seedAttachmentArtifacts(artifacts, options.attachments || []);
-    this.appendTaskEventJsonl(task, {
-      type: "turn_digest",
-      user,
-      assistant,
-      files: artifacts.files || [],
-      commands: artifacts.commands || [],
-      errors: artifacts.errors || [],
-      attachments: artifacts.attachments || [],
-      createdAt: isoNow(),
-    });
-    const events = this.readTaskEvents(task);
-    const state = compressTaskContext(events, options.budget || { maxChars: 12000 });
-    writeTaskStateFiles(task, state);
-    const content = readText(task.contextPath);
-    return { path: task.contextPath, statePath: task.statePath, eventsPath: task.eventsPath, length: content.length };
+    return this.contextBuilder.appendRawTurnLog(projectId, taskId, userInput, assistantText, options);
   }
 
   updateTaskContextAfterTurn(projectId, taskId, userInput, assistantText, options = {}) {
-    return this.appendRawTurnLog(projectId, taskId, userInput, assistantText, options);
+    return this.contextBuilder.updateTaskContextAfterTurn(projectId, taskId, userInput, assistantText, options);
   }
 
   section(title, content) {
-    const body = String(content || "").trim() || "(empty)";
-    return `## ${title}\n\n${body}`;
+    return this.contextBuilder.section(title, content);
   }
 
   redouSystemContext() {
-    const redouIdentity = [
-      "You are Redou Agent inside Redou Desktop Task Chat.",
-      "Use Redou Agent as the visible product identity; Hermes is only the Local Runtime layer.",
-      "Answer and act within the current Project and Task unless the user explicitly asks to cross that boundary.",
-    ].join("\n");
-    const isolation = [
-      "The current Project is the only project boundary.",
-      "The current Task is the only conversation boundary.",
-      "Do not reference rules, task context, chat history, sessions, or memories from any other Project or Task.",
-      "If cross-Project or cross-Task reuse is needed, ask the user first.",
-      "Renderer code calls IPC handlers; only the Electron Main Process / Local Service layer starts Hermes CLI child processes.",
-      "Hermes terminal output is never the main UI surface; parse runtime output into structured AgentEvent objects.",
-      "The Hermes memory and session_search toolsets are disabled in Redou Task Chat.",
-      "Hermes skill reading is allowed through skills_list and skill_view; Hermes skill management is disabled.",
-      "Do not create, patch, edit, delete, or reorganize skills from the agent turn. User-initiated task packaging is handled by Redou.",
-      "High-risk file operations or shell commands require explicit user confirmation before execution.",
-    ].join("\n");
-    return [
-      "# Redou System Instructions",
-      "",
-      this.section("Redou Identity", redouIdentity),
-      "",
-      this.section("Isolation Rules", isolation),
-    ].join("\n");
+    return this.contextBuilder.redouSystemContext();
   }
 
   outputContract(taskType) {
-    const type = String(taskType || "general").toLowerCase();
-    const contracts = {
-      coding: [
-        "You must report:",
-        "1. files inspected",
-        "2. files changed",
-        "3. commands run",
-        "4. tests or checks performed",
-        "5. result",
-        "6. remaining risks",
-      ],
-      research: [
-        "You must report:",
-        "1. evidence used",
-        "2. reasoning",
-        "3. proposed revision or conclusion",
-        "4. uncertainty",
-        "5. next suggested action",
-      ],
-      experiment: [
-        "You must report:",
-        "1. root cause or finding",
-        "2. commands run",
-        "3. config or code changes",
-        "4. output paths",
-        "5. metrics or logs",
-        "6. unresolved issues",
-      ],
-      general: [
-        "You must report:",
-        "1. what was done",
-        "2. key result",
-        "3. remaining issues",
-        "4. next action",
-      ],
-    };
-    return (contracts[type] || contracts.general).join("\n");
+    return this.contextBuilder.outputContract(taskType);
   }
 
   inferTaskType(input = {}) {
@@ -7222,99 +6178,15 @@ class RedouLocalService {
   }
 
   rootModelContextTokens() {
-    const block = this.rootModelConfigBlock();
-    for (const line of block.split(/\r?\n/)) {
-      const match = line.match(/^\s+(context_length|context_window|model_context_length):\s*(\d+)\s*$/);
-      if (match) return Number(match[2]);
-    }
-    return DEFAULT_MODEL_CONTEXT_TOKENS;
+    return this.contextBuilder.rootModelContextTokens();
   }
 
   buildRedouContextPack(parts) {
-    return [
-      "# Redou Context Preview",
-      "",
-      "## 0. Priority",
-      "",
-      "Follow this priority when context conflicts:",
-      "",
-      "1. Current User Request",
-      "2. Task Rules",
-      "3. Project Rules",
-      "4. Task Context",
-      "5. Recent Conversation",
-      "6. Redou Default Behavior",
-      "",
-      "Do not use unrelated projects, tasks, sessions, or memories.",
-      "",
-      "---",
-      "",
-      "## 1. Project Rules",
-      "",
-      String(parts.projectRules || "").trim() || "(empty)",
-      "",
-      "---",
-      "",
-      "## 2. Task Rules",
-      "",
-      String(parts.taskRules || "").trim() || "(empty)",
-      "",
-      "---",
-      "",
-      "## 3. Task Context",
-      "",
-      String(parts.structuredState || "").trim() || "(empty)",
-      "",
-      "---",
-      "",
-      "## 4. Recent Conversation",
-      "",
-      String(parts.recentConversation || "").trim() || "(empty)",
-      "",
-      "---",
-      "",
-      "## 5. Attachments",
-      "",
-      String(parts.attachments || "").trim() || "(empty)",
-      "",
-      "---",
-      "",
-      "## 6. Current User Request",
-      "",
-      String(parts.currentUserRequest || "").trim() || "(empty)",
-      "",
-      "---",
-      "",
-      "## 7. Output Contract",
-      "",
-      String(parts.outputContract || "").trim() || this.outputContract("general"),
-      "",
-    ].join("\n");
+    return this.contextBuilder.buildRedouContextPack(parts);
   }
 
   developerRulesContext(project, task, currentRequestText, redactionStats, taskType = "general") {
-    const safeProjectRules = SecretRedactor.redactText(
-      scrubCurrentRequestEcho(readText(project.rulesPath), currentRequestText),
-    );
-    const safeTaskRules = SecretRedactor.redactText(
-      scrubCurrentRequestEcho(readText(task.rulesPath), currentRequestText),
-    );
-    redactionStats.count += safeProjectRules.count + safeTaskRules.count;
-    return [
-      "# Redou Project and Task Rules",
-      "",
-      "## Project Rules",
-      "",
-      safeProjectRules.text.trim() || "(empty)",
-      "",
-      "## Task Rules",
-      "",
-      safeTaskRules.text.trim() || "(empty)",
-      "",
-      "## Output Contract",
-      "",
-      this.outputContract(taskType),
-    ].join("\n");
+    return this.contextBuilder.developerRulesContext(project, task, currentRequestText, redactionStats, taskType);
   }
 
   buildContextMessagesCandidate({
@@ -7330,120 +6202,19 @@ class RedouLocalService {
     attachmentMaxChars = 32000,
     structuredStateMaxChars = 120000,
   }) {
-    const redactionStats = { count: 0 };
-    const currentSafe = SecretRedactor.redactText(effectiveUserInput);
-    redactionStats.count += currentSafe.count;
-    const currentRequestText = currentSafe.text.trim();
-    const state = this.ensureTaskStateShape(task);
-    const structuredState = renderTaskStateStructuredMarkdown(state);
-    const excludedQueuedMessageIds = [];
-    const excludedGuideControlEventIds = [];
-
-    for (const message of allMessages || []) {
-      const envelope = messageInputEnvelope(message);
-      if (envelope && envelope.id !== currentEnvelope?.id && ["pending", "consumed"].includes(envelope.status)) {
-        excludedQueuedMessageIds.push(envelope.id);
-      }
-      if (isControlEventMessage(message)) {
-        const { metadata } = mergeMetadata(message);
-        excludedGuideControlEventIds.push(envelope?.id || metadata.guideId || metadata.controlEventId || "");
-      }
-    }
-
-    const historyMessages = [];
-
-    const taskStateRaw = compactMultiline(
-      scrubCurrentRequestEcho(structuredState, currentRequestText),
-      structuredStateMaxChars,
-    );
-    const taskState = SecretRedactor.redactText(taskStateRaw);
-    redactionStats.count += taskState.count;
-
-    const attachmentSafe = SecretRedactor.redactText(
-      compactMultiline(currentAttachmentText, attachmentMaxChars),
-    );
-    redactionStats.count += attachmentSafe.count;
-    const finalUserParts = [
-      "# Current User Request",
-      "",
-      currentRequestText || "(empty)",
-    ];
-    if (attachmentSafe.text.trim()) {
-      finalUserParts.push("", "## Attachments", "", attachmentSafe.text.trim());
-    }
-
-    const contextMessages = [
-      {
-        role: "system",
-        content: this.redouSystemContext(),
-        metadata: { redouContextKind: "system" },
-      },
-      {
-        role: "developer",
-        content: this.developerRulesContext(project, task, currentRequestText, redactionStats, taskType),
-        metadata: { redouContextKind: "rules" },
-      },
-      {
-        role: "developer",
-        content: [
-          "# Task State Snapshot",
-          "",
-          taskState.text.trim() || "(empty)",
-        ].join("\n"),
-        metadata: { redouContextKind: "task_state" },
-      },
-      ...historyMessages,
-      {
-        role: "user",
-        content: finalUserParts.join("\n"),
-        metadata: {
-          redouContextKind: "current_request",
-          inputEnvelope: currentEnvelope,
-        },
-      },
-    ];
-    const validation = ContextValidator.validate(contextMessages, {
-      currentRequestText,
-      currentRequestId: currentEnvelope?.id || "",
+    return this.contextBuilder.buildContextMessagesCandidate({
+      project,
+      task,
+      allMessages,
+      currentAttachmentText,
+      effectiveUserInput,
+      currentEnvelope,
+      taskType,
       allowEmptyCurrentRequest,
+      recentMessageLimit,
+      attachmentMaxChars,
+      structuredStateMaxChars,
     });
-    const promptText = promptTextFromMessages(contextMessages);
-    const includedTurnIds = uniqueList(
-      contextMessages
-        .map((message) => message.metadata?.inputEnvelope?.turnId || message.metadata?.turnId)
-        .filter(Boolean),
-      40,
-    );
-    const debugReport = {
-      includedMessageCount: contextMessages.length,
-      tokenEstimate: estimateContextTokens(promptText),
-      currentRequestId: currentEnvelope?.id || "",
-      includedTurnIds,
-      excludedQueuedMessageIds: uniqueList(excludedQueuedMessageIds.filter(Boolean), 40),
-      excludedGuideControlEventIds: uniqueList(excludedGuideControlEventIds.filter(Boolean), 40),
-      redactedSecretCount: redactionStats.count,
-      validationResult: validation.ok ? "ok" : "failed",
-      validationErrors: validation.errors,
-    };
-    const preview = this.buildRedouContextPack({
-      projectRules: SecretRedactor.redactText(scrubCurrentRequestEcho(readText(project.rulesPath), currentRequestText)).text,
-      taskRules: SecretRedactor.redactText(scrubCurrentRequestEcho(readText(task.rulesPath), currentRequestText)).text,
-      structuredState: taskState.text,
-      recentConversation: historyMessages.map((message) => `${message.role}: ${message.content}`).join("\n\n"),
-      attachments: attachmentSafe.text,
-      currentUserRequest: currentRequestText,
-      outputContract: this.outputContract(taskType),
-    });
-    return {
-      contextMessages,
-      systemContext: contextMessages[0].content,
-      userContext: preview,
-      contextLength: promptText.length,
-      contextTokens: estimateContextTokens(promptText),
-      currentRequestText,
-      debugReport,
-      validation,
-    };
   }
 
   buildContextCandidate({
@@ -7459,7 +6230,7 @@ class RedouLocalService {
     attachmentMaxChars = 32000,
     structuredStateMaxChars = 120000,
   }) {
-    return this.buildContextMessagesCandidate({
+    return this.contextBuilder.buildContextCandidate({
       project,
       task,
       allMessages,
@@ -7487,24 +6258,7 @@ class RedouLocalService {
   }
 
   _compactTaskContext({ project, task, budget, compactReason }) {
-    const beforeState = readTaskStateFile(task.statePath);
-    const beforeTokens = estimateContextTokens(renderTaskStateStructuredMarkdown(beforeState));
-    const state = applyTaskStateBudget(beforeState, {
-      ...budget,
-      maxChars: Math.max(2000, Math.floor(Number(budget?.inputBudget || 0) * 2) || 12000),
-    });
-    writeTaskStateFiles(task, state);
-    const compressedTaskContext = readText(task.contextPath);
-    const afterTokens = estimateContextTokens(compressedTaskContext);
-    return {
-      triggered: true,
-      succeeded: true,
-      taskContextBeforeTokens: beforeTokens,
-      taskContextAfterTokens: afterTokens,
-      reason: compactReason,
-      projectRulesAdded: [],
-      taskRulesAdded: [],
-    };
+    return this.contextBuilder.compactTaskContext({ project, task, budget, compactReason });
   }
 
   _runContextCompactModel(payload, project) {
@@ -7550,193 +6304,11 @@ class RedouLocalService {
   }
 
   _buildTaskContext(input = {}) {
-    const projectId = String(input.projectId || "").trim();
-    const taskId = String(input.taskId || "").trim();
-    const userInput = String(input.userInput || "");
-    const preview = input.preview === true || input.allowEmptyCurrentRequest === true;
-    const currentEnvelope = input.currentEnvelope && typeof input.currentEnvelope === "object"
-      ? createUserInputEnvelope(input.currentEnvelope)
-      : createUserInputEnvelope({
-          text: userInput,
-          deliveryMode: normalizeDeliveryMode(input.deliveryMode, "new_turn"),
-          status: "consumed",
-        });
-    const rawAttachments = Array.isArray(input.attachments) ? input.attachments : [];
-    const maxRecentMessages = Number.isFinite(Number(input.maxRecentMessages))
-      ? Number(input.maxRecentMessages)
-      : RECENT_MESSAGE_LIMIT;
-    const { project, task } = this.findProjectAndTask(projectId, taskId);
-    if (!project || !task) throw new Error("Project or task not found");
-    const currentAttachments = rawAttachments
-      .map((item) => this.normalizeAttachmentRecord(item, task.uploadsPath))
-      .filter(Boolean);
-    const currentAttachmentPaths = currentAttachments
-      .map((attachment) => attachment.storedPath)
-      .filter(Boolean);
-    const currentAttachmentText = this.formatAttachmentsForContext(currentAttachments);
-    const effectiveUserInput = userInput.trim() || this.attachmentOnlyRequestText(currentAttachments);
-    const { messages } = this.loadMessagesFile(task.messagesPath, { projectId, taskId });
-    const recentMessages = messages.slice(-Math.max(0, maxRecentMessages));
-    this.ensureTaskStateShape(task);
-    const includedFiles = [
-      project.rulesPath,
-      task.rulesPath,
-      task.statePath,
-      ...currentAttachmentPaths,
-    ];
-    const taskType = this.inferTaskType({ ...input, userInput: effectiveUserInput, capability: task.capability });
-    const modelContextTokens = Number(input.modelContextTokens || 0) || this.rootModelContextTokens();
-    const budget = getContextBudget(modelContextTokens);
-    const provider = String(input.provider || "").trim();
-    const model = String(input.model || "").trim();
-    let rendered = this.buildContextCandidate({
-      project,
-      task,
-      allMessages: messages,
-      currentAttachmentText,
-      effectiveUserInput,
-      currentEnvelope: {
-        ...currentEnvelope,
-        text: effectiveUserInput,
-      },
-      taskType,
-      allowEmptyCurrentRequest: preview,
-      recentMessageLimit: maxRecentMessages,
-    });
-    const beforeCompactTokens = rendered.contextTokens;
-    const compactDecision = shouldCompactContext(beforeCompactTokens, budget);
-    let contextCompression = {
-      triggered: false,
-      succeeded: false,
-      beforeTokens: beforeCompactTokens,
-      afterTokens: beforeCompactTokens,
-      modelContextTokens: budget.modelContextTokens,
-      inputBudget: budget.inputBudget,
-      reservedOutput: budget.reservedOutput,
-      safetyMargin: budget.safetyMargin,
-      thresholdRatio: COMPACT_FORCE_RATIO,
-      emergency: compactDecision.emergency,
-      reason: "",
-      fallbackTrimmed: false,
-      projectRulesAdded: [],
-      taskRulesAdded: [],
-      compressedSections: [],
-    };
-    if (compactDecision.shouldCompact) {
-      contextCompression = {
-        ...contextCompression,
-        ...this.compactTaskContext({
-          project,
-          task,
-          recentMessages: [],
-          currentAttachments,
-          effectiveUserInput,
-          budget,
-          compactReason: compactDecision.emergency ? "emergency" : "force",
-          provider,
-          model,
-        }),
-      };
-      rendered = this.buildContextCandidate({
-        project,
-        task,
-        allMessages: messages,
-        currentAttachmentText,
-        effectiveUserInput,
-        currentEnvelope: {
-          ...currentEnvelope,
-          text: effectiveUserInput,
-        },
-        taskType,
-        allowEmptyCurrentRequest: preview,
-        recentMessageLimit: maxRecentMessages,
-      });
-      contextCompression.afterTokens = rendered.contextTokens;
-    }
-    if (rendered.contextTokens > budget.inputBudget) {
-      rendered = this.buildContextCandidate({
-        project,
-        task,
-        allMessages: messages,
-        currentAttachmentText,
-        effectiveUserInput,
-        currentEnvelope: {
-          ...currentEnvelope,
-          text: effectiveUserInput,
-        },
-        taskType,
-        allowEmptyCurrentRequest: preview,
-        recentMessageLimit: Math.min(5, recentMessages.length),
-        attachmentMaxChars: 8000,
-        structuredStateMaxChars: 16000,
-      });
-      contextCompression.fallbackTrimmed = true;
-    }
-    if (rendered.contextTokens > budget.inputBudget) {
-      rendered = this.buildContextCandidate({
-        project,
-        task,
-        allMessages: messages,
-        currentAttachmentText,
-        effectiveUserInput,
-        currentEnvelope: {
-          ...currentEnvelope,
-          text: effectiveUserInput,
-        },
-        taskType,
-        allowEmptyCurrentRequest: preview,
-        recentMessageLimit: Math.min(2, recentMessages.length),
-        attachmentMaxChars: 4000,
-        structuredStateMaxChars: 8000,
-      });
-      contextCompression.fallbackTrimmed = true;
-    }
-    const { systemContext, userContext, contextMessages, contextLength, contextTokens } = rendered;
-    const metadata = {
-      projectId,
-      taskId,
-      hermesProfile: project.hermesProfile,
-      includedFiles,
-      recentMessageCount: recentMessages.length,
-      promptRecentMessageCount: 0,
-      attachmentCount: currentAttachments.length,
-      imageAttachmentCount: currentAttachments.filter((attachment) => isImageMime(attachment.mimeType)).length,
-      contextLength,
-      contextChars: contextLength,
-      contextTokens,
-      modelContextTokens: budget.modelContextTokens,
-      contextMaxTokens: budget.inputBudget,
-      reservedOutputTokens: budget.reservedOutput,
-      safetyMarginTokens: budget.safetyMargin,
-      contextPercent: contextPercent(contextTokens, budget.inputBudget),
-      contextCompressed: contextCompression.triggered,
-      contextCompression,
-      taskType,
-      projectName: project.name,
-      taskTitle: task.title,
-      projectPath: project.path,
-      projectRulesPath: project.rulesPath,
-      taskRulesPath: task.rulesPath,
-      taskContextPath: task.contextPath,
-      taskStatePath: task.statePath,
-      currentRequestId: rendered.debugReport.currentRequestId,
-      currentTurnId: currentEnvelope.turnId,
-      promptMessageCount: rendered.debugReport.includedMessageCount,
-      contextDebugReport: rendered.debugReport,
-      contextValidation: rendered.validation,
-      preview,
-    };
-    const debugLine = `redou context debug projectId=${projectId} taskId=${taskId} currentRequestId=${metadata.currentRequestId} messages=${rendered.debugReport.includedMessageCount} tokens=${rendered.debugReport.tokenEstimate} includedTurnIds=${rendered.debugReport.includedTurnIds.join("|")} excludedQueued=${rendered.debugReport.excludedQueuedMessageIds.join("|")} excludedGuides=${rendered.debugReport.excludedGuideControlEventIds.join("|")} redactedSecrets=${rendered.debugReport.redactedSecretCount} validation=${rendered.debugReport.validationResult}`;
-    if (process.env.REDOU_CONTEXT_DEBUG === "1" || process.env.NODE_ENV !== "production") {
-      this.log(debugLine);
-    }
-    this.log(`redou context built projectId=${projectId} taskId=${taskId} projectPath=${redact(project.path)} hermesProfile=${project.hermesProfile} messagesPath=${redact(task.messagesPath)} includedFiles=${includedFiles.map(redact).join("|")} recentMessageCount=${recentMessages.length} contextLength=${contextLength} contextTokens=${contextTokens} contextPercent=${metadata.contextPercent} compressed=${metadata.contextCompressed}`);
-    return { systemContext, userContext, contextMessages, metadata };
+    return this.contextBuilder._buildTaskContext(input);
   }
 
   emitToRenderer(webContents, payload) {
-    if (!webContents || webContents.isDestroyed()) return;
-    webContents.send("redou:agent-event", payload);
+    this.eventBus.sendToRenderer(webContents, payload);
   }
 
   persistEvent(projectId, taskId, event) {
@@ -7746,12 +6318,7 @@ class RedouLocalService {
       event,
       eventType: event.type,
     });
-    this.eventBus.emit(REDOU_EVENTS.LOG_APPENDED, { projectId, taskId, event });
-    if (event.type === "done") {
-      this.eventBus.emit(REDOU_EVENTS.TASK_COMPLETED, { projectId, taskId, event });
-    } else {
-      this.eventBus.emit(REDOU_EVENTS.TASK_UPDATED, { projectId, taskId, event });
-    }
+    this.eventBus.publishPersistedTaskEvent({ projectId, taskId, event });
   }
 
   enqueueTaskMessage(webContents, input, options = {}) {
@@ -7784,10 +6351,7 @@ class RedouLocalService {
   }
 
   writeRunControl(run, command) {
-    if (!run?.child?.stdin || run.child.stdin.destroyed || run.child.killed) {
-      throw new Error("Active Hermes runtime is not accepting guidance.");
-    }
-    run.child.stdin.write(`${JSON.stringify(command)}\n`, "utf8");
+    this.processManager.writeRunControl(run, command);
   }
 
   startNextQueuedMessage(projectId, taskId) {
@@ -7957,60 +6521,9 @@ class RedouLocalService {
     }
 
     const adapterPath = path.join(__dirname, "..", "..", "hermes_adapter.py");
-    const child = this.processManager.spawn(this.pythonPath, [adapterPath], {
-      cwd: project.path || this.projectRoot,
-      env: this.childEnv({
-        HERMES_HOME: this.projectHermesHome(project),
-        REDOU_APP_DATA_ROOT: this.appDataRoot(),
-        REDOU_PROJECT_ID: projectId,
-        REDOU_TASK_ID: taskId,
-        REDOU_PROJECT_HERMES_HOME: this.projectHermesHome(project),
-        REDOU_PROJECT_SKILLS_DIR: this.projectSkillsDir(project),
-        REDOU_HERMES_PROFILE: project.hermesProfile,
-        HERMES_INTERACTIVE: "1",
-        HERMES_EXEC_ASK: "",
-        REDOU_RUN_ID: runId,
-        REDOU_TURN_ID: currentEnvelope.turnId,
-        PYTHONUTF8: "1",
-        PYTHONUNBUFFERED: "1",
-      }),
-      shell: false,
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-
     const runStartedAtMs = Date.now();
     const runStartedAt = new Date(runStartedAtMs).toISOString();
-    const runRecord = {
-      child,
-      projectId,
-      taskId,
-      webContents,
-      startedAt: runStartedAt,
-      startedAtMs: runStartedAtMs,
-      lastActiveAtMs: runStartedAtMs,
-      hermesSessionId: sessionId,
-      model: effectiveModel,
-      provider: effectiveProvider,
-      contextTokens: toInt(runMetadata.contextTokens),
-      inputTokens: 0,
-      outputTokens: 0,
-      outputEstimateTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      reasoningTokens: 0,
-      apiCalls: 0,
-      estimatedCostUsd: 0,
-      assistantDeltaText: "",
-      stopRequested: false,
-      currentRequestEnvelope: currentEnvelope,
-      turnArtifacts: emptyTurnArtifacts(),
-    };
-    seedAttachmentArtifacts(runRecord.turnArtifacts, attachments);
-    this.activeRuns.set(runId, runRecord);
-    this.eventBus.emit(REDOU_EVENTS.TASK_STARTED, { projectId, taskId, runId });
-    let stdoutBuffer = "";
-    let stderrBuffer = "";
+    let runRecord = null;
     let completed = false;
     let finalAssistantText = "";
     const activeCommands = new Map();
@@ -8166,83 +6679,103 @@ class RedouLocalService {
       this.persistEvent(projectId, taskId, event);
     };
 
-    const flushStdout = () => {
-      const lines = stdoutBuffer.split(/\r?\n/);
-      stdoutBuffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          handleEvent(JSON.parse(line));
-        } catch {
-          handleEvent({ type: "raw_log", content: line });
-        }
-      }
-    };
-
-    const flushStderr = () => {
-      const lines = stderrBuffer.split(/\r?\n/);
-      stderrBuffer = lines.pop() || "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
+    this.processManager.startJsonLineProcess({
+      command: this.pythonPath,
+      args: [adapterPath],
+      options: {
+        cwd: project.path || this.projectRoot,
+        env: this.childEnv({
+          HERMES_HOME: this.projectHermesHome(project),
+          REDOU_APP_DATA_ROOT: this.appDataRoot(),
+          REDOU_PROJECT_ID: projectId,
+          REDOU_TASK_ID: taskId,
+          REDOU_PROJECT_HERMES_HOME: this.projectHermesHome(project),
+          REDOU_PROJECT_SKILLS_DIR: this.projectSkillsDir(project),
+          REDOU_HERMES_PROFILE: project.hermesProfile,
+          HERMES_INTERACTIVE: "1",
+          HERMES_EXEC_ASK: "",
+          REDOU_RUN_ID: runId,
+          REDOU_TURN_ID: currentEnvelope.turnId,
+          PYTHONUTF8: "1",
+          PYTHONUNBUFFERED: "1",
+        }),
+        shell: false,
+        windowsHide: true,
+        stdio: ["pipe", "pipe", "pipe"],
+      },
+      input: {
+        projectId,
+        taskId,
+        hermesProfile: project.hermesProfile,
+        hermesSessionId: sessionId,
+        systemContext: built.systemContext,
+        userContext: built.userContext,
+        contextMessages: built.contextMessages,
+        attachments,
+        metadata: runMetadata,
+        riskConfirmed,
+        model: effectiveModel,
+        provider: effectiveProvider,
+        workspacePath: project.path || this.projectRoot,
+        runMode,
+        maxIterations: Number(input.maxIterations || 40),
+      },
+      onStarted: (child) => {
+        runRecord = {
+          child,
+          projectId,
+          taskId,
+          webContents,
+          startedAt: runStartedAt,
+          startedAtMs: runStartedAtMs,
+          lastActiveAtMs: runStartedAtMs,
+          hermesSessionId: sessionId,
+          model: effectiveModel,
+          provider: effectiveProvider,
+          contextTokens: toInt(runMetadata.contextTokens),
+          inputTokens: 0,
+          outputTokens: 0,
+          outputEstimateTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          reasoningTokens: 0,
+          apiCalls: 0,
+          estimatedCostUsd: 0,
+          assistantDeltaText: "",
+          stopRequested: false,
+          currentRequestEnvelope: currentEnvelope,
+          turnArtifacts: emptyTurnArtifacts(),
+        };
+        seedAttachmentArtifacts(runRecord.turnArtifacts, attachments);
+        this.processManager.registerRun(runId, runRecord);
+        this.eventBus.publishTaskStarted({ projectId, taskId, runId });
+      },
+      onStdoutEvent: (event) => {
+        handleEvent(event);
+      },
+      onStderrLine: (line) => {
         handleEvent({ type: "raw_log", content: redact(line), metadata: { stream: "stderr", folded: true } });
-      }
-    };
-
-    child.stdout.on("data", (chunk) => {
-      stdoutBuffer += chunk.toString();
-      flushStdout();
-    });
-    child.stderr.on("data", (chunk) => {
-      stderrBuffer += chunk.toString();
-      flushStderr();
-    });
-    child.on("error", (error) => {
-      handleEvent({ type: "error", message: error.message });
-    });
-    child.on("exit", (code) => {
-      const run = this.activeRuns.get(runId);
-      const stopRequested = run?.stopRequested === true || runRecord.stopRequested === true || this.shuttingDown;
-      if (stdoutBuffer.trim()) {
-        try {
-          handleEvent(JSON.parse(stdoutBuffer));
-        } catch {
-          handleEvent({ type: "raw_log", content: stdoutBuffer.trim() });
+      },
+      onError: (error) => {
+        handleEvent({ type: "error", message: error.message });
+      },
+      onExit: ({ code }) => {
+        const run = this.activeRuns.get(runId);
+        const stopRequested = run?.stopRequested === true || runRecord?.stopRequested === true || this.shuttingDown;
+        if (!completed) {
+          if (code === 0 || stopRequested) {
+            handleEvent({ type: "done", metadata: { exitCode: code } });
+          } else {
+            handleEvent({ type: "error", message: `Hermes runtime exited with code ${code}` });
+            handleEvent({ type: "done", metadata: { exitCode: code } });
+          }
         }
-      }
-      if (stderrBuffer.trim()) {
-        handleEvent({ type: "raw_log", content: redact(stderrBuffer.trim()), metadata: { stream: "stderr", folded: true } });
-      }
-      if (!completed) {
-        if (code === 0 || stopRequested) {
-          handleEvent({ type: "done", metadata: { exitCode: code } });
-        } else {
-          handleEvent({ type: "error", message: `Hermes runtime exited with code ${code}` });
-          handleEvent({ type: "done", metadata: { exitCode: code } });
+        this.processManager.deleteRun(runId);
+        if (!this.shuttingDown) {
+          setImmediate(() => this.startNextQueuedMessage(projectId, taskId));
         }
-      }
-      this.activeRuns.delete(runId);
-      if (!this.shuttingDown) {
-        setImmediate(() => this.startNextQueuedMessage(projectId, taskId));
-      }
+      },
     });
-
-    child.stdin.write(JSON.stringify({
-      projectId,
-      taskId,
-      hermesProfile: project.hermesProfile,
-      hermesSessionId: sessionId,
-      systemContext: built.systemContext,
-      userContext: built.userContext,
-      contextMessages: built.contextMessages,
-      attachments,
-      metadata: runMetadata,
-      riskConfirmed,
-      model: effectiveModel,
-      provider: effectiveProvider,
-      workspacePath: project.path || this.projectRoot,
-      runMode,
-      maxIterations: Number(input.maxIterations || 40),
-    }) + "\n");
 
     return { ok: true, runId, context: runMetadata };
   }
@@ -8283,7 +6816,7 @@ class RedouLocalService {
           stored.stopRequested = true;
           stored.replacedByEnvelopeId = envelope.id;
         }
-        terminateProcessTree(activeRun.child, { force: true });
+        this.processManager.terminate(activeRun.child, { force: true });
       } catch {
         // Best-effort replacement: the old run exit handler also observes stopRequested.
       }

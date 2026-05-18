@@ -26,8 +26,12 @@ function runtimeRoot() {
   return path.join(app.getPath("userData"), "runtime");
 }
 
+function desktopAssetPath(...segments) {
+  return path.join(__dirname, "..", "assets", ...segments);
+}
+
 function windowIconPath() {
-  return path.join(projectRoot(), "logo.png");
+  return desktopAssetPath("icons", "redou-agent.ico");
 }
 
 function hermesHome() {
@@ -71,7 +75,9 @@ function stopHermesActivityForShutdown(reason = "Redou Agent is closing; stoppin
   if (shutdownComplete || !localService) return;
   shutdownComplete = true;
   try {
-    const result = localService.stopAllHermesActivity(reason);
+    const result = typeof localService.dispose === "function"
+      ? localService.dispose(reason)
+      : localService.stopAllHermesActivity(reason);
     const stoppedCount =
       (result.stoppedRuns?.length || 0) + (result.stoppedAnalysisRuns?.length || 0);
     if (stoppedCount > 0 || result.queuedMessages > 0 || result.queuedAnalysisRuns > 0) {
