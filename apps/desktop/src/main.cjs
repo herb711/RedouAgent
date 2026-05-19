@@ -13,6 +13,7 @@ let statusLines = [];
 let logFile = null;
 let rendererLoaded = false;
 let shutdownComplete = false;
+let activePythonHermesRoot = null;
 
 function projectRoot() {
   if (app.isPackaged) {
@@ -23,6 +24,10 @@ function projectRoot() {
 
 function hermesRoot() {
   return path.join(projectRoot(), "vendor", "hermes");
+}
+
+function pythonHermesRoot() {
+  return activePythonHermesRoot || hermesRoot();
 }
 
 function runtimeRoot() {
@@ -53,10 +58,10 @@ function withRuntimePath(env = process.env) {
     PYTHONUNBUFFERED: "1",
     HERMES_HOME: hermesHome(),
     REDOU_APP_DATA_ROOT: localService ? localService.appDataRoot() : path.join(app.getPath("userData"), "appData"),
-    HERMES_PYTHON_SRC_ROOT: hermesRoot(),
+    HERMES_PYTHON_SRC_ROOT: pythonHermesRoot(),
     REDOU_PROJECT_ROOT: projectRoot(),
-    HERMES_VENDOR_ROOT: hermesRoot(),
-    PYTHONPATH: [hermesRoot(), env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
+    HERMES_VENDOR_ROOT: pythonHermesRoot(),
+    PYTHONPATH: [pythonHermesRoot(), env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
     HERMES_QUIET: "1",
   };
 }
@@ -66,7 +71,7 @@ function getLocalService() {
     localService = new RedouLocalService({
       app,
       projectRoot: projectRoot(),
-      hermesRoot: hermesRoot(),
+      hermesRoot: pythonHermesRoot(),
       hermesHome: hermesHome(),
       log: pushStatus,
     });
@@ -458,6 +463,119 @@ function resolveNpm() {
   throw new Error("npm was not found. Install Node.js LTS.");
 }
 
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function safeRemoveRuntimeChild(targetPath) {
+  const runtimePath = path.resolve(runtimeRoot());
+  const resolvedTarget = path.resolve(targetPath);
+  if (resolvedTarget === runtimePath || !resolvedTarget.startsWith(`${runtimePath}${path.sep}`)) {
+    throw new Error(`Refusing to remove path outside runtime root: ${resolvedTarget}`);
+  }
+  fs.rmSync(resolvedTarget, { recursive: true, force: true });
+}
+
+function shouldCopyHermesRuntimePath(sourcePath) {
+  const name = path.basename(sourcePath).toLowerCase();
+  if (
+    name === ".git"
+    || name === "__pycache__"
+    || name === "node_modules"
+    || name === ".pytest_cache"
+    || name === ".mypy_cache"
+    || name === ".ruff_cache"
+    || name.endsWith(".egg-info")
+    || name.endsWith(".pyc")
+    || name.endsWith(".pyo")
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function preparePackagedHermesInstallSource() {
+  if (!app.isPackaged) {
+    activePythonHermesRoot = hermesRoot();
+    return activePythonHermesRoot;
+  }
+
+  const sourceRoot = hermesRoot();
+  const targetRoot = path.join(runtimeRoot(), "hermes-install-source");
+  const manifestPath = path.join(targetRoot, ".redou-source.json");
+  const appVersion = typeof app.getVersion === "function" ? app.getVersion() : "unknown";
+  const pyprojectPath = path.join(sourceRoot, "pyproject.toml");
+  const pyprojectStat = fs.statSync(pyprojectPath);
+  const expectedManifest = {
+    appVersion,
+    sourceRoot,
+    pyprojectMtimeMs: Math.trunc(pyprojectStat.mtimeMs),
+  };
+  const currentManifest = readJsonFile(manifestPath);
+  const hasUsableCopy =
+    currentManifest
+    && currentManifest.appVersion === expectedManifest.appVersion
+    && currentManifest.sourceRoot === expectedManifest.sourceRoot
+    && currentManifest.pyprojectMtimeMs === expectedManifest.pyprojectMtimeMs
+    && fs.existsSync(path.join(targetRoot, "pyproject.toml"));
+
+  if (!hasUsableCopy) {
+    pushStatus("Preparing writable Hermes runtime source...");
+    safeRemoveRuntimeChild(targetRoot);
+    fs.mkdirSync(path.dirname(targetRoot), { recursive: true });
+    fs.cpSync(sourceRoot, targetRoot, {
+      recursive: true,
+      dereference: true,
+      filter: shouldCopyHermesRuntimePath,
+    });
+    const readmePath = path.join(targetRoot, "README.md");
+    if (!fs.existsSync(readmePath)) {
+      fs.writeFileSync(
+        readmePath,
+        "# Redou Agent Hermes Runtime\n\nBundled Hermes runtime staged by Redou Agent.\n",
+        "utf8",
+      );
+    }
+    fs.writeFileSync(
+      manifestPath,
+      JSON.stringify({ ...expectedManifest, createdAt: new Date().toISOString() }, null, 2),
+      "utf8",
+    );
+  }
+
+  activePythonHermesRoot = targetRoot;
+  return activePythonHermesRoot;
+}
+
+function hermesInstallSourceStamp(installSource) {
+  const stagedManifest = readJsonFile(path.join(installSource, ".redou-source.json"));
+  if (stagedManifest?.appVersion && stagedManifest?.pyprojectMtimeMs) {
+    return `${stagedManifest.appVersion}:${stagedManifest.pyprojectMtimeMs}`;
+  }
+  try {
+    const pyprojectStat = fs.statSync(path.join(installSource, "pyproject.toml"));
+    const appVersion = typeof app.getVersion === "function" ? app.getVersion() : "unknown";
+    return `${appVersion}:${Math.trunc(pyprojectStat.mtimeMs)}`;
+  } catch {
+    return "unknown";
+  }
+}
+
+function pythonRuntimeMarkerMatches(markerPath, installSource, installSourceStamp) {
+  const marker = readJsonFile(markerPath);
+  if (!marker) return false;
+  const appVersion = typeof app.getVersion === "function" ? app.getVersion() : "unknown";
+  return (
+    marker.appVersion === appVersion
+    && marker.hermesSourceRoot === installSource
+    && marker.hermesSourceStamp === installSourceStamp
+  );
+}
+
 function runLogged(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const usesShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
@@ -492,6 +610,9 @@ async function ensurePythonRuntime() {
   const venvDir = path.join(root, "venv");
   const venvPython = path.join(venvDir, "Scripts", "python.exe");
   const marker = path.join(root, "python-ready.json");
+  const hermesInstallSource = preparePackagedHermesInstallSource();
+  const hermesSourceStamp = hermesInstallSourceStamp(hermesInstallSource);
+  let createdVenv = false;
 
   fs.mkdirSync(root, { recursive: true });
   fs.mkdirSync(hermesHome(), { recursive: true });
@@ -500,18 +621,28 @@ async function ensurePythonRuntime() {
     const python = resolvePython();
     pushStatus("Creating Python virtual environment...");
     await runLogged(python, ["-m", "venv", venvDir]);
+    createdVenv = true;
   }
 
-  if (!fs.existsSync(marker)) {
+  if (createdVenv || !pythonRuntimeMarkerMatches(marker, hermesInstallSource, hermesSourceStamp)) {
     pushStatus("Installing Redou Agent Python dependencies...");
     await runLogged(venvPython, ["-m", "pip", "install", "--upgrade", "pip"]);
     const hermesInstallArgs = app.isPackaged
-      ? ["-m", "pip", "install", hermesRoot()]
-      : ["-m", "pip", "install", "-e", hermesRoot()];
+      ? ["-m", "pip", "install", hermesInstallSource]
+      : ["-m", "pip", "install", "-e", hermesInstallSource];
     await runLogged(venvPython, hermesInstallArgs);
     fs.writeFileSync(
       marker,
-      JSON.stringify({ createdAt: new Date().toISOString() }, null, 2),
+      JSON.stringify(
+        {
+          createdAt: new Date().toISOString(),
+          appVersion: typeof app.getVersion === "function" ? app.getVersion() : "unknown",
+          hermesSourceRoot: hermesInstallSource,
+          hermesSourceStamp,
+        },
+        null,
+        2,
+      ),
       "utf8",
     );
   }

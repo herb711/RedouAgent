@@ -293,6 +293,16 @@ def assert_desktop_packaging_contract() -> None:
         raise SystemExit("desktop main must resolve packaged runtime resources from process.resourcesPath")
     if "Bundled renderer was not found" not in main_text:
         raise SystemExit("packaged desktop must fail clearly when the bundled renderer is missing")
+    required_packaged_runtime_snippets = [
+        "preparePackagedHermesInstallSource",
+        "hermes-install-source",
+        "pythonRuntimeMarkerMatches",
+        "hermesSourceStamp",
+        "HERMES_VENDOR_ROOT: pythonHermesRoot()",
+    ]
+    missing = [snippet for snippet in required_packaged_runtime_snippets if snippet not in main_text]
+    if missing:
+        raise SystemExit("packaged desktop must stage Hermes Python sources before pip install:\n" + "\n".join(missing))
 
     service_text = service_path.read_text(encoding="utf-8")
     required_service_snippets = [
