@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import importlib.util
+import json
 import shutil
 import subprocess
 import sys
@@ -232,6 +233,81 @@ def assert_path_contract() -> None:
     print("path contract audit passed")
 
 
+def assert_desktop_packaging_contract() -> None:
+    package_path = ROOT / "apps" / "desktop" / "package.json"
+    installer_include_path = ROOT / "apps" / "desktop" / "build" / "installer.nsh"
+    prerequisite_script_path = ROOT / "apps" / "desktop" / "build" / "install-prerequisites.ps1"
+    main_path = ROOT / "apps" / "desktop" / "src" / "main.cjs"
+    service_path = ROOT / "apps" / "desktop" / "src" / "services" / "local-service" / "index.cjs"
+
+    package_json = json.loads(package_path.read_text(encoding="utf-8"))
+    scripts = package_json.get("scripts", {})
+    build = package_json.get("build", {})
+    extra_resources = build.get("extraResources", [])
+
+    prebuild = scripts.get("prebuild", "")
+    if "../../vendor/hermes/web" not in prebuild or "run build" not in prebuild:
+        raise SystemExit("desktop package prebuild must build the Hermes renderer before electron-builder")
+    if "src/**/*.py" not in build.get("asarUnpack", []):
+        raise SystemExit("desktop package must unpack Python bridge scripts from app.asar")
+    if not any(
+        item.get("from") == "../../vendor/hermes" and item.get("to") == "vendor/hermes"
+        for item in extra_resources
+        if isinstance(item, dict)
+    ):
+        raise SystemExit("desktop package must include vendor/hermes as an extraResource")
+
+    nsis = build.get("nsis", {})
+    if nsis.get("oneClick") is not False:
+        raise SystemExit("desktop installer must use assisted NSIS mode so users can choose install options")
+    if nsis.get("allowToChangeInstallationDirectory") is not True:
+        raise SystemExit("desktop installer must allow users to choose the installation directory")
+    if nsis.get("include") != "build/installer.nsh":
+        raise SystemExit("desktop installer must include the Redou NSIS environment-check page")
+
+    installer_include_text = installer_include_path.read_text(encoding="utf-8")
+    required_installer_snippets = [
+        "customPageAfterChangeDir",
+        "RedouPrereqPagePre",
+        "RedouPrereqPageLeave",
+        "install-prerequisites.ps1",
+    ]
+    missing = [snippet for snippet in required_installer_snippets if snippet not in installer_include_text]
+    if missing:
+        raise SystemExit("desktop NSIS environment-check page is incomplete:\n" + "\n".join(missing))
+
+    prerequisite_script_text = prerequisite_script_path.read_text(encoding="utf-8")
+    required_prerequisite_snippets = [
+        "Python.Python.3.12",
+        "OpenJS.NodeJS.LTS",
+        "winget.exe",
+        "Node.js 20+",
+        "Python 3.11+",
+    ]
+    missing = [snippet for snippet in required_prerequisite_snippets if snippet not in prerequisite_script_text]
+    if missing:
+        raise SystemExit("desktop prerequisite installer script is incomplete:\n" + "\n".join(missing))
+
+    main_text = main_path.read_text(encoding="utf-8")
+    if "app.isPackaged" not in main_text or "process.resourcesPath" not in main_text:
+        raise SystemExit("desktop main must resolve packaged runtime resources from process.resourcesPath")
+    if "Bundled renderer was not found" not in main_text:
+        raise SystemExit("packaged desktop must fail clearly when the bundled renderer is missing")
+
+    service_text = service_path.read_text(encoding="utf-8")
+    required_service_snippets = [
+        "app.asar.unpacked",
+        'desktopSourcePath("dashboard_bridge.py")',
+        'desktopSourcePath("hermes_adapter.py")',
+        'desktopSourcePath("redou_context_compactor.py")',
+    ]
+    missing = [snippet for snippet in required_service_snippets if snippet not in service_text]
+    if missing:
+        raise SystemExit("desktop service packaged script path handling is incomplete:\n" + "\n".join(missing))
+
+    print("desktop packaging contract passed")
+
+
 def assert_absent(paths: list[str]) -> None:
     missing = []
     for rel in paths:
@@ -256,6 +332,7 @@ def main() -> int:
         "mini_swe_runner.py",
     ])
     assert_path_contract()
+    assert_desktop_packaging_contract()
     require_base_python_smoke_dependencies()
 
     py_files = [

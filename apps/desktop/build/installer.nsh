@@ -1,0 +1,79 @@
+!macro customHeader
+!macroend
+
+!ifndef BUILD_UNINSTALLER
+!include "nsDialogs.nsh"
+!include "LogicLib.nsh"
+!include "MUI2.nsh"
+
+Var RedouPrereqPage
+Var RedouPrereqMissingCode
+Var RedouPrereqStatusText
+
+!macro customPageAfterChangeDir
+  PageEx custom
+    PageCallbacks RedouPrereqPagePre RedouPrereqPageLeave
+    Caption "Environment Check"
+  PageExEnd
+!macroend
+
+Function RedouPrereqWriteScript
+  InitPluginsDir
+  IfFileExists "$PLUGINSDIR\redou-install-prerequisites.ps1" done
+  File "/oname=$PLUGINSDIR\redou-install-prerequisites.ps1" "${BUILD_RESOURCES_DIR}\install-prerequisites.ps1"
+done:
+FunctionEnd
+
+Function RedouPrereqCheck
+  Call RedouPrereqWriteScript
+  nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\redou-install-prerequisites.ps1" -Check'
+  Pop $RedouPrereqMissingCode
+  Pop $RedouPrereqStatusText
+FunctionEnd
+
+Function RedouPrereqPagePre
+  Call RedouPrereqCheck
+
+  !insertmacro MUI_HEADER_TEXT "Environment Check" "Redou Agent checks runtime dependencies before installation."
+
+  nsDialogs::Create 1018
+  Pop $RedouPrereqPage
+  ${If} $RedouPrereqPage == error
+    Abort
+  ${EndIf}
+
+  ${NSD_CreateLabel} 0u 0u 100% 72u "$RedouPrereqStatusText"
+  Pop $0
+
+  ${If} $RedouPrereqMissingCode == "0"
+    ${NSD_CreateLabel} 0u 82u 100% 28u "All required runtime dependencies are available. Click Next to continue."
+  ${Else}
+    ${NSD_CreateLabel} 0u 82u 100% 48u "Click Next to install missing dependencies automatically with winget. Internet access may be required."
+  ${EndIf}
+  Pop $0
+
+  nsDialogs::Show
+FunctionEnd
+
+Function RedouPrereqPageLeave
+  ${If} $RedouPrereqMissingCode == "0"
+    Return
+  ${EndIf}
+
+  MessageBox MB_OKCANCEL|MB_ICONINFORMATION "Redou Agent will now install the missing runtime dependencies. This may take several minutes." IDOK install IDCANCEL cancel
+
+install:
+  Call RedouPrereqWriteScript
+  nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\redou-install-prerequisites.ps1" -Install'
+  Pop $0
+  Pop $1
+  ${If} $0 == "0"
+    Return
+  ${EndIf}
+
+  MessageBox MB_RETRYCANCEL|MB_ICONSTOP "Automatic dependency installation failed.$\r$\n$\r$\n$1" IDRETRY install IDCANCEL cancel
+
+cancel:
+  Abort
+FunctionEnd
+!endif

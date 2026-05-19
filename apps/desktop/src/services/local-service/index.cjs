@@ -154,6 +154,19 @@ function compactMultiline(value, max = 4000) {
   return text.length > max ? `${text.slice(0, max).trimEnd()}\n[truncated]` : text;
 }
 
+function maybeUnpackedAsarPath(filePath) {
+  const marker = `${path.sep}app.asar${path.sep}`;
+  if (!filePath.includes(marker)) {
+    return filePath;
+  }
+  const unpackedPath = filePath.replace(marker, `${path.sep}app.asar.unpacked${path.sep}`);
+  return fs.existsSync(unpackedPath) ? unpackedPath : filePath;
+}
+
+function desktopSourcePath(...segments) {
+  return maybeUnpackedAsarPath(path.resolve(__dirname, "..", "..", ...segments));
+}
+
 function markdownListText(value, max = 1200) {
   return String(value || "")
     .replace(/\r\n/g, "\n")
@@ -3022,7 +3035,7 @@ class RedouLocalService {
     if (!this.pythonPath || !fs.existsSync(this.pythonPath)) {
       throw new Error("Hermes Python runtime is unavailable.");
     }
-    const bridgePath = path.join(__dirname, "..", "..", "dashboard_bridge.py");
+    const bridgePath = desktopSourcePath("dashboard_bridge.py");
     const result = this.processManager.spawnSync(this.pythonPath, [bridgePath, action], {
       cwd: this.projectRoot,
       env: this.childEnv({
@@ -4755,7 +4768,7 @@ class RedouLocalService {
         return;
       }
 
-      const adapterPath = path.join(__dirname, "..", "..", "hermes_adapter.py");
+      const adapterPath = desktopSourcePath("hermes_adapter.py");
       const taskRunId = `${runId}:${task.id}`;
       const taskStartedAtMs = Date.now();
       const taskStartedAt = new Date(taskStartedAtMs).toISOString();
@@ -5933,7 +5946,7 @@ class RedouLocalService {
     if (!this.pythonPath || !fs.existsSync(this.pythonPath)) {
       return { ok: false, error: "Hermes Python runtime is unavailable for context compact." };
     }
-    const compactorPath = path.join(__dirname, "..", "..", "redou_context_compactor.py");
+    const compactorPath = desktopSourcePath("redou_context_compactor.py");
     if (!fs.existsSync(compactorPath)) {
       return { ok: false, error: `Context compactor not found: ${compactorPath}` };
     }
@@ -6188,7 +6201,7 @@ class RedouLocalService {
       return { ok: false, runId, warning, context: runMetadata };
     }
 
-    const adapterPath = path.join(__dirname, "..", "..", "hermes_adapter.py");
+    const adapterPath = desktopSourcePath("hermes_adapter.py");
     const runStartedAtMs = Date.now();
     const runStartedAt = new Date(runStartedAtMs).toISOString();
     let runRecord = null;

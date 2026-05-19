@@ -15,6 +15,9 @@ let rendererLoaded = false;
 let shutdownComplete = false;
 
 function projectRoot() {
+  if (app.isPackaged) {
+    return process.resourcesPath;
+  }
   return path.resolve(__dirname, "..", "..", "..");
 }
 
@@ -502,7 +505,10 @@ async function ensurePythonRuntime() {
   if (!fs.existsSync(marker)) {
     pushStatus("Installing Redou Agent Python dependencies...");
     await runLogged(venvPython, ["-m", "pip", "install", "--upgrade", "pip"]);
-    await runLogged(venvPython, ["-m", "pip", "install", "-e", hermesRoot()]);
+    const hermesInstallArgs = app.isPackaged
+      ? ["-m", "pip", "install", hermesRoot()]
+      : ["-m", "pip", "install", "-e", hermesRoot()];
+    await runLogged(venvPython, hermesInstallArgs);
     fs.writeFileSync(
       marker,
       JSON.stringify({ createdAt: new Date().toISOString() }, null, 2),
@@ -517,17 +523,29 @@ async function ensureNodeRuntime() {
   const webDir = path.join(hermesRoot(), "web");
   const webEntry = path.join(hermesRoot(), "hermes_cli", "web_dist", "index.html");
 
-  if (!fs.existsSync(webEntry)) {
-    const npm = resolveNpm();
-    if (!fs.existsSync(path.join(webDir, "node_modules"))) {
-      pushStatus("Installing Redou Agent renderer dependencies...");
-      await runLogged(npm, ["install", "--no-fund", "--no-audit", "--progress=false"], {
-        cwd: webDir,
-      });
-    }
-    pushStatus("Building Redou Agent renderer...");
-    await runLogged(npm, ["run", "build"], { cwd: webDir });
+  if (fs.existsSync(webEntry)) {
+    return;
   }
+
+  if (app.isPackaged) {
+    throw new Error(
+      `Bundled renderer was not found: ${webEntry}. Rebuild the installer with the Hermes runtime and prebuilt renderer included.`,
+    );
+  }
+
+  if (!fs.existsSync(webDir)) {
+    throw new Error(`Renderer source directory was not found: ${webDir}`);
+  }
+
+  const npm = resolveNpm();
+  if (!fs.existsSync(path.join(webDir, "node_modules"))) {
+    pushStatus("Installing Redou Agent renderer dependencies...");
+    await runLogged(npm, ["install", "--no-fund", "--no-audit", "--progress=false"], {
+      cwd: webDir,
+    });
+  }
+  pushStatus("Building Redou Agent renderer...");
+  await runLogged(npm, ["run", "build"], { cwd: webDir });
 }
 
 async function loadRenderer() {

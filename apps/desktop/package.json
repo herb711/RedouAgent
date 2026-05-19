@@ -1,11 +1,12 @@
 {
   "name": "redou-agent-desktop",
   "productName": "Redou Agent",
-  "version": "0.1.0",
+  "version": "0.1.6",
   "private": true,
   "description": "Redou Agent desktop shell",
   "main": "src/main.cjs",
   "scripts": {
+    "prebuild": "npm --prefix ../../vendor/hermes/web run build",
     "start": "electron .",
     "build": "electron-builder --win nsis",
     "test": "node --test --test-force-exit --test-reporter=dot tests/*.test.cjs"
@@ -25,6 +26,36 @@
       "package.json",
       "assets/**/*"
     ],
+    "asarUnpack": [
+      "src/**/*.py"
+    ],
+    "extraResources": [
+      {
+        "from": "../../vendor/hermes",
+        "to": "vendor/hermes",
+        "filter": [
+          "**/*",
+          "!**/node_modules/**",
+          "!**/__pycache__/**",
+          "!**/.pytest_cache/**",
+          "!**/.mypy_cache/**",
+          "!**/.ruff_cache/**",
+          "!**/*.pyc",
+          "!**/*.pyo",
+          "!**/*.egg-info/**",
+          "!.env",
+          "!.git/**",
+          "!web/dist/**",
+          "!web/public/ds-assets/**",
+          "!web/public/fonts/**",
+          "!ui-tui/dist/**",
+          "!ui-tui/packages/hermes-ink/dist/**",
+          "!website/build/**",
+          "!website/out/**",
+          "!website/.vitepress/dist/**"
+        ]
+      }
+    ],
     "extraMetadata": {
       "main": "src/main.cjs"
     },
@@ -33,6 +64,9 @@
       "target": "nsis"
     },
     "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh",
       "installerIcon": "assets/icons/redou-agent-install.ico",
       "uninstallerIcon": "assets/icons/redou-agent-install.ico"
     }
