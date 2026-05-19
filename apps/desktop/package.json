@@ -1,7 +1,7 @@
 {
   "name": "redou-agent-desktop",
   "productName": "Redou Agent",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Redou Agent desktop shell",
   "main": "src/main.cjs",
@@ -18,6 +18,13 @@
   "build": {
     "appId": "com.redou.agent",
     "productName": "Redou Agent",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "herb711",
+        "repo": "RedouAgent"
+      }
+    ],
     "directories": {
       "output": "dist"
     },
@@ -71,5 +78,8 @@
       "installerIcon": "assets/icons/redou-agent-install.ico",
       "uninstallerIcon": "assets/icons/redou-agent-install.ico"
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.3"
   }
 }

@@ -203,6 +203,46 @@ function Resolve-Python {
   throw "Python 3.11 or newer was not found. Install Python 3.12, then rerun this installer."
 }
 
+function Resolve-GitBash {
+  $candidates = New-Object System.Collections.Generic.List[string]
+  if ($env:HERMES_GIT_BASH_PATH) {
+    $candidates.Add($env:HERMES_GIT_BASH_PATH)
+  }
+  if ($env:LOCALAPPDATA) {
+    $candidates.Add((Join-Path $env:LOCALAPPDATA "hermes\git\bin\bash.exe"))
+    $candidates.Add((Join-Path $env:LOCALAPPDATA "hermes\git\usr\bin\bash.exe"))
+    $candidates.Add((Join-Path $env:LOCALAPPDATA "Programs\Git\bin\bash.exe"))
+  }
+  $candidates.Add("C:\Program Files\Git\bin\bash.exe")
+  $candidates.Add("C:\Program Files (x86)\Git\bin\bash.exe")
+
+  $gitCommand = Get-Command "git.exe" -ErrorAction SilentlyContinue
+  if ($gitCommand) {
+    $gitRoot = Split-Path -Parent (Split-Path -Parent $gitCommand.Source)
+    $candidates.Add((Join-Path $gitRoot "bin\bash.exe"))
+    $candidates.Add((Join-Path $gitRoot "usr\bin\bash.exe"))
+  }
+
+  $bashCommand = Get-Command "bash.exe" -ErrorAction SilentlyContinue
+  if ($bashCommand -and $bashCommand.Source -notlike "*\Windows\System32\bash.exe" -and $bashCommand.Source -notlike "*\Microsoft\WindowsApps\bash.exe") {
+    $candidates.Add($bashCommand.Source)
+  }
+
+  foreach ($candidate in $candidates | Select-Object -Unique) {
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+      continue
+    }
+    if ([System.IO.Path]::IsPathRooted($candidate) -and -not (Test-Path -LiteralPath $candidate)) {
+      continue
+    }
+    if (Test-CommandRun -Command $candidate -Arguments @("--version")) {
+      return $candidate
+    }
+  }
+
+  throw "Git for Windows (Git Bash) was not found. Install Git for Windows or set HERMES_GIT_BASH_PATH to bash.exe, then rerun this installer."
+}
+
 function Invoke-Npm {
   param(
     [string]$ProjectDir,
@@ -298,6 +338,10 @@ Write-Ok "npm $npmVersion found at $script:Npm"
 $python = Resolve-Python
 $env:REDOU_PYTHON = $python.Path
 Write-Ok "Python $($python.Version) found at $($python.Path)"
+
+$gitBash = Resolve-GitBash
+$env:HERMES_GIT_BASH_PATH = $gitBash
+Write-Ok "Git Bash found at $gitBash"
 
 if ($CheckOnly) {
   Write-Ok "Preflight checks completed"

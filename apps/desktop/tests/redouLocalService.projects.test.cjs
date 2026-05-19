@@ -71,11 +71,45 @@ test("old chat-projects.json is ignored after v3 cleanup", () => {
 
   service.ensureInitialized();
 
-  assert.deepEqual(service.getChatProjects().projects, []);
+  const response = service.getChatProjects();
+  assert.equal(response.projects.some((project) => project.id === "old"), false);
+  assert.equal(response.projects.length, 1);
+  assert.equal(response.projects[0].name, "默认项目");
   assert.equal(
     fs.existsSync(path.join(service.hermesHome, "chat-projects.json.migration-complete")),
     false,
   );
+});
+
+test("first run seeds a default project and task", () => {
+  const { service } = makeBareService();
+
+  service.ensureInitialized();
+
+  const response = service.getChatProjects();
+  assert.equal(response.projects.length, 1);
+  const project = response.projects[0];
+  const task = project.tasks[0];
+  assert.equal(project.name, "默认项目");
+  assert.equal(project.path, "");
+  assert.equal(task.title, "开始对话");
+  assert.equal(response.current_project_id, project.id);
+  assert.equal(response.current_task_id, task.id);
+  assert.equal(fs.existsSync(project.rulesPath), true);
+  assert.equal(fs.existsSync(task.messagesPath), true);
+});
+
+test("default project seeding runs only once", () => {
+  const { service } = makeBareService();
+  service.ensureInitialized();
+  const seededProject = service.getChatProjects().projects[0];
+
+  service.deleteChatProject(seededProject.id);
+
+  const response = service.getChatProjects();
+  assert.equal(response.projects.length, 0);
+  assert.equal(response.current_project_id, "");
+  assert.equal(response.current_task_id, "");
 });
 
 test("project artifacts and packaged skills stay under the project .redou directory", () => {

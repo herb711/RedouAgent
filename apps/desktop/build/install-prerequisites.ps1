@@ -99,6 +99,45 @@ function Test-NodeReady {
   return $false
 }
 
+function Test-GitBashReady {
+  $candidates = New-Object System.Collections.Generic.List[string]
+  if ($env:HERMES_GIT_BASH_PATH) {
+    $candidates.Add($env:HERMES_GIT_BASH_PATH)
+  }
+  if ($env:LOCALAPPDATA) {
+    $candidates.Add((Join-Path $env:LOCALAPPDATA "hermes\git\bin\bash.exe"))
+    $candidates.Add((Join-Path $env:LOCALAPPDATA "hermes\git\usr\bin\bash.exe"))
+    $candidates.Add((Join-Path $env:LOCALAPPDATA "Programs\Git\bin\bash.exe"))
+  }
+  $candidates.Add("C:\Program Files\Git\bin\bash.exe")
+  $candidates.Add("C:\Program Files (x86)\Git\bin\bash.exe")
+
+  $gitCommand = Get-Command "git.exe" -ErrorAction SilentlyContinue
+  if ($gitCommand) {
+    $gitRoot = Split-Path -Parent (Split-Path -Parent $gitCommand.Source)
+    $candidates.Add((Join-Path $gitRoot "bin\bash.exe"))
+    $candidates.Add((Join-Path $gitRoot "usr\bin\bash.exe"))
+  }
+
+  $bashCommand = Get-Command "bash.exe" -ErrorAction SilentlyContinue
+  if ($bashCommand -and $bashCommand.Source -notlike "*\Windows\System32\bash.exe" -and $bashCommand.Source -notlike "*\Microsoft\WindowsApps\bash.exe") {
+    $candidates.Add($bashCommand.Source)
+  }
+
+  foreach ($candidate in $candidates | Select-Object -Unique) {
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+      continue
+    }
+    if ([System.IO.Path]::IsPathRooted($candidate) -and -not (Test-Path -LiteralPath $candidate)) {
+      continue
+    }
+    if (Test-CommandRun -Command $candidate -Arguments @("--version")) {
+      return $true
+    }
+  }
+  return $false
+}
+
 function Get-MissingPrerequisites {
   $missing = New-Object System.Collections.Generic.List[string]
   if (-not (Test-PythonReady)) {
@@ -107,24 +146,26 @@ function Get-MissingPrerequisites {
   if (-not (Test-NodeReady)) {
     $missing.Add("Node.js 20+")
   }
+  if (-not (Test-GitBashReady)) {
+    $missing.Add("Git for Windows (Git Bash)")
+  }
   return @($missing)
 }
 
 function Get-MissingCode {
   param([string[]]$Missing)
 
-  $needsPython = $Missing -contains "Python 3.11+"
-  $needsNode = $Missing -contains "Node.js 20+"
-  if ($needsPython -and $needsNode) {
-    return 30
+  $code = 0
+  if ($Missing -contains "Python 3.11+") {
+    $code += 10
   }
-  if ($needsPython) {
-    return 10
+  if ($Missing -contains "Node.js 20+") {
+    $code += 20
   }
-  if ($needsNode) {
-    return 20
+  if ($Missing -contains "Git for Windows (Git Bash)") {
+    $code += 40
   }
-  return 0
+  return $code
 }
 
 function Write-Status {
@@ -133,6 +174,7 @@ function Write-Status {
   if ($Missing.Count -eq 0) {
     Write-Output "Python 3.11+ is available."
     Write-Output "Node.js 20+ is available."
+    Write-Output "Git for Windows (Git Bash) is available."
     Write-Output "Redou Agent can continue installation."
     return
   }
@@ -173,6 +215,9 @@ function Install-MissingPrerequisites {
   }
   if ($missing -contains "Node.js 20+") {
     Invoke-WingetInstall -Id "OpenJS.NodeJS.LTS" -Name "Node.js LTS"
+  }
+  if ($missing -contains "Git for Windows (Git Bash)") {
+    Invoke-WingetInstall -Id "Git.Git" -Name "Git for Windows"
   }
 
   $remaining = Get-MissingPrerequisites

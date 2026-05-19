@@ -23,6 +23,7 @@ declare global {
       openLocalPath?: (
         targetPath: string,
       ) => Promise<{ ok: boolean; path?: string; message?: string }>;
+      updateApp?: () => Promise<ActionResponse>;
       getStatus?: () => Promise<StatusResponse>;
       getConfig?: () => Promise<Record<string, unknown>>;
       getConfigDefaults?: () => Promise<Record<string, unknown>>;
@@ -395,10 +396,7 @@ const redouApiCore = {
         "wire an explicit Electron main-process action if Redou Desktop needs gateway control",
       ),
     updateHermes: () =>
-      unsupportedDesktopFeature<ActionResponse>(
-        "Hermes update",
-        "wire an explicit Electron updater flow instead of the legacy dashboard action endpoint",
-      ),
+      requireRedouMethod("updateApp")(),
     getActionStatus: (_name: string, _lines = 200) => {
       void _lines;
       return unsupportedDesktopFeature<ActionStatusResponse>(
@@ -496,6 +494,7 @@ export const redouApi = {
 
 export const api = redouApi;
 export interface ActionResponse {
+  message?: string;
   name: string;
   ok: boolean;
   pid: number;

@@ -2,10 +2,12 @@ const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron")
 const fs = require("fs");
 const path = require("path");
 const { spawn, spawnSync } = require("child_process");
+const { autoUpdater } = require("electron-updater");
 const { RedouLocalService } = require("./services/redouLocalService.cjs");
 
 const PRODUCT_NAME = "Redou Agent";
 const PYTHON_ENV = "REDOU_PYTHON";
+const GIT_BASH_ENV = "HERMES_GIT_BASH_PATH";
 
 let mainWindow = null;
 let localService = null;
@@ -14,6 +16,10 @@ let logFile = null;
 let rendererLoaded = false;
 let shutdownComplete = false;
 let activePythonHermesRoot = null;
+let gitBashLookupComplete = false;
+let cachedGitBashPath = "";
+let updaterConfigured = false;
+let updateInProgress = false;
 
 function projectRoot() {
   if (app.isPackaged) {
@@ -46,12 +52,110 @@ function hermesHome() {
   return path.join(app.getPath("userData"), "hermes-home");
 }
 
+function isWslBashLauncher(candidate) {
+  const normalized = path.normalize(String(candidate || "")).toLowerCase();
+  return (
+    normalized.endsWith("\\windows\\system32\\bash.exe")
+    || normalized.endsWith("\\microsoft\\windowsapps\\bash.exe")
+  );
+}
+
+function collectCommandOutput(command, args) {
+  try {
+    const result = spawnSync(command, args, {
+      encoding: "utf8",
+      shell: false,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (result.status !== 0 || !result.stdout) return [];
+    return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function addGitBashCandidates(candidates, gitPath) {
+  if (!gitPath || !path.isAbsolute(gitPath)) return;
+  const gitRoot = path.dirname(path.dirname(gitPath));
+  candidates.push(path.join(gitRoot, "bin", "bash.exe"));
+  candidates.push(path.join(gitRoot, "usr", "bin", "bash.exe"));
+}
+
+function resolveGitBashPath(options = {}) {
+  const required = Boolean(options.required);
+  if (process.platform !== "win32") return "";
+  if (gitBashLookupComplete) {
+    if (required && !cachedGitBashPath) throw new Error(gitBashMissingMessage());
+    return cachedGitBashPath;
+  }
+
+  const candidates = [
+    process.env[GIT_BASH_ENV],
+    path.join(process.env.LOCALAPPDATA || "", "hermes", "git", "bin", "bash.exe"),
+    path.join(process.env.LOCALAPPDATA || "", "hermes", "git", "usr", "bin", "bash.exe"),
+    path.join(process.env.ProgramFiles || "C:\\Program Files", "Git", "bin", "bash.exe"),
+    path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Git", "bin", "bash.exe"),
+    path.join(process.env.LOCALAPPDATA || "", "Programs", "Git", "bin", "bash.exe"),
+  ].filter(Boolean);
+
+  for (const gitPath of collectCommandOutput("where.exe", ["git.exe"])) {
+    addGitBashCandidates(candidates, gitPath);
+  }
+  for (const bashPath of collectCommandOutput("where.exe", ["bash.exe"])) {
+    if (!isWslBashLauncher(bashPath)) candidates.push(bashPath);
+  }
+
+  const seen = new Set();
+  for (const candidate of candidates) {
+    if (!candidate || !path.isAbsolute(candidate)) continue;
+    const normalized = path.normalize(candidate);
+    const key = normalized.toLowerCase();
+    if (seen.has(key) || isWslBashLauncher(normalized)) continue;
+    seen.add(key);
+    if (fs.existsSync(normalized)) {
+      cachedGitBashPath = normalized;
+      process.env[GIT_BASH_ENV] = normalized;
+      break;
+    }
+  }
+
+  gitBashLookupComplete = true;
+  if (required && !cachedGitBashPath) throw new Error(gitBashMissingMessage());
+  return cachedGitBashPath;
+}
+
+function gitBashMissingMessage() {
+  return [
+    "Git for Windows (Git Bash) was not found.",
+    "Redou/Hermes uses Git Bash to run local terminal tools on Windows.",
+    "Install Git for Windows, or set HERMES_GIT_BASH_PATH to your bash.exe path, then restart Redou Agent.",
+  ].join(" ");
+}
+
+function gitRuntimePathExtras(gitBashPath) {
+  if (!gitBashPath) return [];
+  const bashDir = path.dirname(gitBashPath);
+  const bashParent = path.dirname(bashDir);
+  const gitRoot = path.basename(bashParent).toLowerCase() === "usr"
+    ? path.dirname(bashParent)
+    : bashParent;
+  return [
+    bashDir,
+    path.join(gitRoot, "cmd"),
+    path.join(gitRoot, "usr", "bin"),
+    path.join(gitRoot, "mingw64", "bin"),
+  ];
+}
+
 function withRuntimePath(env = process.env) {
+  const gitBashPath = resolveGitBashPath();
   const extras = [
     path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python312"),
     "C:\\Program Files\\nodejs",
+    ...gitRuntimePathExtras(gitBashPath),
   ].filter(Boolean);
-  return {
+  const runtimeEnv = {
     ...env,
     PATH: [...extras, env.PATH || ""].join(path.delimiter),
     PYTHONUTF8: "1",
@@ -64,6 +168,10 @@ function withRuntimePath(env = process.env) {
     PYTHONPATH: [pythonHermesRoot(), env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
     HERMES_QUIET: "1",
   };
+  if (gitBashPath) {
+    runtimeEnv[GIT_BASH_ENV] = gitBashPath;
+  }
+  return runtimeEnv;
 }
 
 function getLocalService() {
@@ -205,6 +313,115 @@ function createWindow() {
   });
 }
 
+function formatErrorMessage(error) {
+  if (!error) return "Unknown error";
+  if (error instanceof Error && error.message) return error.message;
+  return String(error);
+}
+
+function configureAutoUpdater() {
+  if (updaterConfigured) return;
+  updaterConfigured = true;
+  autoUpdater.autoDownload = false;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.logger = {
+    info: (message) => pushStatus(`[update] ${message}`),
+    warn: (message) => pushStatus(`[update] ${message}`),
+    error: (message) => pushStatus(`[update] ${message}`),
+    debug: (message) => pushStatus(`[update] ${message}`),
+  };
+  autoUpdater.on("checking-for-update", () => pushStatus("Checking for Redou Agent updates..."));
+  autoUpdater.on("update-available", (info) =>
+    pushStatus(`Redou Agent update available: ${info.version || "unknown"}`),
+  );
+  autoUpdater.on("update-not-available", () =>
+    pushStatus(`Redou Agent is already up to date (${app.getVersion()}).`),
+  );
+  autoUpdater.on("download-progress", (progress) => {
+    const percent = Number.isFinite(progress?.percent) ? progress.percent.toFixed(1) : "?";
+    pushStatus(`Downloading Redou Agent update... ${percent}%`);
+  });
+  autoUpdater.on("update-downloaded", (info) =>
+    pushStatus(`Redou Agent update downloaded: ${info.version || "unknown"}`),
+  );
+  autoUpdater.on("error", (error) =>
+    pushStatus(`Redou Agent update failed: ${formatErrorMessage(error)}`),
+  );
+}
+
+async function handleAppUpdate() {
+  if (!app.isPackaged) {
+    return {
+      name: "redou-update",
+      ok: false,
+      pid: 0,
+      message: "Updates are only available in the packaged Redou Agent app.",
+    };
+  }
+  if (updateInProgress) {
+    return {
+      name: "redou-update",
+      ok: false,
+      pid: 0,
+      message: "An update check is already running.",
+    };
+  }
+
+  updateInProgress = true;
+  configureAutoUpdater();
+  try {
+    const checkResult = await autoUpdater.checkForUpdates();
+    const updateInfo = checkResult?.updateInfo;
+    if (!updateInfo || updateInfo.version === app.getVersion()) {
+      return {
+        name: "redou-update",
+        ok: true,
+        pid: 0,
+        message: `Redou Agent is already up to date (${app.getVersion()}).`,
+      };
+    }
+
+    await autoUpdater.downloadUpdate();
+    const version = updateInfo.version || "the latest version";
+    const result = await dialog.showMessageBox(mainWindow, {
+      type: "info",
+      buttons: ["Restart and install", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+      title: "Redou Agent update ready",
+      message: `Redou Agent ${version} is ready to install.`,
+      detail: "Redou Agent will close and restart to finish the update.",
+      noLink: true,
+    });
+
+    if (result.response === 0) {
+      setImmediate(() => autoUpdater.quitAndInstall(false, true));
+      return {
+        name: "redou-update",
+        ok: true,
+        pid: 0,
+        message: `Installing Redou Agent ${version}.`,
+      };
+    }
+
+    return {
+      name: "redou-update",
+      ok: true,
+      pid: 0,
+      message: `Redou Agent ${version} was downloaded and will install when the app exits.`,
+    };
+  } catch (error) {
+    return {
+      name: "redou-update",
+      ok: false,
+      pid: 0,
+      message: formatErrorMessage(error),
+    };
+  } finally {
+    updateInProgress = false;
+  }
+}
+
 ipcMain.handle("redou:pick-directory", async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
     properties: ["openDirectory", "createDirectory"],
@@ -240,6 +457,8 @@ ipcMain.handle("redou:paths:open", async (_event, targetPath) => {
   }
   return { ok: true, path: resolvedPath };
 });
+
+ipcMain.handle("redou:app:update", () => handleAppUpdate());
 
 ipcMain.handle("redou:projects:list", () => getLocalService().getChatProjects());
 
@@ -693,6 +912,8 @@ async function loadRenderer() {
 async function boot() {
   try {
     renderStatus("Starting Redou Agent");
+    const gitBash = resolveGitBashPath({ required: true });
+    if (gitBash) pushStatus(`Git Bash ready at ${gitBash}`);
     const python = await ensurePythonRuntime();
     const service = getLocalService();
     service.setPythonPath(python);

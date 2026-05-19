@@ -1,3 +1,5 @@
+const fs = require("fs");
+
 class LifecycleService {
   constructor({ host, eventBus = null, logger = null } = {}) {
     if (!host) throw new Error("LifecycleService requires a host service.");
@@ -9,11 +11,20 @@ class LifecycleService {
 
   init() {
     const host = this.host;
+    const seedPath = host.defaultProjectSeedPath();
+    const hasSeededDefaultProject = fs.existsSync(seedPath);
     host.db.initDb();
     host.schedulerService.init();
     host.ensureGlobalFiles();
-    for (const project of host.readAllProjects()) {
+    const projects = host.readAllProjects();
+    for (const project of projects) {
       host.ensureProject(project);
+    }
+    if (!hasSeededDefaultProject && projects.length === 0) {
+      host.ensureDefaultChatProject();
+      fs.writeFileSync(seedPath, `${new Date().toISOString()}\n`, "utf8");
+    } else if (!hasSeededDefaultProject) {
+      fs.writeFileSync(seedPath, `${new Date().toISOString()}\n`, "utf8");
     }
     this.disposed = false;
     return { ok: true };

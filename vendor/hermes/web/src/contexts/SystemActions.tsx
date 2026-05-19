@@ -66,12 +66,24 @@ export function SystemActionsProvider({
 
   const runAction = useCallback(
     async (action: SystemAction) => {
-      if (action === "update") return;
       setPendingAction(action);
       setActionStatus(null);
       try {
-        await redouApi.restartGateway();
-        setActiveAction(action);
+        const response =
+          action === "update"
+            ? await redouApi.updateHermes()
+            : await redouApi.restartGateway();
+        if (!response.ok) {
+          throw new Error(response.message || t.status.actionFailed);
+        }
+        if (action === "update") {
+          setToast({
+            type: "success",
+            message: response.message || t.status.actionFinished,
+          });
+        } else {
+          setActiveAction(action);
+        }
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         setToast({
@@ -82,7 +94,7 @@ export function SystemActionsProvider({
         setPendingAction(null);
       }
     },
-    [t.status.actionFailed],
+    [t.status.actionFailed, t.status.actionFinished],
   );
 
   const dismissLog = useCallback(() => {

@@ -59,6 +59,8 @@ const ANALYSIS_DOCKER_WORKSPACE = "/workspace";
 const ANALYSIS_WORKSPACE_PROJECT_ID = "model-benchmarks";
 const ANALYSIS_WORKSPACE_PROJECT_NAME = "Model Benchmarks";
 const ANALYSIS_WORKSPACE_TASK_KIND = "analysis_benchmark";
+const DEFAULT_CHAT_PROJECT_NAME = "默认项目";
+const DEFAULT_CHAT_TASK_TITLE = "开始对话";
 const ANALYSIS_ABILITY_KEYS = [
   "environmentConstraints",
   "projectDelivery",
@@ -2726,6 +2728,10 @@ class RedouLocalService {
     return path.join(this.appDataRoot(), "state.json");
   }
 
+  defaultProjectSeedPath() {
+    return path.join(this.appDataRoot(), "default-project.seeded");
+  }
+
   projectDir(projectId) {
     return path.join(this.projectsDir(), safeSegment(projectId, "project"));
   }
@@ -2824,7 +2830,11 @@ class RedouLocalService {
       .listProjects()
       .filter((project) => project && typeof project === "object")
       .map((project) => this.ensureProject(project));
-    return projects.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+    return projects.sort((a, b) => {
+      const rightTime = timestampMs(b.updatedAt) ?? timestampSeconds(b.updated_at || b.created_at, 0) * 1000;
+      const leftTime = timestampMs(a.updatedAt) ?? timestampSeconds(a.updated_at || a.created_at, 0) * 1000;
+      return rightTime - leftTime;
+    });
   }
 
   getState() { return this.settingsService.getState(); }
@@ -5346,6 +5356,18 @@ class RedouLocalService {
     };
   }
 
+  ensureDefaultChatProject() {
+    const projects = this.readAllProjects();
+    if (projects.length > 0) {
+      return { ok: true, seeded: false, project: projects[0] };
+    }
+    const result = this.createChatProject({
+      name: DEFAULT_CHAT_PROJECT_NAME,
+      initial_task_title: DEFAULT_CHAT_TASK_TITLE,
+    });
+    return { ...result, seeded: true };
+  }
+
   createChatProject(body = {}) {
     const name = compact(body.name, 120) || "New Project";
     const id = safeSegment(`${name}-${Date.now().toString(36)}`, `project-${Date.now().toString(36)}`);
@@ -5360,10 +5382,11 @@ class RedouLocalService {
       tasks: [],
     });
     appendDedupeRules(project.rulesPath, [projectWorkspaceOutputRule(project.path || project.workspace_path)]);
+    const taskTitle = compact(body.initial_task_title || body.task_title, 160) || "New Task";
     const task = this.ensureTask(project, {
       id: `task-${Date.now().toString(36)}`,
       projectId: project.id,
-      title: "New Task",
+      title: taskTitle,
       createdAt,
       updatedAt: createdAt,
     });

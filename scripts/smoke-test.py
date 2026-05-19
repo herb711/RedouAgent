@@ -238,18 +238,28 @@ def assert_desktop_packaging_contract() -> None:
     installer_include_path = ROOT / "apps" / "desktop" / "build" / "installer.nsh"
     prerequisite_script_path = ROOT / "apps" / "desktop" / "build" / "install-prerequisites.ps1"
     main_path = ROOT / "apps" / "desktop" / "src" / "main.cjs"
+    preload_path = ROOT / "apps" / "desktop" / "src" / "preload.cjs"
     service_path = ROOT / "apps" / "desktop" / "src" / "services" / "local-service" / "index.cjs"
 
     package_json = json.loads(package_path.read_text(encoding="utf-8"))
     scripts = package_json.get("scripts", {})
     build = package_json.get("build", {})
     extra_resources = build.get("extraResources", [])
+    publish = build.get("publish", [])
 
     prebuild = scripts.get("prebuild", "")
     if "../../vendor/hermes/web" not in prebuild or "run build" not in prebuild:
         raise SystemExit("desktop package prebuild must build the Hermes renderer before electron-builder")
+    if "electron-updater" not in package_json.get("dependencies", {}):
+        raise SystemExit("desktop package must include electron-updater for in-app release updates")
     if "src/**/*.py" not in build.get("asarUnpack", []):
         raise SystemExit("desktop package must unpack Python bridge scripts from app.asar")
+    if not any(
+        item.get("provider") == "github" and item.get("owner") == "herb711" and item.get("repo") == "RedouAgent"
+        for item in publish
+        if isinstance(item, dict)
+    ):
+        raise SystemExit("desktop package must configure GitHub publish metadata for electron-updater latest.yml")
     if not any(
         item.get("from") == "../../vendor/hermes" and item.get("to") == "vendor/hermes"
         for item in extra_resources
@@ -280,9 +290,11 @@ def assert_desktop_packaging_contract() -> None:
     required_prerequisite_snippets = [
         "Python.Python.3.12",
         "OpenJS.NodeJS.LTS",
+        "Git.Git",
         "winget.exe",
         "Node.js 20+",
         "Python 3.11+",
+        "Git for Windows (Git Bash)",
     ]
     missing = [snippet for snippet in required_prerequisite_snippets if snippet not in prerequisite_script_text]
     if missing:
@@ -303,6 +315,20 @@ def assert_desktop_packaging_contract() -> None:
     missing = [snippet for snippet in required_packaged_runtime_snippets if snippet not in main_text]
     if missing:
         raise SystemExit("packaged desktop must stage Hermes Python sources before pip install:\n" + "\n".join(missing))
+    required_update_snippets = [
+        "electron-updater",
+        "autoUpdater.checkForUpdates",
+        "autoUpdater.downloadUpdate",
+        "autoUpdater.quitAndInstall",
+        'ipcMain.handle("redou:app:update"',
+    ]
+    missing = [snippet for snippet in required_update_snippets if snippet not in main_text]
+    if missing:
+        raise SystemExit("desktop main must expose an Electron updater flow:\n" + "\n".join(missing))
+
+    preload_text = preload_path.read_text(encoding="utf-8")
+    if "updateApp" not in preload_text or "redou:app:update" not in preload_text:
+        raise SystemExit("desktop preload must expose the app update IPC bridge")
 
     service_text = service_path.read_text(encoding="utf-8")
     required_service_snippets = [

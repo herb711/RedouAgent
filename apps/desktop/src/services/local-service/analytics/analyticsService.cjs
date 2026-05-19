@@ -492,7 +492,16 @@ class AnalyticsService {
     const records = [];
     for (const project of this.host.readAllProjects()) {
       for (const task of project.tasks || []) {
-        records.push(this.sessionRecordForTask(project, task));
+        const record = this.sessionRecordForTask(project, task);
+        if (
+          record.is_active ||
+          record.queue_depth > 0 ||
+          record.message_count > 0 ||
+          record.tool_call_count > 0 ||
+          record.preview
+        ) {
+          records.push(record);
+        }
       }
     }
     return records.sort((a, b) => {
