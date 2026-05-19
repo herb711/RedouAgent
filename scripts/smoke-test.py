@@ -274,6 +274,8 @@ def main() -> int:
     if node:
         run("Desktop service facade syntax", [node, "--check", "apps/desktop/src/services/redouLocalService.cjs"])
         run("Desktop local service syntax", [node, "--check", "apps/desktop/src/services/local-service/index.cjs"])
+        run("Desktop artifact service syntax", [node, "--check", "apps/desktop/src/services/local-service/artifacts/artifactService.cjs"])
+        run("Desktop log service syntax", [node, "--check", "apps/desktop/src/services/local-service/logs/logService.cjs"])
         run("Desktop plugin service syntax", [node, "--check", "apps/desktop/src/services/local-service/plugins/pluginService.cjs"])
         run("Desktop skill service syntax", [node, "--check", "apps/desktop/src/services/local-service/skills/skillService.cjs"])
         run("Desktop task skill client syntax", [node, "--check", "apps/desktop/src/services/redouTaskSkillClient.cjs"])

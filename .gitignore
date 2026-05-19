@@ -15,6 +15,9 @@ Thumbs.db
 .venv/
 venv/
 logs/
+!apps/desktop/src/services/local-service/logs/
+apps/desktop/src/services/local-service/logs/*
+!apps/desktop/src/services/local-service/logs/logService.cjs
 tmp/
 temp/
 .pytest_cache/

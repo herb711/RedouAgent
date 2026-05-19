@@ -6,6 +6,8 @@
 // - Task context assembly, context policy, compression hooks, and attachment formatting live in context/contextBuilder.cjs.
 // - Status/session/usage/analysis read models live in analytics/analyticsService.cjs.
 // - Settings, theme/language, and dashboard config routing live in settings/settingsService.cjs.
+// - User input attachment file operations live in artifacts/artifactService.cjs.
+// - UI log reads and task JSONL journals live in logs/logService.cjs.
 // - Plugin hub/runtime actions live in plugins/pluginService.cjs; skills and task skill packaging live in skills/skillService.cjs.
 // - Local event publishing and lifecycle init/dispose/health behavior live in eventBus.cjs and lifecycle.cjs.
 const crypto = require("crypto");
@@ -19,6 +21,8 @@ const { ContextBuilder } = require("./context/contextBuilder.cjs");
 const { ProcessManager } = require("./processes/processManager.cjs");
 const { SchedulerService } = require("./scheduler/schedulerService.cjs");
 const { SettingsService } = require("./settings/settingsService.cjs");
+const { ArtifactService } = require("./artifacts/artifactService.cjs");
+const { LogService } = require("./logs/logService.cjs");
 const { PluginService } = require("./plugins/pluginService.cjs");
 const { SkillService } = require("./skills/skillService.cjs");
 
@@ -43,7 +47,6 @@ const COMPACT_EMERGENCY_RATIO = 0.95;
 const RECENT_TURN_DIGEST_LIMIT = 6;
 const RECENT_TURN_DIGEST_MAX_CHARS = 6000;
 const RECENT_CONVERSATION_MAX_CHARS = 24000;
-const MAX_ATTACHMENT_BYTES = 256 * 1024 * 1024;
 const CONTEXT_RULE_MAX_CHARS = 280;
 const VALID_MESSAGE_ROLES = new Set(["user", "assistant", "system", "tool", "event"]);
 const PROFILE_RUNTIME_CONFIG_KEYS = ["model", "providers", "custom_providers", "model_aliases", "agent"];
@@ -871,97 +874,6 @@ function readTextFirst(files) {
     if (text) return text;
   }
   return "";
-}
-
-const LOG_FILES = {
-  agent: "agent.log",
-  errors: "errors.log",
-  gateway: "gateway.log",
-};
-
-const LOG_LEVEL_ORDER = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
-const LOG_COMPONENT_PREFIXES = {
-  gateway: ["gateway"],
-  agent: ["agent", "run_agent", "model_tools", "batch_runner"],
-  tools: ["tools"],
-  cli: ["hermes_cli", "cli"],
-  cron: ["cron"],
-};
-const LOG_LEVEL_RE = /\s(DEBUG|INFO|WARNING|ERROR|CRITICAL)\s/;
-const LOG_LOGGER_NAME_RE = /\s(?:DEBUG|INFO|WARNING|ERROR|CRITICAL)(?:\s+\[.*?\])?\s+(\S+):/;
-
-function clampLogLineCount(value) {
-  const n = Number(value || 100);
-  if (!Number.isFinite(n)) return 100;
-  return Math.min(500, Math.max(1, Math.round(n)));
-}
-
-function extractLogLevel(line) {
-  const match = String(line || "").match(LOG_LEVEL_RE);
-  return match ? match[1] : null;
-}
-
-function extractLogLoggerName(line) {
-  const match = String(line || "").match(LOG_LOGGER_NAME_RE);
-  return match ? match[1] : null;
-}
-
-function logLineMatchesFilters(line, { minLevel = null, componentPrefixes = null } = {}) {
-  if (minLevel) {
-    const level = extractLogLevel(line);
-    if (level && LOG_LEVEL_ORDER[level] < LOG_LEVEL_ORDER[minLevel]) {
-      return false;
-    }
-  }
-  if (componentPrefixes) {
-    const loggerName = extractLogLoggerName(line);
-    if (!loggerName || !componentPrefixes.some((prefix) => loggerName.startsWith(prefix))) {
-      return false;
-    }
-  }
-  return true;
-}
-
-function splitLogLines(text, { dropFirst = false } = {}) {
-  const lines = String(text || "").split(/\r?\n/);
-  if (lines.length && lines[lines.length - 1] === "") lines.pop();
-  if (dropFirst && lines.length) lines.shift();
-  return lines;
-}
-
-function readLastLogLines(file, count) {
-  const n = Math.max(1, Number(count || 1));
-  try {
-    const stat = fs.statSync(file);
-    if (!stat.size) return [];
-    if (stat.size <= 1_048_576) {
-      return splitLogLines(fs.readFileSync(file, "utf8")).slice(-n);
-    }
-
-    const fd = fs.openSync(file, "r");
-    try {
-      const chunks = [];
-      let position = stat.size;
-      let chunkSize = 8192;
-      let newlineCount = 0;
-      while (position > 0 && newlineCount <= n) {
-        const readSize = Math.min(chunkSize, position);
-        position -= readSize;
-        const buffer = Buffer.allocUnsafe(readSize);
-        fs.readSync(fd, buffer, 0, readSize, position);
-        chunks.unshift(buffer);
-        for (let i = 0; i < buffer.length; i += 1) {
-          if (buffer[i] === 10) newlineCount += 1;
-        }
-        chunkSize = Math.min(chunkSize * 2, 65536);
-      }
-      return splitLogLines(Buffer.concat(chunks).toString("utf8"), { dropFirst: position > 0 }).slice(-n);
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return splitLogLines(readText(file)).slice(-n);
-  }
 }
 
 function readJson(file, fallback) {
@@ -2061,34 +1973,8 @@ function uniqueStrings(values) {
   return result;
 }
 
-function simpleMimeType(file) {
-  const ext = path.extname(file || "").toLowerCase();
-  const map = {
-    ".bmp": "image/bmp",
-    ".gif": "image/gif",
-    ".heic": "image/heic",
-    ".heif": "image/heif",
-    ".jpeg": "image/jpeg",
-    ".jpg": "image/jpeg",
-    ".json": "application/json",
-    ".md": "text/markdown",
-    ".pdf": "application/pdf",
-    ".png": "image/png",
-    ".txt": "text/plain",
-    ".webp": "image/webp",
-  };
-  return map[ext] || "application/octet-stream";
-}
-
 function isImageMime(mimeType) {
   return String(mimeType || "").toLowerCase().startsWith("image/");
-}
-
-function safeAttachmentName(name, fallback = "attachment") {
-  const parsed = path.parse(String(name || fallback));
-  const base = safeSegment(parsed.name, fallback).slice(0, 80);
-  const ext = parsed.ext.replace(/[^A-Za-z0-9.]/g, "").slice(0, 16).toLowerCase();
-  return `${base || fallback}${ext}`;
 }
 
 function eventContent(event) {
@@ -2391,21 +2277,6 @@ function commandSummary(command, record) {
   return `passed: ${cleanCommand} (exitCode ${exitCode})`;
 }
 
-function parseEventsJsonl(text) {
-  return String(text || "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-}
-
 function stateBudgetMaxChars(budget) {
   if (typeof budget === "number") return Math.max(800, Math.floor(budget));
   const source = budget && typeof budget === "object" ? budget : {};
@@ -2688,6 +2559,33 @@ class RedouLocalService {
       activeRuns: this.activeRuns,
     });
     this.settingsService = new SettingsService({ repos: this.db.repositories, eventBus: this.eventBus, dashboardBridge: (action, payload) => this.runDashboardBridge(action, payload) });
+    this.artifactService = new ArtifactService({
+      repos: this.db.repositories,
+      helpers: {
+        compact,
+        findProjectAndTask: (projectId, taskId) => this.findProjectAndTask(projectId, taskId),
+        isoNow,
+        redact,
+        safeSegment,
+      },
+      logger: this.log,
+    });
+    this.logService = new LogService({
+      repos: this.db.repositories,
+      paths: {
+        hermesHome: () => this.hermesHome,
+      },
+      helpers: {
+        findProjectAndTask: (projectId, taskId) => this.findProjectAndTask(projectId, taskId),
+        isoNow,
+        normalizeUserInputStatus,
+        redact,
+        taskEventsPathFromContextPath,
+        updateChatTask: (projectId, taskId, body, options) => this.updateChatTask(projectId, taskId, body, options),
+        validMessageRoles: VALID_MESSAGE_ROLES,
+      },
+      logger: this.log,
+    });
     this.pluginService = new PluginService({ dashboardBridge: (action, payload) => this.runDashboardBridge(action, payload) });
     this.skillService = new SkillService({
       dashboardBridge: (action, payload) => this.runDashboardBridge(action, payload),
@@ -3227,44 +3125,7 @@ class RedouLocalService {
   }
 
   getLogs(params = {}) {
-    const fileKey = String(params?.file || "agent").toLowerCase();
-    const logName = LOG_FILES[fileKey];
-    if (!logName) {
-      throw new Error(`Unknown log file: ${fileKey}`);
-    }
-
-    const lineCount = clampLogLineCount(params?.lines);
-    const rawLevel = String(params?.level || "").toUpperCase();
-    const minLevel = rawLevel && rawLevel !== "ALL" ? rawLevel : null;
-    if (minLevel && !(minLevel in LOG_LEVEL_ORDER)) {
-      throw new Error(`Unknown log level: ${rawLevel}`);
-    }
-
-    const rawComponent = String(params?.component || "").toLowerCase();
-    let componentPrefixes = null;
-    if (rawComponent && rawComponent !== "all") {
-      componentPrefixes = LOG_COMPONENT_PREFIXES[rawComponent];
-      if (!componentPrefixes) {
-        throw new Error(`Unknown log component: ${rawComponent}`);
-      }
-    }
-
-    const search = String(params?.search || "").toLowerCase();
-    const hasFilters = Boolean(minLevel || componentPrefixes || search);
-    const rawLimit = hasFilters ? Math.max(lineCount * 20, 2000) : lineCount;
-    const logPath = path.join(this.hermesHome, "logs", logName);
-    if (!fs.existsSync(logPath)) {
-      return { file: fileKey, lines: [] };
-    }
-
-    let lines = readLastLogLines(logPath, Math.min(rawLimit, 10000));
-    if (minLevel || componentPrefixes) {
-      lines = lines.filter((line) => logLineMatchesFilters(line, { minLevel, componentPrefixes }));
-    }
-    if (search) {
-      lines = lines.filter((line) => line.toLowerCase().includes(search));
-    }
-    return { file: fileKey, lines: lines.slice(-lineCount) };
+    return this.logService.getLogs(params);
   }
 
   getCronJobs() {
@@ -5655,34 +5516,7 @@ class RedouLocalService {
   }
 
   loadMessagesFile(file, context = {}) {
-    const messages = [];
-    const warnings = [];
-    if (!file || !fs.existsSync(file)) return { messages, warnings };
-    const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
-    lines.forEach((line, index) => {
-      if (!line.trim()) return;
-      try {
-        const parsed = JSON.parse(line);
-        const role = String(parsed.role || "").toLowerCase();
-        if (!VALID_MESSAGE_ROLES.has(role)) {
-          warnings.push(`Line ${index + 1}: unsupported role "${role}"`);
-          return;
-        }
-        messages.push({
-          role,
-          content: String(parsed.content || ""),
-          createdAt: parsed.createdAt || parsed.created_at || isoNow(),
-          metadata: parsed.metadata && typeof parsed.metadata === "object" ? parsed.metadata : {},
-          attachments: Array.isArray(parsed.attachments) ? parsed.attachments : [],
-        });
-      } catch (error) {
-        warnings.push(`Line ${index + 1}: ${error.message}`);
-      }
-    });
-    if (warnings.length > 0) {
-      this.log(`redou messages warning projectId=${context.projectId || ""} taskId=${context.taskId || ""} messagesPath=${redact(file)} warnings=${warnings.length}`);
-    }
-    return { messages, warnings };
+    return this.logService.loadMessagesFile(file, context);
   }
 
   getChatTaskMessages(projectId, taskId) {
@@ -5735,126 +5569,23 @@ class RedouLocalService {
   }
 
   appendTaskMessage(projectId, taskId, role, content, metadata = {}, attachments = []) {
-    const { project, task } = this.findProjectAndTask(projectId, taskId);
-    if (!project || !task) throw new Error("Project or task not found");
-    const roleName = VALID_MESSAGE_ROLES.has(String(role).toLowerCase())
-      ? String(role).toLowerCase()
-      : "event";
-    const payload = {
-      role: roleName,
-      content: String(content || ""),
-      createdAt: isoNow(),
-      metadata: {
-        projectId,
-        taskId,
-        ...(task.hermesSessionId ? { hermesSessionId: task.hermesSessionId } : {}),
-        ...(metadata && typeof metadata === "object" ? metadata : {}),
-      },
-      attachments: Array.isArray(attachments) ? attachments : [],
-    };
-    this.db.repositories.logs.appendJsonLine(task.messagesPath, payload);
-    this.appendTaskEventJsonl(task, payload);
-    this.updateChatTask(projectId, taskId, {}, { activate: false });
-    return payload;
+    return this.logService.appendTaskMessage(projectId, taskId, role, content, metadata, attachments);
   }
 
   appendTaskEventJsonl(task, event) {
-    if (!task?.eventsPath) return null;
-    mkdirp(path.dirname(task.eventsPath));
-    const payload = {
-      id: event.id || crypto.randomUUID(),
-      createdAt: event.createdAt || isoNow(),
-      ...event,
-    };
-    this.db.repositories.logs.appendJsonLine(task.eventsPath, payload);
-    return payload;
+    return this.logService.appendTaskEventJsonl(task, event);
   }
 
   readTaskEvents(task) {
-    const eventsPath = task?.eventsPath || taskEventsPathFromContextPath(task?.contextPath || "");
-    return parseEventsJsonl(readText(eventsPath));
+    return this.logService.readTaskEvents(task);
   }
 
   updateUserInputEnvelopeStatus(projectId, taskId, envelopeId, patch = {}) {
-    const id = String(envelopeId || "").trim();
-    if (!id) return false;
-    const { task } = this.findProjectAndTask(projectId, taskId);
-    if (!task || !fs.existsSync(task.messagesPath)) return false;
-    let changed = false;
-    const lines = fs.readFileSync(task.messagesPath, "utf8").split(/\r?\n/);
-    const nextLines = lines.map((line) => {
-      if (!line.trim()) return line;
-      try {
-        const parsed = JSON.parse(line);
-        const metadata = parsed.metadata && typeof parsed.metadata === "object" ? parsed.metadata : {};
-        const envelope = metadata.inputEnvelope && typeof metadata.inputEnvelope === "object"
-          ? metadata.inputEnvelope
-          : null;
-        if (!envelope || String(envelope.id || "") !== id) return line;
-        parsed.metadata = {
-          ...metadata,
-          inputEnvelope: {
-            ...envelope,
-            ...(patch && typeof patch === "object" ? patch : {}),
-            status: normalizeUserInputStatus(patch.status || envelope.status, envelope.status || "pending"),
-          },
-        };
-        changed = true;
-        return JSON.stringify(parsed);
-      } catch {
-        return line;
-      }
-    });
-    if (changed) {
-      fs.writeFileSync(task.messagesPath, `${nextLines.filter((line, index) => line.trim() || index < nextLines.length - 1).join("\n").replace(/\n*$/, "")}\n`, "utf8");
-    }
-    return changed;
+    return this.logService.updateUserInputEnvelopeStatus(projectId, taskId, envelopeId, patch);
   }
 
   removeQueuedUserInputMessage(projectId, taskId, queueId) {
-    const id = String(queueId || "").trim();
-    if (!id) return false;
-    const { task } = this.findProjectAndTask(projectId, taskId);
-    if (!task || !fs.existsSync(task.messagesPath)) return false;
-
-    let changed = false;
-    const lines = fs.readFileSync(task.messagesPath, "utf8").split(/\r?\n/);
-    const nextLines = [];
-    for (const line of lines) {
-      if (!line.trim()) {
-        nextLines.push(line);
-        continue;
-      }
-      try {
-        const parsed = JSON.parse(line);
-        const metadata = parsed.metadata && typeof parsed.metadata === "object" ? parsed.metadata : {};
-        const envelope = metadata.inputEnvelope && typeof metadata.inputEnvelope === "object"
-          ? metadata.inputEnvelope
-          : null;
-        const matches =
-          String(metadata.queueId || "") === id ||
-          String(envelope?.id || "") === id;
-        const isPending =
-          !envelope ||
-          normalizeUserInputStatus(envelope.status, "pending") === "pending";
-        if (String(parsed.role || "").toLowerCase() === "user" && matches && isPending) {
-          changed = true;
-          continue;
-        }
-      } catch {
-        // Keep malformed lines intact; the loader will surface warnings.
-      }
-      nextLines.push(line);
-    }
-
-    if (changed) {
-      const content = nextLines
-        .filter((line, index) => line.trim() || index < nextLines.length - 1)
-        .join("\n")
-        .replace(/\n*$/, "");
-      fs.writeFileSync(task.messagesPath, content ? `${content}\n` : "", "utf8");
-    }
-    return changed;
+    return this.logService.removeQueuedUserInputMessage(projectId, taskId, queueId);
   }
 
   updateQueuedMessage(webContents, input = {}) {
@@ -6052,74 +5783,11 @@ class RedouLocalService {
   }
 
   normalizeAttachmentRecord(record, uploadsPath) {
-    if (!record || typeof record !== "object") return null;
-    const storedPath = String(record.storedPath || record.path || "").trim();
-    const name = compact(record.name || path.basename(storedPath), 180);
-    if (!name) return null;
-    const attachment = {
-      id: compact(record.id || crypto.randomUUID(), 80),
-      name,
-      storedPath,
-      relativePath: compact(record.relativePath || (storedPath ? path.relative(uploadsPath, storedPath) : ""), 500),
-      size: Number.isFinite(Number(record.size)) ? Number(record.size) : 0,
-      mimeType: compact(record.mimeType || simpleMimeType(name), 120),
-      createdAt: record.createdAt || isoNow(),
-      metadata: record.metadata && typeof record.metadata === "object" ? record.metadata : {},
-    };
-    if (record.originalPath) {
-      attachment.originalPath = String(record.originalPath);
-    }
-    return attachment;
+    return this.artifactService.normalizeAttachmentRecord(record, uploadsPath);
   }
 
   copyTaskAttachments(projectId, taskId, filePaths = []) {
-    const { project, task } = this.findProjectAndTask(projectId, taskId);
-    if (!project || !task) throw new Error("Project or task not found");
-    const attachments = [];
-    const warnings = [];
-    this.db.repositories.artifacts.ensureDirectory(task.uploadsPath);
-
-    for (const filePath of Array.isArray(filePaths) ? filePaths : []) {
-      const source = String(filePath || "").trim();
-      if (!source) continue;
-      try {
-        const stat = fs.statSync(source);
-        if (!stat.isFile()) {
-          warnings.push(`${source}: not a file`);
-          continue;
-        }
-        if (stat.size > MAX_ATTACHMENT_BYTES) {
-          warnings.push(`${source}: skipped because it is larger than ${MAX_ATTACHMENT_BYTES} bytes`);
-          continue;
-        }
-        const id = crypto.randomUUID();
-        const fileName = `${Date.now()}-${id.slice(0, 8)}-${safeAttachmentName(path.basename(source))}`;
-        const storedPath = path.join(task.uploadsPath, fileName);
-        this.db.repositories.artifacts.copyFileAtomic(source, storedPath);
-        attachments.push({
-          id,
-          name: path.basename(source),
-          originalPath: source,
-          storedPath,
-          relativePath: path.join(TASK_UPLOADS_DIR, fileName),
-          size: stat.size,
-          mimeType: simpleMimeType(source),
-          createdAt: isoNow(),
-          metadata: {
-            parserStatus: "stored",
-            parserTodo: "Image, PDF, Word and Excel content extraction is intentionally deferred.",
-          },
-        });
-      } catch (error) {
-        warnings.push(`${source}: ${error.message}`);
-      }
-    }
-
-    if (warnings.length > 0) {
-      this.log(`redou attachments warning projectId=${projectId} taskId=${taskId} warnings=${warnings.length}`);
-    }
-    this.log(`redou attachments copied projectId=${projectId} taskId=${taskId} uploadsPath=${redact(task.uploadsPath)} count=${attachments.length}`);
-    return { ok: true, projectId, taskId, uploadsPath: task.uploadsPath, attachments, warnings };
+    return this.artifactService.copyTaskAttachments(projectId, taskId, filePaths);
   }
 
   formatAttachmentSize(size) {

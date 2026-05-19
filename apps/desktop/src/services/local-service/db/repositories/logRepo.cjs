@@ -15,6 +15,12 @@ class LogRepository {
       return "";
     }
   }
+
+  writeText(file, text) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, String(text || ""), "utf8");
+    return file;
+  }
 }
 
 module.exports = {
