@@ -120,6 +120,107 @@ test("chat project task runtime status distinguishes running completed and inter
   assert.equal(byId.get(runningTask.id).runtime_status, "running");
 });
 
+test("chat project task runtime status does not treat completed false alone as failure", () => {
+  const { service, project, task } = makeService();
+
+  service.appendTaskMessage(project.id, task.id, "user", "Build a web game.");
+  service.appendTaskMessage(project.id, task.id, "event", "done", {
+    eventType: "done",
+    event: {
+      type: "done",
+      metadata: {
+        runId: "run-weak-complete",
+        completed: false,
+        rawCompleted: false,
+        exitCode: 0,
+      },
+    },
+  });
+
+  const response = service.getChatProjects();
+  const savedProject = response.projects.find((item) => item.id === project.id);
+  const savedTask = savedProject.tasks.find((item) => item.id === task.id);
+
+  assert.equal(savedTask.runtime_status, "completed");
+});
+
+test("chat project task runtime status still fails explicit unsuccessful done events", () => {
+  const { service, project, task } = makeService();
+
+  service.appendTaskMessage(project.id, task.id, "user", "Keep working until the iteration budget ends.");
+  service.appendTaskMessage(project.id, task.id, "event", "done", {
+    eventType: "done",
+    event: {
+      type: "done",
+      metadata: {
+        runId: "run-exhausted",
+        completed: false,
+        rawCompleted: false,
+        exitCode: 0,
+        turnExitReason: "max_iterations_reached(40/40)",
+      },
+    },
+  });
+
+  const response = service.getChatProjects();
+  const savedProject = response.projects.find((item) => item.id === project.id);
+  const savedTask = savedProject.tasks.find((item) => item.id === task.id);
+
+  assert.equal(savedTask.runtime_status, "failed");
+});
+
+test("chat project task runtime status treats latest done as authoritative over older errors", () => {
+  const { service, project, task } = makeService();
+
+  service.appendTaskMessage(project.id, task.id, "user", "Fix the task after an earlier error.");
+  service.appendTaskMessage(project.id, task.id, "event", "Temporary tool error.", {
+    eventType: "error",
+    event: { type: "error", message: "Temporary tool error." },
+  });
+  service.appendTaskMessage(project.id, task.id, "event", "done", {
+    eventType: "done",
+    event: {
+      type: "done",
+      metadata: {
+        completed: true,
+        exitCode: 0,
+      },
+    },
+  });
+
+  const response = service.getChatProjects();
+  const savedProject = response.projects.find((item) => item.id === project.id);
+  const savedTask = savedProject.tasks.find((item) => item.id === task.id);
+
+  assert.equal(savedTask.runtime_status, "completed");
+});
+
+test("chat project task runtime status lets latest failed done override older assistant output", () => {
+  const { service, project, task } = makeService();
+
+  service.appendTaskMessage(project.id, task.id, "user", "Run until the final result is known.");
+  service.appendTaskMessage(project.id, task.id, "assistant", "I made progress before the run failed.", {
+    eventType: "assistant_message",
+    event: { type: "assistant_message", content: "I made progress before the run failed." },
+  });
+  service.appendTaskMessage(project.id, task.id, "event", "done", {
+    eventType: "done",
+    event: {
+      type: "done",
+      metadata: {
+        completed: false,
+        exitCode: 1,
+      },
+    },
+  });
+
+  const response = service.getChatProjects();
+  const savedProject = response.projects.find((item) => item.id === project.id);
+  const savedTask = savedProject.tasks.find((item) => item.id === task.id);
+
+  assert.equal(savedTask.runtime_status, "failed");
+});
+
 test("desktop analytics and session messages use local task logs", () => {
   const { service, project, task } = makeService();
   service.appendTaskMessage(project.id, task.id, "user", "Inspect the project.");

@@ -14,6 +14,12 @@ let localService = null;
 let statusLines = [];
 let logFile = null;
 let rendererLoaded = false;
+let rendererLoading = false;
+let statusPageReady = false;
+let statusPageLoadPromise = null;
+let statusPageGeneration = 0;
+let statusUpdateTimer = null;
+let currentStatusTitle = "Starting";
 let shutdownComplete = false;
 let activePythonHermesRoot = null;
 let gitBashLookupComplete = false;
@@ -214,10 +220,8 @@ function escapeHtml(value) {
     .replaceAll('"', "&quot;");
 }
 
-function renderStatus(title = "Starting") {
-  if (rendererLoaded) return;
-  if (!mainWindow) return;
-  const html = `<!doctype html>
+function buildStatusHtml(title = "Starting") {
+  return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8" />
@@ -262,13 +266,67 @@ function renderStatus(title = "Starting") {
 </head>
 <body>
   <main>
-    <h1>${escapeHtml(title)}</h1>
+    <h1 data-status-title>${escapeHtml(title)}</h1>
     <p>Preparing the native Redou Agent runtime.</p>
-    <pre>${escapeHtml(statusLines.join("\n"))}</pre>
+    <pre data-status-lines>${escapeHtml(statusLines.join("\n"))}</pre>
   </main>
 </body>
 </html>`;
-  mainWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+}
+
+function clearStatusUpdateTimer() {
+  if (!statusUpdateTimer) return;
+  clearTimeout(statusUpdateTimer);
+  statusUpdateTimer = null;
+}
+
+function scheduleStatusContentUpdate() {
+  if (rendererLoaded || rendererLoading || !statusPageReady) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (statusUpdateTimer) return;
+  statusUpdateTimer = setTimeout(() => {
+    statusUpdateTimer = null;
+    if (rendererLoaded || rendererLoading || !statusPageReady) return;
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    const script = `(() => {
+      const titleNode = document.querySelector("[data-status-title]");
+      const linesNode = document.querySelector("[data-status-lines]");
+      if (titleNode) titleNode.textContent = ${JSON.stringify(currentStatusTitle)};
+      if (linesNode) linesNode.textContent = ${JSON.stringify(statusLines.join("\n"))};
+    })();`;
+    mainWindow.webContents.executeJavaScript(script, true).catch(() => {});
+  }, 50);
+}
+
+function renderStatus(title = "Starting") {
+  if (rendererLoaded || rendererLoading) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  currentStatusTitle = title;
+  if (statusPageReady) {
+    scheduleStatusContentUpdate();
+    return;
+  }
+  if (statusPageLoadPromise) return;
+
+  const generation = statusPageGeneration;
+  const targetWindow = mainWindow;
+  const statusUrl = `data:text/html;charset=utf-8,${encodeURIComponent(buildStatusHtml(title))}`;
+  statusPageLoadPromise = targetWindow
+    .loadURL(statusUrl)
+    .then(() => {
+      if (generation !== statusPageGeneration || targetWindow !== mainWindow) return;
+      if (rendererLoaded || rendererLoading) return;
+      statusPageReady = true;
+      scheduleStatusContentUpdate();
+    })
+    .catch(() => {
+      // A later renderer navigation can cancel the transient status page load.
+    })
+    .finally(() => {
+      if (generation === statusPageGeneration && targetWindow === mainWindow) {
+        statusPageLoadPromise = null;
+      }
+    });
 }
 
 function pushStatus(line) {
@@ -286,6 +344,11 @@ function pushStatus(line) {
 
 function createWindow() {
   rendererLoaded = false;
+  rendererLoading = false;
+  statusPageReady = false;
+  statusPageLoadPromise = null;
+  statusPageGeneration += 1;
+  clearStatusUpdateTimer();
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 920,
@@ -310,6 +373,9 @@ function createWindow() {
 
   mainWindow.on("closed", () => {
     mainWindow = null;
+    statusPageReady = false;
+    statusPageLoadPromise = null;
+    clearStatusUpdateTimer();
   });
 }
 
@@ -558,7 +624,10 @@ ipcMain.handle("redou:chat:stop-task", (event, projectId, taskId) =>
   getLocalService().stopTaskRun(projectId, taskId, event.sender),
 );
 
-ipcMain.handle("redou:status", () => getLocalService().getStatus());
+ipcMain.handle("redou:status", () => ({
+  ...getLocalService().getStatus(),
+  version: typeof app.getVersion === "function" ? app.getVersion() : "unknown",
+}));
 
 ipcMain.handle("redou:config:get", () => getLocalService().getConfig());
 ipcMain.handle("redou:config:defaults", () => getLocalService().getConfigDefaults());
@@ -904,8 +973,17 @@ async function loadRenderer() {
     throw new Error(`Renderer build not found: ${indexPath}`);
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
-    await mainWindow.loadFile(indexPath, { hash: "/workspace" });
-    rendererLoaded = true;
+    rendererLoading = true;
+    statusPageReady = false;
+    statusPageLoadPromise = null;
+    statusPageGeneration += 1;
+    clearStatusUpdateTimer();
+    try {
+      await mainWindow.loadFile(indexPath, { hash: "/workspace" });
+      rendererLoaded = true;
+    } finally {
+      rendererLoading = false;
+    }
   }
 }
 

@@ -8,6 +8,7 @@
 
 Var RedouPrereqPage
 Var RedouPrereqMissingCode
+Var RedouPrereqInstallRequired
 Var RedouPrereqStatusText
 
 !macro customPageAfterChangeDir
@@ -33,6 +34,7 @@ FunctionEnd
 
 Function RedouPrereqPagePre
   Call RedouPrereqCheck
+  StrCpy $RedouPrereqInstallRequired "0"
 
   !insertmacro MUI_HEADER_TEXT "Environment Check" "Redou Agent checks runtime dependencies before installation."
 
@@ -57,23 +59,45 @@ FunctionEnd
 
 Function RedouPrereqPageLeave
   ${If} $RedouPrereqMissingCode == "0"
+    StrCpy $RedouPrereqInstallRequired "0"
     Return
   ${EndIf}
 
   MessageBox MB_OKCANCEL|MB_ICONINFORMATION "Redou Agent will now install the missing runtime dependencies. This may take several minutes." IDOK install IDCANCEL cancel
 
 install:
-  Call RedouPrereqWriteScript
-  nsExec::ExecToStack 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\redou-install-prerequisites.ps1" -Install'
-  Pop $0
-  Pop $1
-  ${If} $0 == "0"
-    Return
-  ${EndIf}
-
-  MessageBox MB_RETRYCANCEL|MB_ICONSTOP "Automatic dependency installation failed.$\r$\n$\r$\n$1" IDRETRY install IDCANCEL cancel
+  StrCpy $RedouPrereqInstallRequired "1"
+  Return
 
 cancel:
   Abort
 FunctionEnd
+
+Function RedouPrereqInstallMissing
+  ${If} $RedouPrereqInstallRequired != "1"
+    Return
+  ${EndIf}
+
+  Call RedouPrereqWriteScript
+  SetDetailsView show
+  SetDetailsPrint both
+  DetailPrint "Installing missing runtime dependencies. This may take several minutes."
+
+retry:
+  nsExec::ExecToLog 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$PLUGINSDIR\redou-install-prerequisites.ps1" -Install'
+  Pop $0
+  ${If} $0 == "0"
+    DetailPrint "Runtime dependencies are ready."
+    Return
+  ${EndIf}
+
+  MessageBox MB_RETRYCANCEL|MB_ICONSTOP "Automatic dependency installation failed with code $0.$\r$\n$\r$\nSee the details log above for dependency output." IDRETRY retry IDCANCEL cancel
+
+cancel:
+  Abort "Redou Agent dependency installation failed."
+FunctionEnd
+
+!macro customInstall
+  Call RedouPrereqInstallMissing
+!macroend
 !endif

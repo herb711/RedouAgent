@@ -6225,6 +6225,10 @@ class RedouLocalService {
     }
 
     const adapterPath = desktopSourcePath("hermes_adapter.py");
+    const planDir = path.join(this.projectHermesHome(project), "plans");
+    if (runMode === "plan") {
+      mkdirp(planDir);
+    }
     const runStartedAtMs = Date.now();
     const runStartedAt = new Date(runStartedAtMs).toISOString();
     let runRecord = null;
@@ -6395,6 +6399,7 @@ class RedouLocalService {
           REDOU_TASK_ID: taskId,
           REDOU_PROJECT_HERMES_HOME: this.projectHermesHome(project),
           REDOU_PROJECT_SKILLS_DIR: this.projectSkillsDir(project),
+          REDOU_PLAN_DIR: planDir,
           REDOU_HERMES_PROFILE: project.hermesProfile,
           HERMES_INTERACTIVE: "1",
           HERMES_EXEC_ASK: "",

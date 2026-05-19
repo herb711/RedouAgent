@@ -171,6 +171,16 @@ REDOU_STAGE_EVENT_PROTOCOL = (
     "cannot be completed or recovered."
 )
 
+REDOU_TODO_EVENT_PROTOCOL = (
+    "Redou Task Checklist Protocol: for any non-trivial Redou task with "
+    "multiple steps, file creation or edits, testing, debugging, or delivery "
+    "work, use the `todo` tool to maintain a visible checklist for the Task "
+    "Details panel. Create the list before substantial work starts, keep "
+    "exactly one item in_progress when possible, mark items completed as soon "
+    "as they are done, and update the list before the final response. Keep "
+    "items concise and action-oriented."
+)
+
 HERMES_AGENT_HELP_GUIDANCE = (
     "If the user asks about configuring, setting up, or using Hermes Agent "
     "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
@@ -523,6 +533,8 @@ PLATFORM_HINTS = {
         "Current User Request, treat the current request and recent messages as "
         "fresher.\n\n"
         + REDOU_STAGE_EVENT_PROTOCOL
+        + "\n\n"
+        + REDOU_TODO_EVENT_PROTOCOL
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "

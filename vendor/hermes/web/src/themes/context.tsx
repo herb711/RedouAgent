@@ -265,6 +265,7 @@ function injectFontStylesheet(url: string | undefined) {
 function applyTheme(theme: DashboardTheme) {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
+  root.dataset.theme = theme.name;
 
   // Clear any overrides from a previous theme before applying the new set.
   for (const cssVar of ALL_OVERRIDE_VARS) {

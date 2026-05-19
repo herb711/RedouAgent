@@ -584,6 +584,7 @@ export interface ChatTask {
   queue_depth?: number;
   run_started_at?: number | null;
   last_active?: number | null;
+  current_stage?: unknown;
   runtime_status?: "idle" | "queued" | "running" | "completed" | "failed" | "interrupted" | string;
 }
 

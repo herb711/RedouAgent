@@ -55,11 +55,14 @@ RUN_STAGE_STATUSES = {
 PLAN_MODE_SYSTEM_CONTEXT = """
 Redou Plan Mode is active for this turn.
 
-Follow the Hermes bundled plan skill behavior:
+Follow the Redou Plan Mode behavior:
 - Plan only. Do not implement code or modify project files except the plan markdown file.
 - You may inspect the workspace with read-only tools and commands when needed.
 - Do not run mutating terminal commands, commit, push, install packages, or perform external actions.
-- Write a concrete markdown plan under `.hermes/plans/` in the active workspace.
+- Write a concrete markdown plan under the Redou-managed project plan directory.
+- Use the `REDOU_PLAN_DIR` environment variable when available.
+- If `REDOU_PLAN_DIR` is unavailable, use `.redou/plans/` in the active workspace.
+- Do not write plans under `.hermes/plans/`.
 - Include the goal, current context and assumptions, proposed approach, step-by-step plan, likely files to change, tests or validation, and risks or open questions when relevant.
 - After saving the plan, reply briefly with the plan summary and saved path.
 
@@ -509,8 +512,11 @@ def main() -> int:
                 }
             )
 
+    streamed_response_parts: list[str] = []
+
     def stream_delta(delta: str) -> None:
         if delta:
+            streamed_response_parts.append(delta)
             _emit({"type": "assistant_delta", "content": delta, "metadata": metadata})
 
     def status_update(kind: str, value: Any = None) -> None:
@@ -652,8 +658,28 @@ def main() -> int:
         final_response = _strip_run_stage_json_lines(
             str((result or {}).get("final_response") or "").strip()
         )
+        streamed_response = _strip_run_stage_json_lines(
+            "".join(streamed_response_parts).strip()
+        )
+        if not final_response and streamed_response:
+            final_response = streamed_response
         if not final_response and last_reasoning_preview:
             final_response = last_reasoning_preview
+        result_failed = bool((result or {}).get("failed") or (result or {}).get("error"))
+        result_interrupted = bool((result or {}).get("interrupted"))
+        result_partial = bool((result or {}).get("partial"))
+        result_completed = (result or {}).get("completed")
+        turn_exit_reason = str((result or {}).get("turn_exit_reason") or "")
+        done_completed = result_completed
+        if (
+            result_completed is False
+            and final_response
+            and not result_failed
+            and not result_interrupted
+            and not result_partial
+            and "max_iterations" not in turn_exit_reason
+        ):
+            done_completed = True
         if final_response:
             _emit(
                 {
@@ -708,7 +734,13 @@ def main() -> int:
                     **metadata,
                     **_turn_timing_metadata(turn_started_at, turn_started_monotonic),
                     "hermesSessionId": getattr(agent, "session_id", session_id),
-                    "completed": (result or {}).get("completed"),
+                    "completed": done_completed,
+                    "rawCompleted": result_completed,
+                    "failed": result_failed,
+                    "partial": result_partial,
+                    "interrupted": result_interrupted,
+                    "turnExitReason": turn_exit_reason,
+                    "error": (result or {}).get("error"),
                     "apiCalls": (result or {}).get("api_calls"),
                     "inputTokens": (result or {}).get("input_tokens"),
                     "outputTokens": (result or {}).get("output_tokens"),

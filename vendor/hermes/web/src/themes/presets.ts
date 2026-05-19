@@ -133,12 +133,12 @@ export const monoTheme: DashboardTheme = {
 export const paperTheme: DashboardTheme = {
   name: "paper",
   label: "Paper",
-  description: "White canvas with black text",
+  description: "Soft paper canvas with ink and restrained status color",
   palette: {
-    background: { hex: "#fbfbf8", alpha: 1 },
-    midground: { hex: "#111111", alpha: 1 },
-    foreground: { hex: "#000000", alpha: 0 },
-    warmGlow: "rgba(0, 0, 0, 0)",
+    background: { hex: "#f7f5ef", alpha: 1 },
+    midground: { hex: "#2c2924", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(149, 121, 82, 0.08)",
     noiseOpacity: 0,
   },
   typography: DEFAULT_TYPOGRAPHY,
@@ -147,13 +147,54 @@ export const paperTheme: DashboardTheme = {
     backdrop: {
       fillerOpacity: "0",
     },
+    card: {
+      background: "color-mix(in srgb, var(--color-card) 88%, transparent)",
+      boxShadow: "0 1px 2px rgba(44, 41, 36, 0.05)",
+    },
+    header: {
+      background: "color-mix(in srgb, var(--color-card) 92%, transparent)",
+    },
+    sidebar: {
+      background: "color-mix(in srgb, var(--color-card) 92%, transparent)",
+    },
   },
   colorOverrides: {
-    destructive: "#dc2626",
-    destructiveForeground: "#ffffff",
-    success: "#15803d",
-    warning: "#b45309",
+    card: "#fffdf8",
+    cardForeground: "#2c2924",
+    popover: "#fffdf8",
+    popoverForeground: "#2c2924",
+    primary: "#2c2924",
+    primaryForeground: "#f7f5ef",
+    secondary: "#ebe7dc",
+    secondaryForeground: "#3f3931",
+    muted: "#eeeae0",
+    mutedForeground: "#756e63",
+    accent: "#e5eee8",
+    accentForeground: "#244236",
+    destructive: "#b84a48",
+    destructiveForeground: "#fff7f4",
+    success: "#2f7d57",
+    warning: "#96651f",
+    border: "#d8d1c4",
+    input: "#d8d1c4",
+    ring: "#5d7e6d",
   },
+  customCSS: `
+:root[data-theme="paper"] .bg-black\\/10,
+:root[data-theme="paper"] .bg-black\\/15,
+:root[data-theme="paper"] .bg-black\\/20,
+:root[data-theme="paper"] .bg-black\\/25 {
+  background-color: color-mix(in srgb, var(--midground-base) 5%, transparent);
+}
+
+:root[data-theme="paper"] .bg-black\\/30 {
+  background-color: color-mix(in srgb, var(--midground-base) 7%, transparent);
+}
+
+:root[data-theme="paper"] .shadow-black\\/30 {
+  --tw-shadow-color: rgb(44 41 36 / 0.14);
+}
+`,
 };
 
 export const cyberpunkTheme: DashboardTheme = {

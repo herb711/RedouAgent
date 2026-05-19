@@ -122,6 +122,61 @@ function mergeMetadata(message = {}) {
   };
 }
 
+function truthyFailureText(value) {
+  if (value == null || value === false) return "";
+  const text = typeof value === "string" ? value.trim() : JSON.stringify(value);
+  if (!text || text === "false" || text === "null") return "";
+  return text;
+}
+
+function doneRuntimeStatus(combined = {}) {
+  const exitCode = Number(combined.exitCode);
+  const turnExitReason = String(combined.turnExitReason || combined.turn_exit_reason || "").toLowerCase();
+  const interrupted = Boolean(
+    combined.cancelled ||
+      combined.canceled ||
+      combined.stopRequested ||
+      combined.interrupted ||
+      combined.replacedByRunId,
+  );
+  if (interrupted) return "interrupted";
+
+  const failed = Boolean(
+    combined.failed === true ||
+      combined.partial === true ||
+      truthyFailureText(combined.error) ||
+      truthyFailureText(combined.failure) ||
+      truthyFailureText(combined.exception) ||
+      (combined.completed === false && /max_iterations|error|failed|failure|exception|invalid/.test(turnExitReason)) ||
+      (Number.isFinite(exitCode) && exitCode !== 0),
+  );
+  return failed ? "failed" : "completed";
+}
+
+function interruptionTextFromMessage(message = {}) {
+  const { combined, event } = mergeMetadata(message);
+  return [
+    message.content,
+    event.message,
+    combined.message,
+    combined.reason,
+    combined.error,
+  ].filter(Boolean).join(" ");
+}
+
+function isInterruptionText(text) {
+  return /stopped|interrupted|cancelled|canceled|closing/i.test(String(text || ""));
+}
+
+function previousRunMessagesIndicateInterruption(messages, doneIndex) {
+  for (let index = doneIndex - 1; index >= 0; index -= 1) {
+    const message = messages[index] || {};
+    if (String(message.role || "").toLowerCase() === "user") return false;
+    if (isInterruptionText(interruptionTextFromMessage(message))) return true;
+  }
+  return false;
+}
+
 class AnalyticsService {
   constructor({ host, paths = {}, analysis = {} }) {
     if (!host) throw new Error("AnalyticsService requires a host service.");
@@ -304,19 +359,16 @@ class AnalyticsService {
       projectId: project.id,
       taskId: task.id,
     });
-    let doneStatus = null;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index] || {};
       const { combined, event, eventType } = mergeMetadata(message);
       const role = String(message.role || "").toLowerCase();
 
       if (eventType === "done") {
-        const exitCode = Number(combined.exitCode);
-        doneStatus =
-          combined.completed === false || (Number.isFinite(exitCode) && exitCode !== 0)
-            ? "failed"
-            : "completed";
-        continue;
+        const status = doneRuntimeStatus(combined);
+        return status === "failed" && previousRunMessagesIndicateInterruption(messages, index)
+          ? "interrupted"
+          : status;
       }
 
       if (eventType === "error") {
@@ -326,7 +378,7 @@ class AnalyticsService {
           combined.message,
           combined.reason,
         ].filter(Boolean).join(" ");
-        return /stopped|interrupted|cancelled|canceled|closing/i.test(text)
+        return isInterruptionText(text)
           ? "interrupted"
           : "failed";
       }
@@ -336,11 +388,11 @@ class AnalyticsService {
       }
 
       if (role === "user") {
-        return doneStatus || "idle";
+        return "idle";
       }
     }
 
-    return doneStatus || "idle";
+    return "idle";
   }
 
   decorateTaskRuntime(project, task) {

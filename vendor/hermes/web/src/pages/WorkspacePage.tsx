@@ -449,22 +449,10 @@ type TaskViewModel = {
   updatedAt: number;
 };
 
-const STAGE_ORDER: StageKey[] = [
-  "analysis",
-  "editing",
-  "testing",
-  "packaging",
-  "finalizing",
-];
-
 const ATTENTION_RE =
   /confirm|confirmation|permission|overwrite|blocked|waiting|needs_attention|approval|api key|provider|model config|path|skill conflict|test failed|failed|failure|error|确认|权限|覆盖|阻塞|等待|路径|冲突|测试失败|失败|错误|异常/i;
 const ERROR_RE = /error|failed|failure|exception|traceback|timeout|退出|失败|错误|异常|超时/i;
 const TEST_RE = /\b(pytest|node --test|npm test|pnpm test|yarn test|tests? passed|tests? failed|52 tests passed)\b|测试|验证/i;
-const PACKAGE_RE = /\b(zip|export|archive|package|tar|7z)\b|打包|导出|归档/i;
-const EDIT_RE = /\b(write_file|edit_file|apply_patch|patch|file_changed|update_file|create_file|delete_file)\b|修改|写入|补丁/i;
-const ANALYSIS_RE = /\b(read_file|search|grep|list_dir|rg|find)\b|分析|读取|搜索/i;
-const FINAL_RE = /\b(final|done|summary|assistant_message)\b|总结|整理|完成/i;
 
 function taskKey(projectId: string, taskId: string): string {
   return `${projectId}:${taskId}`;
@@ -809,19 +797,21 @@ function normalizeTaskStatus(
 ): NormalizedTaskStatus {
   if (hints.running) return "running";
   if ((hints.queueDepth ?? 0) > 0) return "queued";
-  if (hints.needsAttention) return "needs_attention";
-  if (hints.hasError) return "failed";
 
   const raw = String(rawStatus || "").trim().toLowerCase();
   if (["done", "completed", "success", "succeeded"].includes(raw)) return "completed";
-  if (["running", "active"].includes(raw)) return "running";
-  if (["queued", "pending"].includes(raw)) return "queued";
+  if (["failed", "error"].includes(raw)) return "failed";
+  if (["cancelled", "canceled", "interrupted", "stopped"].includes(raw)) return "cancelled";
   if (["blocked", "waiting", "needs_attention", "confirmation_required"].includes(raw)) {
     return "needs_attention";
   }
-  if (["failed", "error"].includes(raw)) return "failed";
-  if (["cancelled", "canceled", "interrupted", "stopped"].includes(raw)) return "cancelled";
+  if (["running", "active"].includes(raw)) return "running";
+  if (["queued", "pending"].includes(raw)) return "queued";
   if (raw === "paused") return "paused";
+
+  if (hints.needsAttention) return "needs_attention";
+  if (hints.hasError) return "failed";
+
   if (raw === "idle") {
     if (hints.hasCompleted) return "completed";
     if (!hints.hasStarted) return "not_started";
@@ -1000,6 +990,59 @@ function currentEvent(events: TaskEventView[]): TaskEventView | null {
   return null;
 }
 
+function taskEventRunId(event: TaskEventView | null): string {
+  if (!event) return "";
+  const rawMetadata = isRecord(event.raw?.metadata) ? event.raw.metadata : {};
+  return cleanText(event.raw?.runId ?? rawMetadata.runId, "", 160);
+}
+
+function latestRunIdFromEvents(events: TaskEventView[]): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const runId = taskEventRunId(events[index]);
+    if (runId) return runId;
+  }
+  return "";
+}
+
+function latestTurnRuntimeEvents(events: TaskEventView[]): TaskEventView[] {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index].type === "user") return events.slice(index + 1);
+  }
+  return events;
+}
+
+function runtimeStageEventFromTask(task: ChatTask): TaskEventView | null {
+  const rawStage = isRecord(task.current_stage) ? task.current_stage : null;
+  if (!rawStage) return null;
+
+  const stage = cleanText(rawStage.stage, "", 80);
+  const label = cleanText(rawStage.label ?? stage, "", 140);
+  const status = cleanText(rawStage.status, "running", 40);
+  if (!stage && !label) return null;
+
+  const timestamp = timestampMs(
+    rawStage.timestamp ?? rawStage.createdAt ?? task.last_active ?? task.updatedAt ?? task.updated_at,
+    Date.now(),
+  );
+  return {
+    command: "",
+    id: `runtime-stage-${stage || label}-${timestamp}`,
+    label: "stage",
+    raw: {
+      ...rawStage,
+      type: "run_stage",
+      stage,
+      status,
+      label,
+      runId: task.active_run_id ?? undefined,
+    },
+    summary: label || stage,
+    timestampMs: timestamp,
+    tool: "",
+    type: "run_stage",
+  };
+}
+
 function currentActionFromEvent(event: TaskEventView | null, copy: WorkspaceCopy): string {
   if (!event) return copy.waitingStart;
   if (event.type === "command_start") return cleanText(event.summary, "运行命令", 160);
@@ -1022,16 +1065,17 @@ function currentToolFromEvent(event: TaskEventView | null, copy: WorkspaceCopy):
   return copy.noCommand;
 }
 
-function stageLabel(key: StageKey, copy: WorkspaceCopy): string {
-  return copy.stageLabels[key];
-}
-
 function buildStageTimeline(
   events: TaskEventView[],
-  status: NormalizedTaskStatus,
   copy: WorkspaceCopy,
 ): { currentStage: string; inferredStage: boolean; timeline: StageTimelineItem[] } {
-  const explicitStageEvents = events.filter((event) => event.type === "run_stage");
+  const latestEvents = latestTurnRuntimeEvents(events);
+  const latestRunId = latestRunIdFromEvents(latestEvents);
+  const explicitStageEvents = latestEvents.filter((event) => {
+    if (event.type !== "run_stage") return false;
+    const eventRunId = taskEventRunId(event);
+    return latestRunId ? eventRunId === latestRunId : true;
+  });
   if (explicitStageEvents.length > 0) {
     const byStage = new Map<string, TaskEventView>();
     for (const event of explicitStageEvents) {
@@ -1068,48 +1112,10 @@ function buildStageTimeline(
     };
   }
 
-  const reached = new Set<StageKey>();
-  let latestStage: StageKey | null = null;
-  for (const event of events) {
-    const source = `${event.type} ${event.tool} ${event.command} ${event.summary}`.toLowerCase();
-    let stage: StageKey | null = null;
-    if (PACKAGE_RE.test(source)) stage = "packaging";
-    else if (TEST_RE.test(source)) stage = "testing";
-    else if (EDIT_RE.test(source)) stage = "editing";
-    else if (ANALYSIS_RE.test(source)) stage = "analysis";
-    else if (FINAL_RE.test(source)) stage = "finalizing";
-    if (stage) {
-      reached.add(stage);
-      latestStage = stage;
-    }
-  }
-
-  if (status === "completed") latestStage = latestStage ?? "finalizing";
-  if (!latestStage && status === "running") latestStage = "analysis";
-
-  const latestIndex = latestStage ? STAGE_ORDER.indexOf(latestStage) : -1;
-  const timeline = STAGE_ORDER.map((key, index) => {
-    let stageStatus: StageEventStatus = "pending";
-    if (status === "completed" && (index <= latestIndex || reached.has(key))) {
-      stageStatus = "completed";
-    } else if ((status === "failed" || status === "needs_attention") && index === Math.max(latestIndex, 0)) {
-      stageStatus = status === "failed" ? "failed" : "running";
-    } else if (index < latestIndex || reached.has(key)) {
-      stageStatus = "completed";
-    } else if (index === latestIndex) {
-      stageStatus = status === "cancelled" ? "pending" : "running";
-    }
-    return {
-      key,
-      label: stageLabel(key, copy),
-      status: stageStatus,
-    };
-  });
-
   return {
-    currentStage: latestStage ? stageLabel(latestStage, copy) : copy.waitingStart,
-    inferredStage: events.length > 0,
-    timeline,
+    currentStage: "",
+    inferredStage: false,
+    timeline: [],
   };
 }
 
@@ -1136,6 +1142,19 @@ function normalizeChangeType(value: unknown): ArtifactView["changeType"] {
   if (["deleted", "delete", "removed", "remove"].includes(raw)) return "deleted";
   if (["modified", "modify", "updated", "update", "changed", "change"].includes(raw)) return "modified";
   return "unknown";
+}
+
+const ARTIFACT_PATH_RE =
+  /(?:[A-Za-z]:\\[^\s`"'<>|]+|\/[^\s`"'<>|]+)\.(?:html?|css|js|jsx|ts|tsx|mjs|cjs|json|md|txt|csv|xml|ya?ml|png|jpe?g|gif|webp|svg|pdf|docx?|xlsx?|pptx?|zip|7z|tar|tgz|gz)/gi;
+
+function artifactPathsFromText(value: unknown): string[] {
+  const text = String(value || "");
+  const paths = new Set<string>();
+  for (const match of text.matchAll(ARTIFACT_PATH_RE)) {
+    const pathValue = String(match[0] || "").replace(/[.,;:)\]}]+$/g, "").trim();
+    if (pathValue) paths.add(pathValue);
+  }
+  return Array.from(paths);
 }
 
 function extractArtifacts(
@@ -1172,6 +1191,22 @@ function extractArtifacts(
         taskTitle: task.title,
         type: "skill",
       });
+    }
+    if (event.type === "assistant_message" || event.type === "raw_log") {
+      const sourceText = event.raw?.content ?? event.raw?.message ?? event.summary;
+      for (const pathValue of artifactPathsFromText(sourceText)) {
+        if (byPath.has(pathValue)) continue;
+        byPath.set(pathValue, {
+          changeType: "added",
+          generatedAtMs: event.timestampMs,
+          id: `${task.id}:mentioned:${pathValue}`,
+          name: artifactName(pathValue),
+          path: pathValue,
+          taskId: task.id,
+          taskTitle: task.title,
+          type: artifactTypeForPath(pathValue, "mentioned"),
+        });
+      }
     }
   }
 
@@ -1267,25 +1302,31 @@ function buildTaskViewModel(
     .map((message, index) => messageEvent(message, index))
     .filter((event): event is TaskEventView => Boolean(event))
     .sort((a, b) => a.timestampMs - b.timestampMs);
+  const runtimeStageEvent = runtimeStageEventFromTask(task);
+  const displayEventViews =
+    runtimeStageEvent &&
+    !eventViews.some((event) => event.type === "run_stage" && event.timestampMs >= runtimeStageEvent.timestampMs)
+      ? [...eventViews, runtimeStageEvent].sort((a, b) => a.timestampMs - b.timestampMs)
+      : eventViews;
   const usage = usageFromMessages(events);
   const tokensFromSession = numberOrZero(session?.input_tokens) + numberOrZero(session?.output_tokens);
   const tokens = tokensFromSession || usage.input + usage.output;
   const toolCalls =
     numberOrZero(session?.tool_call_count) ||
-    eventViews.filter((event) => event.type === "tool_start" || event.type === "command_start").length;
+    displayEventViews.filter((event) => event.type === "tool_start" || event.type === "command_start").length;
   const llmCalls =
     numberOrZero((session as SessionInfo & { api_calls?: number })?.api_calls) ||
     usage.apiCalls ||
     events.filter((message) => message.role === "assistant").length;
-  const current = currentEvent(eventViews);
-  const error = lastError(eventViews);
+  const current = currentEvent(displayEventViews);
+  const error = lastError(displayEventViews);
   const preview = cleanText(session?.preview, "", 220);
   const hasStarted =
-    eventViews.length > 0 ||
+    displayEventViews.length > 0 ||
     numberOrZero(session?.message_count) > 0 ||
     Boolean(task.hermesSessionId || task.session_id);
   const needsAttention = ATTENTION_RE.test(`${preview} ${error} ${current?.summary ?? ""}`);
-  const hasCompleted = hasCompletedEvent(eventViews) || task.runtime_status === "completed";
+  const hasCompleted = hasCompletedEvent(displayEventViews) || task.runtime_status === "completed";
   const status = normalizeTaskStatus(task.runtime_status, {
     hasCompleted,
     hasError: Boolean(error),
@@ -1294,17 +1335,17 @@ function buildTaskViewModel(
     queueDepth: numberOrZero(task.queue_depth ?? session?.queue_depth),
     running: Boolean(task.is_active ?? session?.is_active),
   });
-  const stage = buildStageTimeline(eventViews, status, copy);
+  const stage = buildStageTimeline(displayEventViews, copy);
   const providerModel = providerModelFrom(task, session, copy);
-  const artifacts = artifactsInput.length > 0 ? artifactsInput : extractArtifacts(project, task, eventViews);
+  const artifacts = artifactsInput.length > 0 ? artifactsInput : extractArtifacts(project, task, displayEventViews);
   const createdAt = taskCreatedMs(task);
   const updatedAt = Math.max(
     taskUpdatedMs(task),
     timestampMs(session?.last_active, 0),
-    eventViews.at(-1)?.timestampMs ?? 0,
+    displayEventViews.at(-1)?.timestampMs ?? 0,
   );
-  const completedAt = completedAtFrom(eventViews, session);
-  const durationMs = durationFrom(eventViews, task, session, status);
+  const completedAt = completedAtFrom(displayEventViews, session);
+  const durationMs = durationFrom(displayEventViews, task, session, status);
   const statusText = statusLabel(status, copy);
   const todoItems = latestTodoItemsFromMessages(events);
   return {
@@ -1329,12 +1370,12 @@ function buildTaskViewModel(
     projectName: displayProjectName(project, task, copy),
     provider: providerModel.provider,
     queueDepth: numberOrZero(task.queue_depth ?? session?.queue_depth),
-    recentEvents: [...eventViews].slice(-10).reverse(),
-    recentResult: latestResult(eventViews),
+    recentEvents: [...displayEventViews].slice(-10).reverse(),
+    recentResult: latestResult(displayEventViews),
     stageTimeline: stage.timeline,
     status,
     statusLabel: statusText,
-    testSummary: testSummary(eventViews, copy),
+    testSummary: testSummary(displayEventViews, copy),
     title: displayTaskTitle(project, task, providerModel, copy),
     todoItems,
     tokens,
@@ -1640,7 +1681,7 @@ export default function WorkspacePage() {
   const needsAttentionTasks = useMemo(
     () =>
       taskViewModels
-        .filter((task) => task.status === "needs_attention" || task.status === "failed")
+        .filter((task) => task.status === "needs_attention")
         .sort((a, b) => a.priorityRank - b.priorityRank || b.updatedAt - a.updatedAt)
         .slice(0, 8),
     [taskViewModels],
@@ -1989,11 +2030,15 @@ function TaskDetailPanel({
             <div className="truncate text-base font-semibold">{selectedTask.title}</div>
             <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
               <span>{copy.status}: {selectedTask.statusLabel}</span>
-              <span>·</span>
-              <span>
-                {copy.stage}: {selectedTask.currentStage}
-                {selectedTask.inferredStage ? ` (${copy.inferred})` : ""}
-              </span>
+              {selectedTask.stageTimeline.length > 0 && (
+                <>
+                  <span>·</span>
+                  <span>
+                    {copy.stage}: {selectedTask.currentStage}
+                    {selectedTask.inferredStage ? ` (${copy.inferred})` : ""}
+                  </span>
+                </>
+              )}
             </div>
           </div>
 
@@ -2156,7 +2201,7 @@ function TaskProgressDetails({
 }) {
   return (
     <>
-      <StageTimeline copy={copy} timeline={task.stageTimeline} />
+      {task.stageTimeline.length > 0 && <StageTimeline copy={copy} timeline={task.stageTimeline} />}
       {task.todoItems.length > 0 && <TaskTodoList copy={copy} items={task.todoItems} />}
     </>
   );
