@@ -4,6 +4,11 @@
   "version": "0.3.0",
   "private": true,
   "description": "Redou Agent desktop shell",
+  "homepage": "https://github.com/herb711/RedouAgent",
+  "author": {
+    "name": "Redou Agent",
+    "email": "herb711@users.noreply.github.com"
+  },
   "main": "src/main.cjs",
   "scripts": {
     "prebuild": "npm --prefix ../../vendor/hermes/web run build",
@@ -77,6 +82,7 @@
       "artifactName": "Redou-Agent-${version}-${arch}.${ext}",
       "category": "Development",
       "icon": "assets/icons/redou-agent.png",
+      "maintainer": "Redou Agent <herb711@users.noreply.github.com>",
       "target": [
         "AppImage",
         "deb"
