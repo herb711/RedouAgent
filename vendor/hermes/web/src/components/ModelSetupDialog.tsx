@@ -23,6 +23,7 @@ interface Props {
 const COPY = {
   zh: {
     alsoSavedAs: (env: string) => `也会保存为 ${env}。`,
+    advancedConnection: "高级连接设置",
     apiKey: "API 密钥",
     baseUrl: "基础 URL",
     cancel: "取消",
@@ -35,6 +36,8 @@ const COPY = {
     loadedModels: (count: number) => `已从提供方加载 ${count} 个模型。`,
     loadingModels: "正在加载模型...",
     model: "模型",
+    modelResponseTimeout: "模型响应超时（秒）",
+    modelResponseTimeoutHelp: "本地 vLLM、自建模型和远程私有模型建议 600 秒。云模型通常可用 120-300 秒。设置过大时，模型卡死会等待更久。",
     modelId: "模型 ID",
     noEnvRequired: "无需环境变量。",
     noMatchingProviders: "没有匹配的提供方。",
@@ -57,6 +60,7 @@ const COPY = {
   },
   en: {
     alsoSavedAs: (env: string) => `Also saved as ${env}.`,
+    advancedConnection: "Advanced connection settings",
     apiKey: "API Key",
     baseUrl: "Base URL",
     cancel: "Cancel",
@@ -69,6 +73,8 @@ const COPY = {
     loadedModels: (count: number) => `Loaded ${count} models from the provider.`,
     loadingModels: "Loading models...",
     model: "Model",
+    modelResponseTimeout: "Model response timeout (seconds)",
+    modelResponseTimeoutHelp: "Local vLLM, custom, and private models often need 600 seconds. Cloud models usually work well with 120-300 seconds. Larger values wait longer when a model stalls.",
     modelId: "Model ID",
     noEnvRequired: "No env var required.",
     noMatchingProviders: "No matching providers.",
@@ -91,6 +97,16 @@ const COPY = {
   },
 } as const;
 
+function defaultRequestTimeoutSeconds(provider: ModelSetupProvider | null): number {
+  const text = [
+    provider?.provider,
+    provider?.label,
+    provider?.custom_provider_name,
+    ...(provider?.tags ?? []),
+  ].filter(Boolean).join(" ").toLowerCase();
+  return /local|vllm|ollama|custom/.test(text) ? 600 : 300;
+}
+
 export function ModelSetupDialog({ onClose, onSaved }: Props) {
   const { locale } = useI18n();
   const copy = COPY[locale];
@@ -105,6 +121,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
   const [modelRefreshMessage, setModelRefreshMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [requestTimeoutSeconds, setRequestTimeoutSeconds] = useState("600");
   const closedRef = useRef(false);
 
   useEffect(() => {
@@ -136,6 +153,9 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
               ? current.base_url
               : currentProvider.base_url,
           );
+          setRequestTimeoutSeconds(String(
+            currentProvider.request_timeout_seconds ?? defaultRequestTimeoutSeconds(currentProvider),
+          ));
         }
       })
       .catch((err) => setError(err instanceof Error ? err.message : String(err)))
@@ -161,6 +181,11 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
     () => providers.find((p) => p.provider === selectedProviderId) ?? null,
     [providers, selectedProviderId],
   );
+  const requestTimeoutValue = Number(requestTimeoutSeconds);
+  const requestTimeoutValid =
+    Number.isInteger(requestTimeoutValue) &&
+    requestTimeoutValue >= 30 &&
+    requestTimeoutValue <= 3600;
 
   const needle = query.trim().toLowerCase();
   const filteredProviders = useMemo(() => {
@@ -199,6 +224,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
     !!baseUrl.trim() &&
     !refreshingModels &&
     !saving &&
+    requestTimeoutValid &&
     (selectedProvider.api_key_optional ||
       !apiKeyEnv ||
       !!selectedProvider.api_key_set ||
@@ -208,6 +234,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
     modelsReady &&
     !!selectedModel.trim() &&
     !!baseUrl.trim() &&
+    requestTimeoutValid &&
     !refreshingModels &&
     !saving;
 
@@ -217,6 +244,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
     setSelectedProviderId(provider.provider);
     setSelectedModel(modelReady ? provider.default_model || provider.models[0] || "" : "");
     setBaseUrl(provider.base_url);
+    setRequestTimeoutSeconds(String(provider.request_timeout_seconds ?? defaultRequestTimeoutSeconds(provider)));
     setApiKey("");
     setModelRefreshMessage(null);
     setError(null);
@@ -243,6 +271,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
         api_mode: selectedProvider.api_mode,
         custom_provider_name: selectedProvider.custom_provider_name,
         models: existingModels,
+        request_timeout_seconds: requestTimeoutValue,
       });
       const nextModels = result.models?.length ? result.models : existingModels;
       const nextModel =
@@ -260,11 +289,15 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
                 base_url: result.base_url || baseUrl.trim(),
                 models: nextModels,
                 default_model: nextModel || provider.default_model,
+                request_timeout_seconds: result.request_timeout_seconds ?? requestTimeoutValue,
               }
             : provider,
         ),
       );
       if (result.base_url) setBaseUrl(result.base_url);
+      if (result.request_timeout_seconds) {
+        setRequestTimeoutSeconds(String(result.request_timeout_seconds));
+      }
       setSelectedModel(nextModel);
       setApiKey("");
       setModelRefreshMessage(
@@ -301,6 +334,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
         api_mode: selectedProvider.api_mode,
         custom_provider_name: selectedProvider.custom_provider_name,
         models,
+        request_timeout_seconds: requestTimeoutValue,
       });
       notifyModelOptionsChanged();
       onSaved();
@@ -588,6 +622,31 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
                     </p>
                   </div>
                 </div>
+
+                <details className="rounded-md border border-border bg-muted/15 px-3 py-2" open>
+                  <summary className="cursor-pointer select-none text-[10px] uppercase tracking-wider text-muted-foreground">
+                    {copy.advancedConnection}
+                  </summary>
+                  <div className="mt-3 space-y-2">
+                    <label className="text-[10px] uppercase tracking-wider text-muted-foreground">
+                      {copy.modelResponseTimeout}
+                    </label>
+                    <Input
+                      type="number"
+                      min={30}
+                      max={3600}
+                      value={requestTimeoutSeconds}
+                      onChange={(event) => setRequestTimeoutSeconds(event.target.value)}
+                      placeholder="600"
+                      className="h-9 font-mono text-xs"
+                    />
+                    <p className={`text-[10px] ${requestTimeoutValid ? "text-muted-foreground" : "text-destructive"}`}>
+                      {requestTimeoutValid
+                        ? copy.modelResponseTimeoutHelp
+                        : "Enter a whole number from 30 to 3600."}
+                    </p>
+                  </div>
+                </details>
 
                 {error && (
                   <div className="border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">

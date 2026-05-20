@@ -9,6 +9,7 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import json
 import logging
 import os
 import re
@@ -733,6 +734,42 @@ def _normalize_approval_mode(mode) -> str:
     return "manual"
 
 
+def _get_redou_permissions_env() -> dict:
+    raw = os.getenv("REDOU_PERMISSIONS_JSON", "").strip()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _normalize_permission_mode(mode) -> str:
+    if isinstance(mode, bool):
+        return "allow" if mode is True else "deny"
+    if isinstance(mode, str):
+        normalized = mode.strip().lower()
+        if normalized in {"deny", "ask", "smart", "allow"}:
+            return normalized
+    return ""
+
+
+def _get_permissions_config() -> dict:
+    """Read the Redou unified permissions block, including runtime payload overrides."""
+    env_permissions = _get_redou_permissions_env()
+    if env_permissions:
+        return env_permissions
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+        permissions = config.get("permissions", {}) if isinstance(config, dict) else {}
+        return permissions if isinstance(permissions, dict) else {}
+    except Exception as e:
+        logger.warning("Failed to load permissions config: %s", e)
+        return {}
+
+
 def _get_approval_config() -> dict:
     """Read the approvals config block. Returns a dict with 'mode', 'timeout', etc."""
     try:
@@ -745,21 +782,57 @@ def _get_approval_config() -> dict:
 
 
 def _get_approval_mode() -> str:
-    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+    """Read approval mode, preferring Redou permissions over legacy approvals."""
+    permissions_mode = _normalize_permission_mode(_get_permissions_config().get("mode"))
+    if permissions_mode == "deny":
+        return "deny"
+    if permissions_mode == "ask":
+        return "manual"
+    if permissions_mode == "smart":
+        return "smart"
+    if permissions_mode == "allow":
+        return "off"
     mode = _get_approval_config().get("mode", "manual")
     return _normalize_approval_mode(mode)
 
 
 def _get_approval_timeout() -> int:
     """Read the approval timeout from config. Defaults to 60 seconds."""
+    permissions = _get_permissions_config()
+    try:
+        timeout = int(permissions.get("approval_timeout_seconds"))
+        if timeout > 0:
+            return timeout
+    except (ValueError, TypeError):
+        pass
     try:
         return int(_get_approval_config().get("timeout", 60))
     except (ValueError, TypeError):
         return 60
 
 
+def _get_gateway_approval_timeout() -> int:
+    permissions = _get_permissions_config()
+    try:
+        timeout = int(permissions.get("approval_timeout_seconds"))
+        if timeout > 0:
+            return timeout
+    except (ValueError, TypeError):
+        pass
+    try:
+        return int(_get_approval_config().get("gateway_timeout", 300))
+    except (ValueError, TypeError):
+        return 300
+
+
 def _get_cron_approval_mode() -> str:
     """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
+    permissions = _get_permissions_config()
+    p_mode = str(permissions.get("cron_mode", "")).lower().strip()
+    if p_mode in ("approve", "allow", "off", "yes"):
+        return "approve"
+    if p_mode == "deny":
+        return "deny"
     try:
         from hermes_cli.config import load_config
         config = load_config()
@@ -846,14 +919,38 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    approval_mode = _get_approval_mode()
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
-    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
+    if approval_mode != "deny" and (
+        is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off"
+    ):
+        if approval_mode == "off" and approval_callback is not None:
+            is_dangerous, _pattern_key, description = detect_dangerous_command(command)
+            if is_dangerous:
+                try:
+                    approval_callback(command, description, allow_permanent=False)
+                except TypeError:
+                    approval_callback(command, description)
         return {"approved": True, "message": None}
 
     is_dangerous, pattern_key, description = detect_dangerous_command(command)
     if not is_dangerous:
         return {"approved": True, "message": None}
+
+    if approval_mode == "deny":
+        if approval_callback is not None:
+            try:
+                approval_callback(command, description, allow_permanent=False)
+            except TypeError:
+                approval_callback(command, description)
+        return {
+            "approved": False,
+            "message": f"BLOCKED: Permission policy denied this potentially dangerous command ({description}). Do NOT retry.",
+            "pattern_key": pattern_key,
+            "description": description,
+        }
 
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
@@ -973,7 +1070,30 @@ def check_all_command_guards(command: str, env_type: str,
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
-    if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
+    if approval_mode == "deny":
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
+        if is_dangerous:
+            if approval_callback is not None:
+                try:
+                    approval_callback(command, description, allow_permanent=False)
+                except TypeError:
+                    approval_callback(command, description)
+            return {
+                "approved": False,
+                "message": f"BLOCKED: Permission policy denied this command ({description}). Do NOT retry.",
+                "pattern_key": pattern_key,
+                "description": description,
+            }
+    if approval_mode != "deny" and (
+        is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off"
+    ):
+        if approval_mode == "off" and approval_callback is not None:
+            is_dangerous, _pattern_key, description = detect_dangerous_command(command)
+            if is_dangerous:
+                try:
+                    approval_callback(command, description, allow_permanent=False)
+                except TypeError:
+                    approval_callback(command, description)
         return {"approved": True, "message": None}
 
     is_cli = os.getenv("HERMES_INTERACTIVE")
@@ -1041,6 +1161,21 @@ def check_all_command_guards(command: str, env_type: str,
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
+
+    if approval_mode == "deny":
+        combined_desc = "; ".join(desc for _, desc, _ in warnings)
+        primary_key = warnings[0][0]
+        if approval_callback is not None:
+            try:
+                approval_callback(command, combined_desc, allow_permanent=False)
+            except TypeError:
+                approval_callback(command, combined_desc)
+        return {
+            "approved": False,
+            "message": f"BLOCKED: Permission policy denied this command ({combined_desc}). Do NOT retry.",
+            "pattern_key": primary_key,
+            "description": combined_desc,
+        }
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
@@ -1138,11 +1273,7 @@ def check_all_command_guards(command: str, env_type: str,
             # 1800s) kills the agent while the user is still responding to
             # the approval prompt.  Mirrors the _wait_for_process() cadence
             # in tools/environments/base.py.
-            timeout = _get_approval_config().get("gateway_timeout", 300)
-            try:
-                timeout = int(timeout)
-            except (ValueError, TypeError):
-                timeout = 300
+            timeout = _get_gateway_approval_timeout()
 
             try:
                 from tools.environments.base import touch_activity_if_due

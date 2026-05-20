@@ -53,6 +53,41 @@ const PROFILE_RUNTIME_CONFIG_KEYS = ["model", "providers", "custom_providers", "
 const DELIVERY_MODES = new Set(["new_turn", "queue", "guide", "interrupt_replace"]);
 const RUN_MODES = new Set(["execute", "plan"]);
 const USER_INPUT_STATUSES = new Set(["pending", "consumed", "completed", "cancelled"]);
+const RISK_APPROVAL_DECISIONS = new Set(["allow_once", "allow_session", "allow_always", "deny"]);
+const RISK_AUDIT_EVENT_TYPES = new Set([
+  "risk_approval_required",
+  "risk_approval_allowed",
+  "risk_approval_denied",
+  "risk_approval_timeout",
+  "risk_approval_invalid",
+  "risk_approval_decision_submitted",
+  "high_risk_command_blocked",
+  "high_risk_command_auto_allowed",
+]);
+const DEFAULT_PERMISSIONS = {
+  mode: "ask",
+  runtime_approval_enabled: true,
+  approval_timeout_seconds: 300,
+  prefilter_user_input: true,
+  default_scope: "once",
+  allow_session_approval: true,
+  allow_always_approval: false,
+  hardline_policy: "deny",
+  cron_mode: "deny",
+  audit_log: true,
+  rules: {
+    "terminal.high_risk": "inherit",
+    "terminal.hardline": "deny",
+    "terminal.inline_script": "inherit",
+    "terminal.remote_script": "inherit",
+    "terminal.destructive_file_op": "inherit",
+    "terminal.git_destructive": "inherit",
+    "file.write_workspace": "allow",
+    "file.write_outside_workspace": "ask",
+    "network.external": "allow",
+    "package.install": "ask",
+  },
+};
 const ANALYSIS_RESULTS_FILE = "model-benchmarks.json";
 const ANALYSIS_DEFAULT_MAX_ITERATIONS = 1000;
 const ANALYSIS_DOCKER_WORKSPACE = "/workspace";
@@ -1754,6 +1789,44 @@ function positiveIntegerOrNull(value) {
   return Math.floor(parsed);
 }
 
+function boundedInteger(value, fallback, min, max) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(parsed)));
+}
+
+function deepMergePlain(base, override) {
+  const result = { ...(base && typeof base === "object" ? base : {}) };
+  if (!override || typeof override !== "object" || Array.isArray(override)) {
+    return result;
+  }
+  for (const [key, value] of Object.entries(override)) {
+    if (
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value) &&
+      result[key] &&
+      typeof result[key] === "object" &&
+      !Array.isArray(result[key])
+    ) {
+      result[key] = deepMergePlain(result[key], value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+function normalizePermissionMode(value, fallback = "ask") {
+  const mode = String(value || "").trim().toLowerCase();
+  return ["deny", "ask", "smart", "allow"].includes(mode) ? mode : fallback;
+}
+
+function normalizeCronPermissionMode(value) {
+  const mode = String(value || "").trim().toLowerCase();
+  return ["allow", "approve", "off", "yes"].includes(mode) ? "allow" : "deny";
+}
+
 function normalizeAnalysisMaxIterations(value, fallback = ANALYSIS_DEFAULT_MAX_ITERATIONS) {
   return positiveIntegerOrNull(value) || positiveIntegerOrNull(fallback) || ANALYSIS_DEFAULT_MAX_ITERATIONS;
 }
@@ -3108,6 +3181,57 @@ class RedouLocalService {
   getConfigRaw() { return this.settingsService.getConfigRaw(); }
 
   saveConfigRaw(yamlText) { return this.settingsService.saveConfigRaw(yamlText); }
+
+  effectivePermissions(input = {}) {
+    let configPermissions = {};
+    try {
+      const config = this.getConfig();
+      if (config?.permissions && typeof config.permissions === "object" && !Array.isArray(config.permissions)) {
+        configPermissions = config.permissions;
+      }
+    } catch {
+      configPermissions = {};
+    }
+    const inputPermissions =
+      input?.permissions && typeof input.permissions === "object" && !Array.isArray(input.permissions)
+        ? input.permissions
+        : {};
+    const policy = deepMergePlain(
+      deepMergePlain(DEFAULT_PERMISSIONS, configPermissions),
+      inputPermissions,
+    );
+    if (Object.prototype.hasOwnProperty.call(input || {}, "runtimeApprovalEnabled")) {
+      policy.runtime_approval_enabled = input.runtimeApprovalEnabled !== false;
+    }
+    if (input?.approvalTimeoutSeconds !== undefined && input.approvalTimeoutSeconds !== null) {
+      policy.approval_timeout_seconds = input.approvalTimeoutSeconds;
+    }
+    policy.mode = normalizePermissionMode(policy.mode);
+    policy.runtime_approval_enabled = policy.runtime_approval_enabled !== false;
+    policy.approval_timeout_seconds = boundedInteger(policy.approval_timeout_seconds, 300, 10, 3600);
+    policy.prefilter_user_input = policy.prefilter_user_input !== false;
+    policy.default_scope = ["once", "session", "always"].includes(String(policy.default_scope || ""))
+      ? String(policy.default_scope)
+      : "once";
+    policy.allow_session_approval = policy.allow_session_approval !== false;
+    policy.allow_always_approval = policy.allow_always_approval === true;
+    policy.hardline_policy = "deny";
+    policy.cron_mode = normalizeCronPermissionMode(policy.cron_mode);
+    policy.audit_log = policy.audit_log !== false;
+    if (!policy.rules || typeof policy.rules !== "object" || Array.isArray(policy.rules)) {
+      policy.rules = { ...DEFAULT_PERMISSIONS.rules };
+    }
+    return policy;
+  }
+
+  unattendedPermissions(input = {}) {
+    const policy = this.effectivePermissions(input);
+    return {
+      ...policy,
+      mode: policy.cron_mode === "allow" ? "allow" : "deny",
+      runtime_approval_enabled: false,
+    };
+  }
 
   getSkills() { return this.skillService.getSkills(); }
 
@@ -4799,6 +4923,7 @@ class RedouLocalService {
       let finalAssistantText = "";
       let doneMetadata = {};
       let childError = null;
+      const permissions = this.unattendedPermissions();
 
       const recordEvent = (rawEvent) => {
         const event = rawEvent && typeof rawEvent === "object"
@@ -4825,6 +4950,8 @@ class RedouLocalService {
             REDOU_ANALYSIS_TASK_ID: task.id,
             HERMES_INTERACTIVE: "1",
             HERMES_EXEC_ASK: "",
+            REDOU_RUN_ID: taskRunId,
+            REDOU_PERMISSIONS_JSON: JSON.stringify(permissions),
             PYTHONUTF8: "1",
             PYTHONUNBUFFERED: "1",
           }),
@@ -4835,13 +4962,17 @@ class RedouLocalService {
         input: {
           projectId: `analysis-${key}`,
           taskId: task.id,
+          runId: taskRunId,
           hermesProfile: "analysis",
           hermesSessionId: `redou-analysis-${key}-${task.id}-${Date.now().toString(36)}`,
           systemContext: "You are Hermes Agent running inside Redou Agent's local model benchmark harness.",
           userContext: prompt,
           attachments: [],
           metadata,
-          riskConfirmed: true,
+          riskConfirmed: false,
+          permissions,
+          runtimeApprovalEnabled: false,
+          approvalTimeoutSeconds: permissions.approval_timeout_seconds,
           model,
           provider,
           workspacePath,
@@ -6174,9 +6305,14 @@ class RedouLocalService {
       return { ok: false, runId, warning, context: built.metadata };
     }
     const riskConfirmed = input.riskConfirmed === true;
+    const permissions = this.effectivePermissions(input);
+    const runtimeApprovalEnabled = permissions.runtime_approval_enabled !== false;
+    const approvalTimeoutSeconds = permissions.approval_timeout_seconds;
     if (options.persistUser !== false) {
       this.appendTaskMessage(projectId, taskId, "user", userInput, {
         riskConfirmed,
+        permissionMode: permissions.mode,
+        runtimeApprovalEnabled,
         deliveryMode,
         runMode,
         inputEnvelope: currentEnvelope,
@@ -6196,6 +6332,9 @@ class RedouLocalService {
       runMode,
       currentRequestId: currentEnvelope.id,
       currentTurnId: currentEnvelope.turnId,
+      permissionMode: permissions.mode,
+      runtimeApprovalEnabled,
+      approvalTimeoutSeconds,
       queueDepth: this.queueDepth(projectId, taskId),
       ...(contextDirective ? { contextDirective } : {}),
       ...(options.queueId ? { queueId: options.queueId } : {}),
@@ -6240,10 +6379,18 @@ class RedouLocalService {
       const baseEvent = rawEvent && typeof rawEvent === "object"
         ? rawEvent
         : { type: "raw_log", content: String(rawEvent || "") };
+      const sanitizedBaseEvent = { ...baseEvent };
+      if (RISK_AUDIT_EVENT_TYPES.has(String(sanitizedBaseEvent.type || ""))) {
+        for (const key of ["command", "cwd", "reason"]) {
+          if (typeof sanitizedBaseEvent[key] === "string") {
+            sanitizedBaseEvent[key] = redact(sanitizedBaseEvent[key]);
+          }
+        }
+      }
       const event = {
-        ...baseEvent,
+        ...sanitizedBaseEvent,
         metadata: {
-          ...(baseEvent.metadata || {}),
+          ...(sanitizedBaseEvent.metadata || {}),
           runId,
           projectId,
           taskId,
@@ -6372,6 +6519,9 @@ class RedouLocalService {
             maxRecentMessages: input.maxRecentMessages,
             maxIterations: input.maxIterations,
             riskConfirmed: false,
+            permissions,
+            runtimeApprovalEnabled,
+            approvalTimeoutSeconds,
           }, { persistUser: false, front: true, source: "guide-leftover" });
           this.emitQueueUpdate(
             webContents,
@@ -6403,6 +6553,7 @@ class RedouLocalService {
           REDOU_HERMES_PROFILE: project.hermesProfile,
           HERMES_INTERACTIVE: "1",
           HERMES_EXEC_ASK: "",
+          REDOU_PERMISSIONS_JSON: JSON.stringify(permissions),
           REDOU_RUN_ID: runId,
           REDOU_TURN_ID: currentEnvelope.turnId,
           PYTHONUTF8: "1",
@@ -6415,6 +6566,7 @@ class RedouLocalService {
       input: {
         projectId,
         taskId,
+        runId,
         hermesProfile: project.hermesProfile,
         hermesSessionId: sessionId,
         systemContext: built.systemContext,
@@ -6423,6 +6575,9 @@ class RedouLocalService {
         attachments,
         metadata: runMetadata,
         riskConfirmed,
+        permissions,
+        runtimeApprovalEnabled,
+        approvalTimeoutSeconds,
         model: effectiveModel,
         provider: effectiveProvider,
         workspacePath: project.path || this.projectRoot,
@@ -6698,6 +6853,96 @@ class RedouLocalService {
       attachments,
       riskConfirmed,
     }, { deliveryMode: "new_turn" });
+  }
+
+  resolveRiskApproval(webContents, input = {}) {
+    const projectId = String(input.projectId || "").trim();
+    const taskId = String(input.taskId || "").trim();
+    const requestedRunId = String(input.runId || "").trim();
+    const approvalId = String(input.approvalId || "").trim();
+    const decision = String(input.decision || "").trim();
+    const invalid = (message) => {
+      if (projectId && taskId) {
+        try {
+          const event = {
+            type: "risk_approval_invalid",
+            projectId,
+            taskId,
+            runId: requestedRunId,
+            approvalId,
+            decision,
+            reason: message,
+            metadata: {
+              source: "desktop_ipc",
+              projectId,
+              taskId,
+              runId: requestedRunId,
+              approvalId,
+              decision,
+              timestamp: isoNow(),
+            },
+          };
+          this.emitToRenderer(webContents, { runId: requestedRunId, projectId, taskId, event });
+          this.persistEvent(projectId, taskId, event);
+        } catch {
+          // The validation error is still returned to the caller.
+        }
+      }
+      return { ok: false, message };
+    };
+
+    if (!projectId || !taskId) return invalid("Select a Project and Task before resolving approval.");
+    if (!approvalId) return invalid("Approval id is required.");
+    if (!RISK_APPROVAL_DECISIONS.has(decision)) return invalid("Approval decision is not allowed.");
+
+    const { project, task } = this.findProjectAndTask(projectId, taskId);
+    if (!project || !task) return invalid("Project or task not found.");
+
+    let run = null;
+    if (requestedRunId) {
+      const active = this.activeRuns.get(requestedRunId);
+      if (active && active.projectId === projectId && active.taskId === taskId) {
+        run = { runId: requestedRunId, ...active };
+      }
+    }
+    if (!run) {
+      run = this.activeRunForTask(projectId, taskId);
+    }
+    if (!run) return { ok: false, message: "Run not found" };
+
+    const runId = requestedRunId || run.runId;
+    try {
+      this.writeRunControl(run, {
+        type: "risk_approval_decision",
+        projectId,
+        taskId,
+        runId,
+        approvalId,
+        decision,
+      });
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+
+    const event = {
+      type: "risk_approval_decision_submitted",
+      projectId,
+      taskId,
+      runId,
+      approvalId,
+      decision,
+      metadata: {
+        source: "desktop_ipc",
+        projectId,
+        taskId,
+        runId,
+        approvalId,
+        decision,
+        timestamp: isoNow(),
+      },
+    };
+    this.persistEvent(projectId, taskId, event);
+    return { ok: true };
   }
 
   stopRun(runId, webContents) {

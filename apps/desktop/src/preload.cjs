@@ -92,6 +92,7 @@ contextBridge.exposeInMainWorld("redouDesktop", {
   buildTaskContext: (input) => ipcRenderer.invoke("redou:context:task:build", input),
   sendMessage: (input) => ipcRenderer.invoke("redou:chat:send", input),
   updateQueuedMessage: (input) => ipcRenderer.invoke("redou:chat:queue:update", input),
+  resolveRiskApproval: (input) => ipcRenderer.invoke("redou:chat:risk-approval", input),
   stopRun: (runId) => ipcRenderer.invoke("redou:chat:stop", runId),
   stopTaskRun: (projectId, taskId) => ipcRenderer.invoke("redou:chat:stop-task", projectId, taskId),
   onAgentEvent: (callback) => {

@@ -1258,6 +1258,34 @@ DEFAULT_CONFIG = {
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
     },
 
+    # Unified permission policy used by Redou Desktop and honored by the
+    # dangerous-command approval layer.  Hardline commands remain denied
+    # regardless of this policy.
+    "permissions": {
+        "mode": "ask",
+        "runtime_approval_enabled": True,
+        "approval_timeout_seconds": 300,
+        "prefilter_user_input": True,
+        "default_scope": "once",
+        "allow_session_approval": True,
+        "allow_always_approval": False,
+        "hardline_policy": "deny",
+        "cron_mode": "deny",
+        "audit_log": True,
+        "rules": {
+            "terminal.high_risk": "inherit",
+            "terminal.hardline": "deny",
+            "terminal.inline_script": "inherit",
+            "terminal.remote_script": "inherit",
+            "terminal.destructive_file_op": "inherit",
+            "terminal.git_destructive": "inherit",
+            "file.write_workspace": "allow",
+            "file.write_outside_workspace": "ask",
+            "network.external": "allow",
+            "package.install": "ask",
+        },
+    },
+
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
@@ -1269,6 +1297,7 @@ DEFAULT_CONFIG = {
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        "gateway_timeout": 300,
         "cron_mode": "deny",
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates
@@ -1465,7 +1494,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 24,
 }
 
 # =============================================================================
@@ -2994,6 +3023,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
+    "permissions",
     "sessions",
 }
 

@@ -616,6 +616,10 @@ ipcMain.handle("redou:chat:queue:update", (event, input) =>
   getLocalService().updateQueuedMessage(event.sender, input),
 );
 
+ipcMain.handle("redou:chat:risk-approval", (event, input) =>
+  getLocalService().resolveRiskApproval(event.sender, input),
+);
+
 ipcMain.handle("redou:chat:stop", (event, runId) =>
   getLocalService().stopRun(runId, event.sender),
 );

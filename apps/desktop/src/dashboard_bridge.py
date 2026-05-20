@@ -45,13 +45,13 @@ from hermes_constants import get_hermes_home  # noqa: E402
 
 CATEGORY_ORDER: List[str] = [
     "general",
+    "security",
     "agent",
     "terminal",
     "display",
     "delegation",
     "memory",
     "compression",
-    "security",
     "browser",
     "voice",
     "tts",
@@ -102,6 +102,89 @@ SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "options": ["zh", "en"],
         "description": "CLI and gateway UI language.",
         "category": "display",
+    },
+    "permissions.mode": {
+        "category": "security",
+        "type": "select",
+        "options": ["deny", "ask", "smart", "allow"],
+        "description": "Global permission mode for high-risk agent actions.",
+    },
+    "permissions.runtime_approval_enabled": {
+        "category": "security",
+        "type": "boolean",
+        "description": "Show runtime approval cards when the agent generates high-risk commands.",
+    },
+    "permissions.approval_timeout_seconds": {
+        "category": "security",
+        "type": "number",
+        "min": 10,
+        "max": 3600,
+        "description": "Seconds to wait for a runtime approval before denying the command.",
+    },
+    "permissions.prefilter_user_input": {
+        "category": "security",
+        "type": "boolean",
+        "description": "Check user input before sending and show a high-risk warning when needed.",
+    },
+    "permissions.default_scope": {
+        "category": "security",
+        "type": "select",
+        "options": ["once", "session", "always"],
+        "description": "Default approval scope.",
+    },
+    "permissions.allow_session_approval": {
+        "category": "security",
+        "type": "boolean",
+        "description": "Allow users to approve similar commands for the current session.",
+    },
+    "permissions.allow_always_approval": {
+        "category": "security",
+        "type": "boolean",
+        "description": "Allow users to permanently approve a command pattern. Disabled by default.",
+    },
+    "permissions.hardline_policy": {
+        "category": "security",
+        "type": "select",
+        "options": ["deny"],
+        "readonly": True,
+        "description": "Hardline commands are always denied and cannot be bypassed.",
+    },
+    "permissions.cron_mode": {
+        "category": "security",
+        "type": "select",
+        "options": ["deny", "allow"],
+        "description": "How unattended cron jobs handle high-risk commands.",
+    },
+    "permissions.audit_log": {
+        "category": "security",
+        "type": "boolean",
+        "description": "Write structured audit events for approvals and denials.",
+    },
+    "approvals.mode": {
+        "category": "security",
+        "type": "select",
+        "options": ["manual", "smart", "off"],
+        "description": "Legacy Hermes approval mode. Redou permissions.mode takes precedence.",
+    },
+    "approvals.timeout": {
+        "category": "security",
+        "type": "number",
+        "min": 10,
+        "max": 3600,
+        "description": "Legacy CLI approval timeout.",
+    },
+    "approvals.gateway_timeout": {
+        "category": "security",
+        "type": "number",
+        "min": 10,
+        "max": 3600,
+        "description": "Legacy gateway approval timeout.",
+    },
+    "approvals.cron_mode": {
+        "category": "security",
+        "type": "select",
+        "options": ["deny", "approve"],
+        "description": "Legacy cron approval mode.",
     },
 }
 
@@ -156,6 +239,8 @@ def _build_schema(config: Dict[str, Any], prefix: str = "") -> Dict[str, Dict[st
             "description": full_key.replace(".", " -> ").replace("_", " ").title(),
             "category": CATEGORY_MERGE.get(category, category),
         }
+        if full_key.startswith("permissions.") or full_key.startswith("approvals."):
+            entry["category"] = "security"
         entry.update(SCHEMA_OVERRIDES.get(full_key, {}))
         schema[full_key] = entry
     return schema
@@ -225,6 +310,31 @@ def _dedupe_strings(values: Iterable[Any]) -> List[str]:
     return out
 
 
+def _positive_int(
+    value: Any,
+    *,
+    default: int | None = None,
+    min: int = 1,
+    max: int | None = None,
+) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed < min:
+        return default
+    if max is not None and parsed > max:
+        return max
+    return parsed
+
+
+def _default_model_request_timeout(provider: str, tags: Iterable[Any] = ()) -> int:
+    text = " ".join([provider, *[str(item) for item in tags]]).lower()
+    if any(token in text for token in ("local", "vllm", "ollama", "custom")):
+        return 600
+    return 300
+
+
 def _catalog_entry(
     *,
     provider: str,
@@ -241,8 +351,11 @@ def _catalog_entry(
     api_mode: str = "",
     custom_provider_name: str = "",
     api_key_optional: bool = False,
+    request_timeout_seconds: int | None = None,
+    model_timeout_seconds: int | None = None,
 ) -> Dict[str, Any]:
     models = _dedupe_strings(models)
+    timeout = request_timeout_seconds or _default_model_request_timeout(provider, tags or [])
     return {
         "provider": provider,
         "label": label,
@@ -258,6 +371,8 @@ def _catalog_entry(
         "api_mode": api_mode,
         "custom_provider_name": custom_provider_name,
         "api_key_optional": api_key_optional,
+        "request_timeout_seconds": timeout,
+        "model_timeout_seconds": model_timeout_seconds,
     }
 
 
@@ -268,8 +383,8 @@ MODEL_SETUP_PROVIDER_ORDER: Dict[str, int] = {
     "kimi-coding-cn": 30,
     "zai": 40,
     "minimax-cn": 50,
-    "minimax": 55,
     "xiaomi": 60,
+    "doubao": 70,
     "openrouter": 100,
     "openai": 110,
     "anthropic": 120,
@@ -288,6 +403,7 @@ _BUILTIN_MODEL_PROVIDERS = {
     "zai",
     "alibaba",
     "xiaomi",
+    "doubao",
 }
 
 
@@ -350,16 +466,37 @@ def _hydrate_catalog_from_config(
             entry["api_key_env"] = str(provider_cfg["key_env"])
         if provider_cfg.get("api_mode"):
             entry["api_mode"] = str(provider_cfg["api_mode"])
+        configured_timeout = _positive_int(
+            provider_cfg.get("request_timeout_seconds"),
+            default=None,
+            min=30,
+            max=3600,
+        )
+        if configured_timeout is not None:
+            entry["request_timeout_seconds"] = configured_timeout
 
         configured_model = str(
             provider_cfg.get("model") or provider_cfg.get("default_model") or ""
         ).strip()
         configured_models = _provider_model_list(provider_cfg)
+        model_timeout = None
+        model_map = provider_cfg.get("models")
+        if configured_model and isinstance(model_map, dict):
+            model_entry = model_map.get(configured_model)
+            if isinstance(model_entry, dict):
+                model_timeout = _positive_int(
+                    model_entry.get("timeout_seconds"),
+                    default=None,
+                    min=30,
+                    max=3600,
+                )
         entry["models"] = _dedupe_strings(
             [configured_model, *configured_models, *(entry.get("models") or [])]
         )
         if configured_model:
             entry["default_model"] = configured_model
+        if model_timeout is not None:
+            entry["model_timeout_seconds"] = model_timeout
 
     current_provider = current.get("provider", "")
     current_model = current.get("model", "")
@@ -385,6 +522,16 @@ def _hydrate_catalog_from_config(
             entry["default_model"] = current_model
         if current_base_url:
             entry["base_url"] = current_base_url.rstrip("/")
+        current_timeout = _positive_int(
+            (user_providers.get(current_provider) or {}).get("request_timeout_seconds")
+            if isinstance(user_providers.get(current_provider), dict)
+            else None,
+            default=None,
+            min=30,
+            max=3600,
+        )
+        if current_timeout is not None:
+            entry["request_timeout_seconds"] = current_timeout
 
     catalog.sort(
         key=lambda entry: (
@@ -464,21 +611,6 @@ def _build_model_setup_catalog(cfg: Dict[str, Any] | None = None) -> List[Dict[s
             api_mode="anthropic_messages",
         ),
         _catalog_entry(
-            provider="minimax",
-            label="MiniMax Global",
-            description="International MiniMax endpoint.",
-            base_url=base("minimax", "https://api.minimax.io/anthropic"),
-            api_key_env=key_env("minimax", "MINIMAX_API_KEY"),
-            base_url_env=base_env("minimax", "MINIMAX_BASE_URL"),
-            models=models("minimax", ["MiniMax-M2.7", "MiniMax-M2.5", "MiniMax-M2.1"])
-            + ["MiniMax-M2.7-highspeed", "MiniMax-M2.5-highspeed", "MiniMax-M2.1-highspeed"],
-            default_model="MiniMax-M2.7",
-            region="Global",
-            tags=["agent", "anthropic"],
-            docs_url="https://platform.minimax.io/docs",
-            api_mode="anthropic_messages",
-        ),
-        _catalog_entry(
             provider="kimi-coding-cn",
             label="Kimi / Moonshot",
             description="Moonshot China endpoint for Kimi models.",
@@ -528,6 +660,28 @@ def _build_model_setup_catalog(cfg: Dict[str, Any] | None = None) -> List[Dict[s
             region="CN",
             tags=["long-context", "multimodal"],
             docs_url="https://platform.xiaomimimo.com/",
+        ),
+        _catalog_entry(
+            provider="doubao",
+            label="Doubao / Volcengine Ark",
+            description="ByteDance Doubao models through Ark OpenAI-compatible API.",
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+            api_key_env="ARK_API_KEY",
+            models=[
+                "doubao-seed-1-6",
+                "doubao-seed-1-6-251015",
+                "doubao-seed-1-6-thinking",
+                "doubao-seed-1-6-thinking-250715",
+                "doubao-seed-1-6-flash",
+                "doubao-seed-1-6-flash-250828",
+                "doubao-1-5-pro-32k",
+            ],
+            default_model="doubao-seed-1-6-251015",
+            region="CN",
+            tags=["fast", "openai-compatible"],
+            docs_url="https://www.volcengine.com/docs/82379",
+            api_mode="chat_completions",
+            custom_provider_name="Doubao / Volcengine Ark",
         ),
         _catalog_entry(
             provider="openrouter",
@@ -864,6 +1018,18 @@ def _refresh_model_setup_models(payload: Dict[str, Any]) -> Dict[str, Any]:
     api_mode = str(payload.get("api_mode") or "").strip()
     custom_provider_name = str(payload.get("custom_provider_name") or "").strip()
     payload_models = _dedupe_strings(payload.get("models") or [])
+    request_timeout_seconds = _positive_int(
+        payload.get("request_timeout_seconds"),
+        default=_default_model_request_timeout(provider),
+        min=30,
+        max=3600,
+    )
+    model_timeout_seconds = _positive_int(
+        payload.get("model_timeout_seconds"),
+        default=None,
+        min=30,
+        max=3600,
+    )
 
     if not provider:
         raise ValueError("provider required")
@@ -893,8 +1059,17 @@ def _refresh_model_setup_models(payload: Dict[str, Any]) -> Dict[str, Any]:
             entry["api_key"] = api_key
         if api_mode:
             entry["api_mode"] = api_mode
+        if request_timeout_seconds is not None:
+            entry["request_timeout_seconds"] = request_timeout_seconds
         if payload_models:
-            entry["models"] = {item: {} for item in payload_models}
+            entry["models"] = {
+                item: (
+                    {"timeout_seconds": model_timeout_seconds}
+                    if model_timeout_seconds is not None and item == selected_model
+                    else {}
+                )
+                for item in payload_models
+            }
         providers_cfg[provider] = entry
         cfg["providers"] = providers_cfg
         save_config(cfg)
@@ -941,6 +1116,7 @@ def _refresh_model_setup_models(payload: Dict[str, Any]) -> Dict[str, Any]:
     models = live_models or fallback_models
     if not live_models and not warning:
         warning = "Could not read the provider model list; showing saved/default models."
+    default_model = selected_model if selected_model in models else (models[0] if models else "")
 
     if custom_provider_name or not is_builtin_provider or models:
         providers_cfg = cfg.get("providers")
@@ -957,13 +1133,21 @@ def _refresh_model_setup_models(payload: Dict[str, Any]) -> Dict[str, Any]:
             entry["api_key"] = effective_key
         if api_mode:
             entry["api_mode"] = api_mode
+        if request_timeout_seconds is not None:
+            entry["request_timeout_seconds"] = request_timeout_seconds
         if models:
-            entry["models"] = {item: {} for item in models}
+            entry["models"] = {
+                item: (
+                    {"timeout_seconds": model_timeout_seconds}
+                    if model_timeout_seconds is not None and item == default_model
+                    else {}
+                )
+                for item in models
+            }
         providers_cfg[provider] = entry
         cfg["providers"] = providers_cfg
         save_config(cfg)
 
-    default_model = selected_model if selected_model in models else (models[0] if models else "")
     return {
         "ok": True,
         "scope": "main",
@@ -975,6 +1159,8 @@ def _refresh_model_setup_models(payload: Dict[str, Any]) -> Dict[str, Any]:
         "models": models,
         "default_model": default_model,
         "model_count": len(models),
+        "request_timeout_seconds": request_timeout_seconds,
+        "model_timeout_seconds": model_timeout_seconds,
         "refreshed": bool(live_models),
         "warning": warning,
         "probed_url": probe.get("probed_url"),
@@ -991,6 +1177,18 @@ def _setup_main_model(payload: Dict[str, Any]) -> Dict[str, Any]:
     api_mode = str(payload.get("api_mode") or "").strip()
     custom_provider_name = str(payload.get("custom_provider_name") or "").strip()
     models = _dedupe_strings(payload.get("models") or [])
+    request_timeout_seconds = _positive_int(
+        payload.get("request_timeout_seconds"),
+        default=_default_model_request_timeout(provider),
+        min=30,
+        max=3600,
+    )
+    model_timeout_seconds = _positive_int(
+        payload.get("model_timeout_seconds"),
+        default=None,
+        min=30,
+        max=3600,
+    )
     if not provider:
         raise ValueError("provider required")
     if not model:
@@ -1004,7 +1202,7 @@ def _setup_main_model(payload: Dict[str, Any]) -> Dict[str, Any]:
     if base_url and base_url_env:
         save_env_value(base_url_env, base_url)
 
-    if custom_provider_name or not is_builtin_provider or models:
+    if custom_provider_name or not is_builtin_provider or models or request_timeout_seconds is not None:
         providers_cfg = cfg.get("providers")
         if not isinstance(providers_cfg, dict):
             providers_cfg = {}
@@ -1018,10 +1216,21 @@ def _setup_main_model(payload: Dict[str, Any]) -> Dict[str, Any]:
             entry["key_env"] = api_key_env
         if api_mode:
             entry["api_mode"] = api_mode
+        if request_timeout_seconds is not None:
+            entry["request_timeout_seconds"] = request_timeout_seconds
         entry["model"] = model
         entry["default_model"] = model
         if models:
-            entry["models"] = {item: {} for item in models}
+            entry["models"] = {
+                item: (
+                    {"timeout_seconds": model_timeout_seconds}
+                    if model_timeout_seconds is not None and item == model
+                    else {}
+                )
+                for item in models
+            }
+        elif model_timeout_seconds is not None:
+            entry["models"] = {model: {"timeout_seconds": model_timeout_seconds}}
         providers_cfg[provider] = entry
         cfg["providers"] = providers_cfg
 
@@ -1049,6 +1258,8 @@ def _setup_main_model(payload: Dict[str, Any]) -> Dict[str, Any]:
         "model": model,
         "base_url": base_url,
         "api_key_env": api_key_env,
+        "request_timeout_seconds": request_timeout_seconds,
+        "model_timeout_seconds": model_timeout_seconds,
     }
 
 

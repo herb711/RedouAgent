@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import traceback
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,6 +32,12 @@ from typing import Any, Dict
 
 EVENT_OUT = sys.stdout
 RISK_CONFIRMED = False
+PERMISSIONS_CONFIG: Dict[str, Any] = {}
+RUNTIME_APPROVAL_ENABLED: bool | None = None
+APPROVAL_TIMEOUT_SECONDS: int | None = None
+RUN_CONTEXT: Dict[str, Any] = {}
+PENDING_APPROVALS: Dict[str, Dict[str, Any]] = {}
+PENDING_APPROVALS_LOCK = threading.Lock()
 EVENT_LOCK = threading.Lock()
 RUN_STAGE_STAGES = {
     "understanding",
@@ -330,34 +337,343 @@ def _context_messages_to_history(
     return system_context, user_context, conversation_history
 
 
-def _approval_callback(command: str, description: str, **_kwargs: Any) -> str:
-    if RISK_CONFIRMED:
+def _default_permissions_config() -> Dict[str, Any]:
+    try:
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        permissions = DEFAULT_CONFIG.get("permissions", {})
+        return dict(permissions) if isinstance(permissions, dict) else {}
+    except Exception:
+        return {
+            "mode": "ask",
+            "runtime_approval_enabled": True,
+            "approval_timeout_seconds": 300,
+            "prefilter_user_input": True,
+            "default_scope": "once",
+            "allow_session_approval": True,
+            "allow_always_approval": False,
+            "hardline_policy": "deny",
+            "cron_mode": "deny",
+            "audit_log": True,
+            "rules": {},
+        }
+
+
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge_dict(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+
+def _normalize_permission_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode in {"deny", "ask", "smart", "allow"}:
+        return mode
+    return "ask"
+
+
+def _coerce_timeout_seconds(value: Any, default: int = 300) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(10, min(3600, parsed))
+
+
+def _effective_permissions() -> Dict[str, Any]:
+    policy = _default_permissions_config()
+    try:
+        from hermes_cli.config import load_config
+
+        loaded = load_config().get("permissions", {})
+        if isinstance(loaded, dict):
+            policy = _deep_merge_dict(policy, loaded)
+    except Exception:
+        pass
+    if isinstance(PERMISSIONS_CONFIG, dict):
+        policy = _deep_merge_dict(policy, PERMISSIONS_CONFIG)
+    if RUNTIME_APPROVAL_ENABLED is not None:
+        policy["runtime_approval_enabled"] = bool(RUNTIME_APPROVAL_ENABLED)
+    if APPROVAL_TIMEOUT_SECONDS is not None:
+        policy["approval_timeout_seconds"] = _coerce_timeout_seconds(
+            APPROVAL_TIMEOUT_SECONDS,
+            _coerce_timeout_seconds(policy.get("approval_timeout_seconds"), 300),
+        )
+    policy["mode"] = _normalize_permission_mode(policy.get("mode"))
+    policy["approval_timeout_seconds"] = _coerce_timeout_seconds(
+        policy.get("approval_timeout_seconds"), 300
+    )
+    policy["runtime_approval_enabled"] = policy.get("runtime_approval_enabled") is not False
+    policy["allow_session_approval"] = policy.get("allow_session_approval") is not False
+    policy["allow_always_approval"] = policy.get("allow_always_approval") is True
+    policy["hardline_policy"] = "deny"
+    return policy
+
+
+def _base_risk_event(
+    event_type: str,
+    command: str,
+    reason: str,
+    *,
+    approval_id: str | None = None,
+    decision: str | None = None,
+    metadata: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    run_id = str(RUN_CONTEXT.get("runId") or os.getenv("REDOU_RUN_ID") or "")
+    event: Dict[str, Any] = {
+        "type": event_type,
+        "taskId": str(RUN_CONTEXT.get("taskId") or os.getenv("REDOU_TASK_ID") or ""),
+        "projectId": str(RUN_CONTEXT.get("projectId") or os.getenv("REDOU_PROJECT_ID") or ""),
+        "runId": run_id,
+        "command": command,
+        "cwd": os.getcwd(),
+        "reason": reason,
+        "riskLevel": "high",
+        "metadata": {
+            "source": "runtime_command",
+            "permissionMode": _effective_permissions().get("mode", "ask"),
+            **(metadata or {}),
+        },
+    }
+    if approval_id:
+        event["approvalId"] = approval_id
+    if decision:
+        event["decision"] = decision
+    return event
+
+
+def _allowed_decisions(policy: Dict[str, Any]) -> list[str]:
+    decisions = ["allow_once"]
+    if policy.get("allow_session_approval") is not False:
+        decisions.append("allow_session")
+    if policy.get("allow_always_approval") is True:
+        decisions.append("allow_always")
+    decisions.append("deny")
+    return decisions
+
+
+def _emit_blocked(command: str, reason: str, mode: str) -> None:
+    _emit(
+        _base_risk_event(
+            "high_risk_command_blocked",
+            command,
+            reason,
+            metadata={"permissionMode": mode},
+        )
+    )
+
+
+def _resolve_pending_approval(control: Dict[str, Any]) -> None:
+    approval_id = str(control.get("approvalId") or "").strip()
+    decision = str(control.get("decision") or "").strip()
+    task_id = str(control.get("taskId") or "").strip()
+    run_id = str(control.get("runId") or "").strip()
+
+    def invalid(message: str, entry: Dict[str, Any] | None = None) -> None:
+        command = str((entry or {}).get("command") or "")
+        reason = str((entry or {}).get("reason") or message)
         _emit(
-            {
-                "type": "raw_log",
-                "content": "High-risk command approved by the user before this run.",
-                "metadata": {
-                    "approvalRequired": True,
-                    "approvalGranted": True,
-                    "command": command,
-                    "description": description,
-                    "folded": True,
-                },
-            }
+            _base_risk_event(
+                "risk_approval_invalid",
+                command,
+                reason,
+                approval_id=approval_id or None,
+                decision=decision or None,
+                metadata={"message": message},
+            )
+        )
+
+    with PENDING_APPROVALS_LOCK:
+        entry = PENDING_APPROVALS.get(approval_id)
+        if not approval_id or entry is None:
+            invalid("Approval request was not found.")
+            return
+        if entry.get("consumed"):
+            invalid("Approval request was already resolved.", entry)
+            return
+        if task_id and task_id != entry.get("taskId"):
+            invalid("Approval taskId did not match the pending request.", entry)
+            return
+        if run_id and run_id != entry.get("runId"):
+            invalid("Approval runId did not match the pending request.", entry)
+            return
+        allowed = set(entry.get("allowedDecisions") or [])
+        if decision not in allowed:
+            invalid("Approval decision is not allowed for this request.", entry)
+            return
+        if decision == "allow_always" and not entry.get("policy", {}).get("allow_always_approval"):
+            invalid("Permanent approval is disabled by policy.", entry)
+            return
+        entry["decision"] = decision
+        entry["consumed"] = True
+        event = entry.get("event")
+    if event is not None:
+        event.set()
+
+
+def _clear_pending_approvals(reason: str = "run ended") -> None:
+    with PENDING_APPROVALS_LOCK:
+        entries = list(PENDING_APPROVALS.values())
+        PENDING_APPROVALS.clear()
+    for entry in entries:
+        if entry.get("consumed"):
+            continue
+        entry["decision"] = "deny"
+        entry["consumed"] = True
+        event = entry.get("event")
+        if event is not None:
+            event.set()
+
+
+def _approval_callback(command: str, description: str, **_kwargs: Any) -> str:
+    policy = _effective_permissions()
+    mode = _normalize_permission_mode(policy.get("mode"))
+    reason = str(description or "high-risk command")
+
+    if mode == "deny":
+        _emit_blocked(command, reason, mode)
+        return "deny"
+
+    if mode == "allow":
+        _emit(
+            _base_risk_event(
+                "high_risk_command_auto_allowed",
+                command,
+                reason,
+                decision="auto_allow",
+                metadata={"permissionMode": mode},
+            )
         )
         return "once"
-    _emit(
-        {
-            "type": "error",
-            "message": "High-risk command requires explicit UI confirmation and was blocked.",
-            "details": f"{description}\n\n{command}",
-            "metadata": {
-                "approvalRequired": True,
-                "command": command,
-                "description": description,
-            },
+
+    if RISK_CONFIRMED:
+        _emit(
+            _base_risk_event(
+                "risk_approval_allowed",
+                command,
+                reason,
+                decision="pre_confirmed_once",
+                metadata={"approvalGranted": True, "permissionMode": mode},
+            )
+        )
+        return "once"
+
+    if mode in {"ask", "smart"}:
+        if policy.get("runtime_approval_enabled") is False:
+            _emit_blocked(command, reason, mode)
+            return "deny"
+
+        approval_id = str(uuid.uuid4())
+        timeout_seconds = _coerce_timeout_seconds(policy.get("approval_timeout_seconds"), 300)
+        now_ms = int(time.time() * 1000)
+        allowed = _allowed_decisions(policy)
+        wait_event = threading.Event()
+        run_id = str(RUN_CONTEXT.get("runId") or os.getenv("REDOU_RUN_ID") or "")
+        entry = {
+            "event": wait_event,
+            "command": command,
+            "reason": reason,
+            "taskId": str(RUN_CONTEXT.get("taskId") or os.getenv("REDOU_TASK_ID") or ""),
+            "projectId": str(RUN_CONTEXT.get("projectId") or os.getenv("REDOU_PROJECT_ID") or ""),
+            "runId": run_id,
+            "allowedDecisions": allowed,
+            "policy": policy,
+            "decision": None,
+            "consumed": False,
         }
-    )
+        with PENDING_APPROVALS_LOCK:
+            PENDING_APPROVALS[approval_id] = entry
+
+        request_event = _base_risk_event(
+            "risk_approval_required",
+            command,
+            reason,
+            approval_id=approval_id,
+            metadata={"permissionMode": mode},
+        )
+        request_event.update(
+            {
+                "mode": mode,
+                "allowedDecisions": allowed,
+                "createdAt": now_ms,
+                "expiresAt": now_ms + timeout_seconds * 1000,
+            }
+        )
+        _emit(request_event)
+
+        resolved = wait_event.wait(timeout=timeout_seconds)
+        with PENDING_APPROVALS_LOCK:
+            stored = PENDING_APPROVALS.pop(approval_id, entry)
+        decision = str(stored.get("decision") or "")
+        if not resolved or not decision:
+            _emit(
+                {
+                    **_base_risk_event(
+                        "risk_approval_timeout",
+                        command,
+                        reason,
+                        approval_id=approval_id,
+                        metadata={"permissionMode": mode},
+                    ),
+                    "timeoutSeconds": timeout_seconds,
+                }
+            )
+            return "deny"
+
+        if decision == "deny":
+            _emit(
+                _base_risk_event(
+                    "risk_approval_denied",
+                    command,
+                    reason,
+                    approval_id=approval_id,
+                    decision="deny",
+                    metadata={"permissionMode": mode},
+                )
+            )
+            return "deny"
+        if decision == "allow_session" and policy.get("allow_session_approval") is not False:
+            _emit(
+                _base_risk_event(
+                    "risk_approval_allowed",
+                    command,
+                    reason,
+                    approval_id=approval_id,
+                    decision=decision,
+                    metadata={"permissionMode": mode},
+                )
+            )
+            return "session"
+        if decision == "allow_always" and policy.get("allow_always_approval") is True:
+            _emit(
+                _base_risk_event(
+                    "risk_approval_allowed",
+                    command,
+                    reason,
+                    approval_id=approval_id,
+                    decision=decision,
+                    metadata={"permissionMode": mode},
+                )
+            )
+            return "always"
+        if decision == "allow_once":
+            _emit(
+                _base_risk_event(
+                    "risk_approval_allowed",
+                    command,
+                    reason,
+                    approval_id=approval_id,
+                    decision=decision,
+                    metadata={"permissionMode": mode},
+                )
+            )
+            return "once"
+
+    _emit_blocked(command, reason, mode)
     return "deny"
 
 
@@ -368,8 +684,32 @@ def _configure_approval_environment() -> None:
     os.environ.pop("HERMES_EXEC_ASK", None)
     os.environ.pop("HERMES_GATEWAY_SESSION", None)
     os.environ.pop("HERMES_SESSION_PLATFORM", None)
-    if RISK_CONFIRMED:
-        os.environ["HERMES_YOLO_MODE"] = "1"
+    os.environ.pop("HERMES_YOLO_MODE", None)
+    try:
+        os.environ["REDOU_PERMISSIONS_JSON"] = json.dumps(_effective_permissions(), default=str)
+    except Exception:
+        os.environ.pop("REDOU_PERMISSIONS_JSON", None)
+
+
+def _configure_permissions_from_payload(payload: Dict[str, Any]) -> None:
+    global PERMISSIONS_CONFIG, RUNTIME_APPROVAL_ENABLED, APPROVAL_TIMEOUT_SECONDS, RUN_CONTEXT
+    permissions = payload.get("permissions")
+    PERMISSIONS_CONFIG = permissions if isinstance(permissions, dict) else {}
+    RUNTIME_APPROVAL_ENABLED = (
+        bool(payload.get("runtimeApprovalEnabled"))
+        if "runtimeApprovalEnabled" in payload
+        else None
+    )
+    APPROVAL_TIMEOUT_SECONDS = (
+        _coerce_timeout_seconds(payload.get("approvalTimeoutSeconds"), 300)
+        if payload.get("approvalTimeoutSeconds") is not None
+        else None
+    )
+    RUN_CONTEXT = {
+        "projectId": str(payload.get("projectId") or os.getenv("REDOU_PROJECT_ID") or ""),
+        "taskId": str(payload.get("taskId") or os.getenv("REDOU_TASK_ID") or ""),
+        "runId": str(payload.get("runId") or os.getenv("REDOU_RUN_ID") or ""),
+    }
 
 
 def main() -> int:
@@ -379,9 +719,10 @@ def main() -> int:
     first_line = sys.stdin.readline()
     payload = json.loads(first_line or "{}")
     RISK_CONFIRMED = payload.get("riskConfirmed") is True
-    _configure_approval_environment()
     root = _project_root()
     sys.path.insert(0, str(root))
+    _configure_permissions_from_payload(payload)
+    _configure_approval_environment()
     workspace = str(payload.get("workspacePath") or root)
 
     try:
@@ -449,7 +790,12 @@ def main() -> int:
                     }
                 )
                 continue
-            if not isinstance(command, dict) or command.get("type") != "steer":
+            if not isinstance(command, dict):
+                continue
+            if command.get("type") == "risk_approval_decision":
+                _resolve_pending_approval(command)
+                continue
+            if command.get("type") != "steer":
                 continue
             text = str(command.get("text") or "").strip()
             if not text:
@@ -758,6 +1104,7 @@ def main() -> int:
                 },
             }
         )
+        _clear_pending_approvals()
         close_session_db()
         return 0
     except Exception as exc:
@@ -790,6 +1137,7 @@ def main() -> int:
                 },
             }
         )
+        _clear_pending_approvals()
         close_session_db()
         return 1
 

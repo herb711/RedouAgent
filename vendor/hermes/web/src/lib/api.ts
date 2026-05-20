@@ -168,6 +168,7 @@ declare global {
       buildTaskContext?: (input: BuildContextInput) => Promise<BuiltContext>;
       sendMessage?: (input: SendMessageInput) => Promise<SendMessageResponse>;
       updateQueuedMessage?: (input: QueuedMessageUpdateInput) => Promise<QueuedMessageUpdateResponse>;
+      resolveRiskApproval?: (input: ResolveRiskApprovalInput) => Promise<ResolveRiskApprovalResponse>;
       stopRun?: (runId: string) => Promise<{ ok: boolean; message?: string }>;
       stopTaskRun?: (projectId: string, taskId: string) => Promise<{ ok: boolean; message?: string }>;
       onAgentEvent?: (
@@ -249,6 +250,8 @@ const redouApiCore = {
       requireRedouMethod("sendMessage")(input),
     updateQueuedChatMessage: (input: QueuedMessageUpdateInput) =>
       requireRedouMethod("updateQueuedMessage")(input),
+    resolveRiskApproval: (input: ResolveRiskApprovalInput) =>
+      requireRedouMethod("resolveRiskApproval")(input),
     stopChatRun: (runId: string) => requireRedouMethod("stopRun")(runId),
     stopChatTask: (projectId: string, taskId: string) =>
       requireRedouMethod("stopTaskRun")(projectId, taskId),
@@ -427,6 +430,7 @@ export const redouApi = {
   buildTaskContext: redouApiCore.tasks.buildTaskContext,
   sendChatMessage: redouApiCore.tasks.sendChatMessage,
   updateQueuedChatMessage: redouApiCore.tasks.updateQueuedChatMessage,
+  resolveRiskApproval: redouApiCore.tasks.resolveRiskApproval,
   stopChatRun: redouApiCore.tasks.stopChatRun,
   stopChatTask: redouApiCore.tasks.stopChatTask,
   onAgentEvent: redouApiCore.tasks.onAgentEvent,
@@ -761,6 +765,25 @@ export interface ChatTaskMessagesResponse {
   last_active?: number | null;
 }
 
+export type RiskApprovalDecision =
+  | "allow_once"
+  | "allow_session"
+  | "allow_always"
+  | "deny";
+
+export interface ResolveRiskApprovalInput {
+  projectId: string;
+  taskId: string;
+  runId: string;
+  approvalId: string;
+  decision: RiskApprovalDecision;
+}
+
+export interface ResolveRiskApprovalResponse {
+  ok: boolean;
+  message?: string;
+}
+
 export type AgentEvent =
   | { type: "assistant_message"; content: string; metadata?: Record<string, unknown> }
   | { type: "assistant_delta"; content: string; metadata?: Record<string, unknown> }
@@ -773,6 +796,43 @@ export type AgentEvent =
   | { type: "file_changed"; path: string; changeType?: string; summary?: string; metadata?: Record<string, unknown> }
   | { type: "queue_update"; queued: number; message?: string; metadata?: Record<string, unknown> }
   | { type: "run_stage"; stage?: string; label?: string; status?: string; details?: string; metadata?: Record<string, unknown> }
+  | {
+      type: "risk_approval_required";
+      taskId?: string;
+      projectId?: string;
+      runId?: string;
+      approvalId: string;
+      command: string;
+      cwd?: string;
+      reason: string;
+      riskLevel?: "low" | "medium" | "high";
+      mode?: string;
+      allowedDecisions?: RiskApprovalDecision[];
+      createdAt?: number;
+      expiresAt?: number;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      type:
+        | "risk_approval_allowed"
+        | "risk_approval_denied"
+        | "risk_approval_timeout"
+        | "risk_approval_invalid"
+        | "risk_approval_decision_submitted"
+        | "high_risk_command_blocked"
+        | "high_risk_command_auto_allowed";
+      taskId?: string;
+      projectId?: string;
+      runId?: string;
+      approvalId?: string;
+      command?: string;
+      cwd?: string;
+      reason?: string;
+      riskLevel?: "low" | "medium" | "high";
+      decision?: string;
+      timeoutSeconds?: number;
+      metadata?: Record<string, unknown>;
+    }
   | { type: "error"; message: string; details?: string; metadata?: Record<string, unknown> }
   | { type: "done"; metadata?: Record<string, unknown> }
   | { type: "raw_log"; content: string; metadata?: Record<string, unknown> };
@@ -854,6 +914,9 @@ export interface SendMessageInput {
   maxRecentMessages?: number;
   maxIterations?: number;
   riskConfirmed?: boolean;
+  runtimeApprovalEnabled?: boolean;
+  approvalTimeoutSeconds?: number;
+  permissions?: Record<string, unknown>;
 }
 
 export interface SendMessageResponse {
@@ -1261,6 +1324,8 @@ export interface ModelSetupProvider {
   api_key_optional?: boolean;
   api_key_set?: boolean;
   base_url_set?: boolean;
+  request_timeout_seconds?: number;
+  model_timeout_seconds?: number;
 }
 
 export interface ModelSetupCatalogResponse {
@@ -1282,6 +1347,8 @@ export interface ModelSetupRequest {
   api_mode?: string;
   custom_provider_name?: string;
   models?: string[];
+  request_timeout_seconds?: number;
+  model_timeout_seconds?: number;
 }
 
 export interface ModelSetupRefreshRequest {
@@ -1294,6 +1361,8 @@ export interface ModelSetupRefreshRequest {
   api_mode?: string;
   custom_provider_name?: string;
   models?: string[];
+  request_timeout_seconds?: number;
+  model_timeout_seconds?: number;
 }
 
 export interface ModelSetupRefreshResponse {
@@ -1310,6 +1379,8 @@ export interface ModelSetupRefreshResponse {
   refreshed?: boolean;
   warning?: string;
   probed_url?: string | null;
+  request_timeout_seconds?: number;
+  model_timeout_seconds?: number;
 }
 
 export interface ModelSetupResponse {
@@ -1319,6 +1390,8 @@ export interface ModelSetupResponse {
   model?: string;
   base_url?: string;
   api_key_env?: string;
+  request_timeout_seconds?: number;
+  model_timeout_seconds?: number;
 }
 
 export interface AuxiliaryTaskAssignment {

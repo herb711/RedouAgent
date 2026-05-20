@@ -115,6 +115,24 @@ function categoriesFromSchema(
   return [...ordered, ...extra];
 }
 
+function PermissionsPolicySummary() {
+  return (
+    <div className="rounded-md border border-warning/35 bg-warning/5 px-3 py-2 text-xs leading-5 text-muted-foreground">
+      <div className="mb-1 flex items-center gap-2 font-medium text-midground">
+        <Shield className="h-3.5 w-3.5 text-warning" />
+        Permission policy
+      </div>
+      <div>
+        <span className="font-medium text-midground">deny</span> blocks high-risk commands,{" "}
+        <span className="font-medium text-midground">ask</span> shows runtime approval cards,{" "}
+        <span className="font-medium text-midground">smart</span> asks the auxiliary approval model first, and{" "}
+        <span className="font-medium text-midground">allow</span> auto-allows high-risk commands.
+        Hardline commands are always denied. These settings apply to commands generated while the agent is running, not only to user input.
+      </div>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
@@ -702,6 +720,7 @@ export default function ConfigPage() {
                   </div>
                 </CardHeader>
                 <CardContent className="grid gap-2 px-4 pb-4">
+                  {activeCategory === "security" && <PermissionsPolicySummary />}
                   {renderFields(activeFields)}
                 </CardContent>
               </Card>

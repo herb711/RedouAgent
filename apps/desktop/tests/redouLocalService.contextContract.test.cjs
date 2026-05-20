@@ -205,6 +205,98 @@ test("guide delivery is stored as a control event and never as ordinary user his
   assert.ok(built.metadata.contextDebugReport.excludedGuideControlEventIds.includes(control.metadata.inputEnvelope.id));
 });
 
+test("risk approval decisions are forwarded to the active adapter stdin and audited", () => {
+  const { service, project, task } = makeService();
+  const active = addActiveRun(service, project, task, "run-risk");
+
+  const response = service.resolveRiskApproval(null, {
+    projectId: project.id,
+    taskId: task.id,
+    runId: "run-risk",
+    approvalId: "approval-1",
+    decision: "allow_once",
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(active.writes.length, 1);
+  assert.deepEqual(JSON.parse(active.writes[0]), {
+    type: "risk_approval_decision",
+    projectId: project.id,
+    taskId: task.id,
+    runId: "run-risk",
+    approvalId: "approval-1",
+    decision: "allow_once",
+  });
+  const loaded = service.getChatTaskMessages(project.id, task.id);
+  assert.ok(loaded.messages.some((message) => message.metadata.eventType === "risk_approval_decision_submitted"));
+});
+
+test("risk approval decisions reject invalid decisions and missing runs", () => {
+  const { service, project, task } = makeService();
+  const active = addActiveRun(service, project, task, "run-risk");
+
+  const invalid = service.resolveRiskApproval(null, {
+    projectId: project.id,
+    taskId: task.id,
+    runId: "run-risk",
+    approvalId: "approval-1",
+    decision: "allow_everything",
+  });
+  assert.equal(invalid.ok, false);
+  assert.equal(active.writes.length, 0);
+
+  service.activeRuns.delete("run-risk");
+  const missing = service.resolveRiskApproval(null, {
+    projectId: project.id,
+    taskId: task.id,
+    runId: "run-risk",
+    approvalId: "approval-1",
+    decision: "deny",
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.message, "Run not found");
+});
+
+test("Hermes run payload includes effective permission policy", () => {
+  const { service, project, task } = makeService();
+  let captured = null;
+  service.pythonPath = process.execPath;
+  service.getConfig = () => ({
+    permissions: {
+      mode: "ask",
+      runtime_approval_enabled: true,
+      approval_timeout_seconds: 123,
+      prefilter_user_input: true,
+    },
+  });
+  service.processManager.startJsonLineProcess = (options) => {
+    captured = options;
+    const child = {
+      pid: 1,
+      killed: false,
+      stdin: { destroyed: false, write() {} },
+      kill() {},
+    };
+    options.onStarted?.(child);
+    return child;
+  };
+
+  const response = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "hello permissions",
+    runtimeApprovalEnabled: true,
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(captured.input.riskConfirmed, false);
+  assert.equal(captured.input.runtimeApprovalEnabled, true);
+  assert.equal(captured.input.approvalTimeoutSeconds, 123);
+  assert.equal(captured.input.permissions.mode, "ask");
+  assert.equal(captured.input.permissions.approval_timeout_seconds, 123);
+  assert.equal(JSON.parse(captured.options.env.REDOU_PERMISSIONS_JSON).approval_timeout_seconds, 123);
+});
+
 test("interrupt_replace cancels the active run and starts a replacement turn", () => {
   const { service, project, task } = makeService();
   const active = addActiveRun(service, project, task);

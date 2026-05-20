@@ -259,6 +259,7 @@ export function AutoField({
   const { locale } = useI18n();
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
   const label = fieldLabel(schemaKey, locale, rawLabel);
+  const readonly = schema.readonly === true;
   const listPlaceholder = locale === "zh" ? "逗号分隔的值" : "comma-separated values";
 
   if (schema.type === "boolean") {
@@ -268,7 +269,7 @@ export function AutoField({
           <Label className="text-sm">{label}</Label>
           <FieldHint schema={schema} schemaKey={schemaKey} />
         </div>
-        <Switch checked={!!value} onCheckedChange={onChange} />
+        <Switch checked={!!value} onCheckedChange={(checked) => !readonly && onChange(checked)} disabled={readonly} />
       </div>
     );
   }
@@ -279,7 +280,7 @@ export function AutoField({
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
-        <Select value={String(value ?? "")} onValueChange={(v) => onChange(v)}>
+        <Select value={String(value ?? "")} onValueChange={(v) => !readonly && onChange(v)} disabled={readonly}>
           {options.map((opt) => (
             <SelectOption key={opt} value={opt}>
               {optionLabel(opt, locale)}
@@ -297,8 +298,12 @@ export function AutoField({
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
           type="number"
+          min={typeof schema.min === "number" ? schema.min : undefined}
+          max={typeof schema.max === "number" ? schema.max : undefined}
+          disabled={readonly}
           value={value === undefined || value === null ? "" : String(value)}
           onChange={(e) => {
+            if (readonly) return;
             const raw = e.target.value;
             if (raw === "") {
               onChange(0);
@@ -321,8 +326,9 @@ export function AutoField({
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <textarea
           className="flex min-h-[80px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          disabled={readonly}
           value={String(value ?? "")}
-          onChange={(e) => onChange(e.target.value)}
+          onChange={(e) => !readonly && onChange(e.target.value)}
         />
       </div>
     );
@@ -335,8 +341,9 @@ export function AutoField({
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
           value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
+          disabled={readonly}
           onChange={(e) =>
-            onChange(
+            !readonly && onChange(
               e.target.value
                 .split(",")
                 .map((s) => s.trim())
@@ -362,7 +369,8 @@ export function AutoField({
             </Label>
             <Input
               value={String(subVal ?? "")}
-              onChange={(e) => onChange({ ...obj, [subKey]: e.target.value })}
+              disabled={readonly}
+              onChange={(e) => !readonly && onChange({ ...obj, [subKey]: e.target.value })}
               className="text-xs"
             />
           </div>
@@ -375,7 +383,7 @@ export function AutoField({
     <div className="grid gap-1.5">
       <Label className="text-sm">{label}</Label>
       <FieldHint schema={schema} schemaKey={schemaKey} />
-      <Input value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} />
+      <Input disabled={readonly} value={String(value ?? "")} onChange={(e) => !readonly && onChange(e.target.value)} />
     </div>
   );
 }

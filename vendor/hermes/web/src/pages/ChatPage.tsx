@@ -45,6 +45,7 @@ import type {
   ChatProject,
   ChatTask,
   ChatTaskMessage,
+  RiskApprovalDecision,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -90,6 +91,12 @@ interface QueuedInput {
   createdAt: string;
   runMode: RunMode;
   attachments: ChatAttachment[];
+}
+
+interface ChatPermissions {
+  runtime_approval_enabled?: boolean;
+  approval_timeout_seconds?: number;
+  prefilter_user_input?: boolean;
 }
 
 const CHAT_COPY = {
@@ -211,6 +218,8 @@ const CHAT_COPY = {
       "disk formatting": "磁盘格式化",
       "system configuration change": "系统配置变更",
       "bulk overwrite": "批量覆盖",
+      "inline script": "内联脚本执行",
+      "remote script pipe": "远程脚本管道执行",
       "dangerous shell command": "危险 shell 命令",
     },
   },
@@ -333,6 +342,8 @@ const CHAT_COPY = {
       "disk formatting": "disk formatting",
       "system configuration change": "system configuration change",
       "bulk overwrite": "bulk overwrite",
+      "inline script": "inline script execution",
+      "remote script pipe": "remote script pipe execution",
       "dangerous shell command": "dangerous shell command",
     },
   },
@@ -408,6 +419,8 @@ function detectHighRiskRequest(value: string): string | null {
     { re: /\bformat\b|\bdiskpart\b|\bmkfs\b/, label: "disk formatting" },
     { re: /\b(reg\s+add|setx|system32|group policy|registry)\b/, label: "system configuration change" },
     { re: /\b(overwrite|replace)\b.*\b(all|many|entire|whole)\b/, label: "bulk overwrite" },
+    { re: /\b(node|python|python3|py|ruby|perl)\s+-[ec]\b|\bpowershell(?:\.exe)?\s+-(command|encodedcommand)\b/, label: "inline script" },
+    { re: /\b(curl|wget|irm|iwr|invoke-webrequest|invoke-restmethod)\b[\s\S]{0,120}\|\s*(sh|bash|zsh|pwsh|powershell)\b/, label: "remote script pipe" },
     { re: /:\(\)\s*\{\s*:\|:&\s*\};:/, label: "dangerous shell command" },
   ];
   return patterns.find((item) => item.re.test(text))?.label ?? null;
@@ -459,6 +472,17 @@ function formatContextPercent(value?: number | null): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function permissionsFromConfig(config: Record<string, unknown>): ChatPermissions {
+  const raw = config.permissions;
+  if (!isRecord(raw)) return {};
+  const timeout = Number(raw.approval_timeout_seconds);
+  return {
+    runtime_approval_enabled: raw.runtime_approval_enabled !== false,
+    prefilter_user_input: raw.prefilter_user_input !== false,
+    approval_timeout_seconds: Number.isFinite(timeout) ? timeout : undefined,
+  };
 }
 
 function parseJsonish(value: unknown): unknown {
@@ -740,6 +764,47 @@ function eventMetadata(event: AgentEvent | null): Record<string, unknown> {
   return event?.metadata && typeof event.metadata === "object" ? event.metadata : {};
 }
 
+function isRiskApprovalEvent(event: AgentEvent | null): boolean {
+  return !!event && (
+    event.type === "risk_approval_required" ||
+    event.type === "risk_approval_allowed" ||
+    event.type === "risk_approval_denied" ||
+    event.type === "risk_approval_timeout" ||
+    event.type === "risk_approval_invalid" ||
+    event.type === "risk_approval_decision_submitted" ||
+    event.type === "high_risk_command_blocked" ||
+    event.type === "high_risk_command_auto_allowed"
+  );
+}
+
+function riskApprovalId(event: AgentEvent | null): string {
+  if (!event || !("approvalId" in event)) return "";
+  return String(event.approvalId || "").trim();
+}
+
+function mergeRiskApprovalMessage(existing: ChatTaskMessage, update: AgentEvent): ChatTaskMessage {
+  const currentEvent = eventFromMessage(existing);
+  if (!currentEvent || currentEvent.type !== "risk_approval_required") return existing;
+  const nextEvent: AgentEvent = {
+    ...currentEvent,
+    metadata: {
+      ...eventMetadata(currentEvent),
+      approvalStatus: update.type,
+      approvalDecision: "decision" in update ? update.decision : undefined,
+      approvalUpdate: update,
+      approvalUpdatedAt: new Date().toISOString(),
+    },
+  };
+  return {
+    ...existing,
+    metadata: {
+      ...existing.metadata,
+      event: nextEvent,
+      eventType: nextEvent.type,
+    },
+  };
+}
+
 function messageMetadata(message: ChatTaskMessage): Record<string, unknown> {
   return message.metadata && typeof message.metadata === "object" ? message.metadata : {};
 }
@@ -881,6 +946,26 @@ function formatEventForRawLog(event: AgentEvent, message: ChatTaskMessage): stri
       return [`[run_stage] ${event.label || event.stage || "stage"}`, event.status ? `status: ${event.status}` : "", event.details || ""]
         .filter(Boolean)
         .join("\n");
+    case "risk_approval_required":
+      return [
+        "[risk_approval_required]",
+        event.reason ? `reason: ${event.reason}` : "",
+        event.cwd ? `cwd: ${event.cwd}` : "",
+        event.command ? `command: ${event.command}` : "",
+      ].filter(Boolean).join("\n");
+    case "risk_approval_allowed":
+    case "risk_approval_denied":
+    case "risk_approval_timeout":
+    case "risk_approval_invalid":
+    case "risk_approval_decision_submitted":
+    case "high_risk_command_blocked":
+    case "high_risk_command_auto_allowed":
+      return [
+        `[${event.type}]`,
+        event.decision ? `decision: ${event.decision}` : "",
+        event.reason ? `reason: ${event.reason}` : "",
+        event.command ? `command: ${event.command}` : "",
+      ].filter(Boolean).join("\n");
     case "error":
       return [`[error] ${event.message}`, event.details || ""].filter(Boolean).join("\n");
     case "done":
@@ -976,6 +1061,7 @@ function mergeRawLogMessage(existing: ChatTaskMessage, incoming: ChatTaskMessage
 function normalizeChatMessages(messages: ChatTaskMessage[]): ChatTaskMessage[] {
   const normalized: ChatTaskMessage[] = [];
   const rawLogsByRun = new Map<string, number>();
+  const riskApprovalsById = new Map<string, number>();
   const runStartedAtByRun = new Map<string, number>();
 
   messages.forEach((message) => {
@@ -1015,6 +1101,22 @@ function normalizeChatMessages(messages: ChatTaskMessage[]): ChatTaskMessage[] {
 
     if (event) {
       if (event.type === "run_stage") {
+        normalized.push(message);
+        return;
+      }
+
+      if (isRiskApprovalEvent(event)) {
+        const approvalId = riskApprovalId(event);
+        if (event.type === "risk_approval_required") {
+          if (approvalId) riskApprovalsById.set(approvalId, normalized.length);
+          normalized.push(message);
+          return;
+        }
+        const existingIndex = approvalId ? riskApprovalsById.get(approvalId) : undefined;
+        if (existingIndex !== undefined) {
+          normalized[existingIndex] = mergeRiskApprovalMessage(normalized[existingIndex], event);
+          return;
+        }
         normalized.push(message);
         return;
       }
@@ -1087,6 +1189,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [attachmentWarnings, setAttachmentWarnings] = useState<string[]>([]);
   const [draggingAttachments, setDraggingAttachments] = useState(false);
   const [pendingRisk, setPendingRisk] = useState<string | null>(null);
+  const [permissions, setPermissions] = useState<ChatPermissions>({});
   const [streaming, setStreaming] = useState("");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [runState, setRunState] = useState<RunState>("idle");
@@ -1326,6 +1429,21 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [loadTaskMessages, selectedProjectId, selectedTaskId]);
 
   useEffect(() => {
+    let cancelled = false;
+    redouApi
+      .getConfig()
+      .then((config) => {
+        if (!cancelled) setPermissions(permissionsFromConfig(config));
+      })
+      .catch(() => {
+        if (!cancelled) setPermissions({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (runMode === "plan" && deliveryMode === "guide") {
       const timer = window.setTimeout(() => setDeliveryMode("queue"), 0);
       return () => window.clearTimeout(timer);
@@ -1551,12 +1669,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const attachments = pendingAttachments;
     if (!userInput && attachments.length === 0) return;
     const busy = runState === "running" || runState === "thinking";
-    const risk = detectHighRiskRequest(userInput);
+    const risk = permissions.prefilter_user_input === false ? null : detectHighRiskRequest(userInput);
     if (risk && !options.riskConfirmed) {
       setPendingRisk(risk);
       return;
     }
-    const effectiveDeliveryMode: DeliveryMode = runMode === "plan"
+    const requestedRunMode = runMode;
+    const effectiveDeliveryMode: DeliveryMode = requestedRunMode === "plan"
       ? "queue"
       : busy
       ? deliveryMode === "guide" && attachments.length === 0
@@ -1569,6 +1688,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setPendingRisk(null);
     setStreaming("");
     setError(null);
+    if (requestedRunMode === "plan") setRunMode("execute");
     if (!busy) setRunState("thinking");
     if (!busy) {
       setMessages((current) => [
@@ -1580,7 +1700,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           metadata: {
             projectId: selectedProjectId,
             taskId: selectedTaskId,
-            runMode,
+            runMode: requestedRunMode,
             deliveryMode: "immediate",
           },
           attachments,
@@ -1593,9 +1713,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         taskId: selectedTaskId,
         userInput,
         deliveryMode: effectiveDeliveryMode,
-        runMode,
+        runMode: requestedRunMode,
         attachments,
         riskConfirmed: options.riskConfirmed === true,
+        runtimeApprovalEnabled: permissions.runtime_approval_enabled !== false,
+        approvalTimeoutSeconds: permissions.approval_timeout_seconds,
       });
       if (response.queueDepth !== undefined) {
         setQueuedCount(Math.max(0, Number(response.queueDepth || 0)));
@@ -1605,7 +1727,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           attachments,
           queueId: response.queueId,
           requestedDeliveryMode: effectiveDeliveryMode,
-          runMode,
+          runMode: requestedRunMode,
           targetRunId: response.runId,
           userInput,
         });
@@ -1624,7 +1746,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setRunState("error");
       setMessages((current) => appendAgentEvent(current, event));
     }
-  }, [appendQueuedInput, copy.selectProjectTaskBeforeSending, deliveryMode, draft, pendingAttachments, runMode, runState, selectedProjectId, selectedTaskId]);
+  }, [appendQueuedInput, copy.selectProjectTaskBeforeSending, deliveryMode, draft, pendingAttachments, permissions, runMode, runState, selectedProjectId, selectedTaskId]);
 
   const executePlan = useCallback(async (plan: PlanReview) => {
     if (!selectedProjectId || !selectedTaskId) {
@@ -1669,6 +1791,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         runMode: "execute",
         attachments: [],
         riskConfirmed: false,
+        runtimeApprovalEnabled: true,
+        approvalTimeoutSeconds: permissions.approval_timeout_seconds,
       });
       if (response.queueDepth !== undefined) {
         setQueuedCount(Math.max(0, Number(response.queueDepth || 0)));
@@ -1697,7 +1821,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setRunState("error");
       setMessages((current) => appendAgentEvent(current, event));
     }
-  }, [appendQueuedInput, copy.planReview, copy.selectProjectTaskBeforeSending, runState, selectedProjectId, selectedTaskId]);
+  }, [appendQueuedInput, copy.planReview, copy.selectProjectTaskBeforeSending, permissions.approval_timeout_seconds, runState, selectedProjectId, selectedTaskId]);
 
   const updateQueuedInput = useCallback(async (queued: QueuedInput, action: "delete" | "guide") => {
     if (!selectedProjectId || !selectedTaskId) return;
@@ -2572,10 +2696,145 @@ function CodeBlock({ code, lang }: { code: string; lang?: string }) {
   );
 }
 
+function approvalStatusFromEvent(event: AgentEvent): {
+  label: string;
+  tone: "pending" | "allowed" | "denied" | "timeout" | "invalid";
+} {
+  const metadata = eventMetadata(event);
+  const status = String(metadata.approvalStatus || event.type || "");
+  if (status === "risk_approval_allowed" || status === "high_risk_command_auto_allowed") {
+    return { label: "Allowed", tone: "allowed" };
+  }
+  if (status === "risk_approval_denied" || status === "high_risk_command_blocked") {
+    return { label: "Denied", tone: "denied" };
+  }
+  if (status === "risk_approval_timeout") return { label: "Timed out, command denied", tone: "timeout" };
+  if (status === "risk_approval_invalid") return { label: "Invalid decision", tone: "invalid" };
+  return { label: "Waiting for approval", tone: "pending" };
+}
+
+function RiskApprovalCard({ event }: { event: AgentEvent }) {
+  const [submitting, setSubmitting] = useState<RiskApprovalDecision | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const metadata = eventMetadata(event);
+  const status = approvalStatusFromEvent(event);
+  const final = status.tone !== "pending";
+  const command = "command" in event ? String(event.command || "") : "";
+  const cwd = "cwd" in event ? String(event.cwd || "") : "";
+  const reason = "reason" in event ? String(event.reason || "") : "";
+  const approvalId = riskApprovalId(event);
+  const projectId = String(("projectId" in event ? event.projectId : "") || metadata.projectId || "");
+  const taskId = String(("taskId" in event ? event.taskId : "") || metadata.taskId || "");
+  const runId = String(("runId" in event ? event.runId : "") || metadata.runId || "");
+  const allowedDecisions =
+    event.type === "risk_approval_required" && Array.isArray(event.allowedDecisions)
+      ? event.allowedDecisions
+      : [];
+  const expiresAt =
+    event.type === "risk_approval_required" && event.expiresAt
+      ? new Date(event.expiresAt).toLocaleString()
+      : "";
+
+  const resolve = async (decision: RiskApprovalDecision) => {
+    if (submitting || final) return;
+    setSubmitting(decision);
+    setLocalError(null);
+    try {
+      const result = await redouApi.resolveRiskApproval({
+        projectId,
+        taskId,
+        runId,
+        approvalId,
+        decision,
+      });
+      if (!result.ok) {
+        setLocalError(result.message || "Approval decision was not accepted.");
+        setSubmitting(null);
+      }
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : String(error));
+      setSubmitting(null);
+    }
+  };
+
+  const toneClass =
+    status.tone === "allowed"
+      ? "border-success/40 bg-success/5 text-success"
+      : status.tone === "pending"
+        ? "border-warning/40 bg-warning/5 text-warning"
+        : "border-destructive/40 bg-destructive/5 text-destructive";
+
+  return (
+    <div className="rounded-lg border border-warning/45 bg-card/70 px-3 py-3 text-xs text-midground shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 font-semibold">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-warning" />
+            High-risk command approval required
+          </div>
+          <div className="mt-1 text-muted-foreground">
+            {reason || "The agent generated a command that needs approval before it can run."}
+          </div>
+        </div>
+        <span className={cn("shrink-0 rounded border px-2 py-1 text-[11px]", toneClass)}>
+          {status.label}
+        </span>
+      </div>
+      <div className="mt-2 grid gap-1.5 text-[11px] text-muted-foreground">
+        {cwd && <div><span className="font-medium text-midground">cwd:</span> {cwd}</div>}
+        {"riskLevel" in event && event.riskLevel && (
+          <div><span className="font-medium text-midground">risk:</span> {event.riskLevel}</div>
+        )}
+        {expiresAt && <div><span className="font-medium text-midground">expires:</span> {expiresAt}</div>}
+      </div>
+      {command && (
+        <details className="mt-2 rounded-md border border-border/60 bg-background/40">
+          <summary className="cursor-pointer px-2 py-1.5 text-[11px] text-muted-foreground">
+            Full command
+          </summary>
+          <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words px-2 pb-2 font-mono text-xs leading-5 text-midground">
+            {command}
+          </pre>
+        </details>
+      )}
+      {localError && (
+        <div className="mt-2 rounded border border-destructive/35 bg-destructive/10 px-2 py-1.5 text-destructive">
+          {localError}
+        </div>
+      )}
+      {event.type === "risk_approval_required" && !final && (
+        <div className="mt-3 flex flex-wrap justify-end gap-2">
+          {allowedDecisions.includes("allow_once") && (
+            <Button size="sm" disabled={!!submitting} onClick={() => void resolve("allow_once")}>
+              {submitting === "allow_once" ? "Submitting..." : "Allow once"}
+            </Button>
+          )}
+          {allowedDecisions.includes("allow_session") && (
+            <Button size="sm" outlined disabled={!!submitting} onClick={() => void resolve("allow_session")}>
+              {submitting === "allow_session" ? "Submitting..." : "Allow similar this task"}
+            </Button>
+          )}
+          {allowedDecisions.includes("allow_always") && (
+            <Button size="sm" outlined disabled={!!submitting} onClick={() => void resolve("allow_always")}>
+              {submitting === "allow_always" ? "Submitting..." : "Always allow"}
+            </Button>
+          )}
+          {allowedDecisions.includes("deny") && (
+            <Button size="sm" outlined disabled={!!submitting} onClick={() => void resolve("deny")}>
+              {submitting === "deny" ? "Submitting..." : "Deny"}
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function EventCard({ event }: { event: AgentEvent }) {
   const { locale } = useI18n();
   const copy = CHAT_COPY[locale];
   if (event.type === "run_stage") return null;
+  if (isRiskApprovalEvent(event)) return <RiskApprovalCard event={event} />;
   const content = event.type === "raw_log" ? event.content : formatEventForRawLog(event, eventMessage(event));
   const usage = turnUsageSummary(eventMetadata(event), copy);
   if (usage) {
