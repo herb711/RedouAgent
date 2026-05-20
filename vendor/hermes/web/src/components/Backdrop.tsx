@@ -1,5 +1,7 @@
 import { useGpuTier } from "@nous-research/ui/hooks/use-gpu-tier";
 
+const FILLER_BG_SRC = `${import.meta.env.BASE_URL}ds-assets/filler-bg0.jpg`;
+
 /**
  * Replicates the visual layer stack of `<Overlays dark />` from
  * `@nous-research/ui` without pulling in its leva / gsap / three peer deps.
@@ -58,7 +60,7 @@ export function Backdrop() {
           alt=""
           className="h-[150dvh] w-auto min-w-[100dvw] object-cover object-top-left invert theme-default-filler"
           fetchPriority="low"
-          src="/ds-assets/filler-bg0.jpg"
+          src={FILLER_BG_SRC}
         />
       </div>
 

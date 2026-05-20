@@ -184,6 +184,7 @@ def cleanup_test_debris() -> None:
 def assert_path_contract() -> None:
     service = ROOT / "apps" / "desktop" / "src" / "services" / "redouLocalService.cjs"
     service_impl = ROOT / "apps" / "desktop" / "src" / "services" / "local-service" / "index.cjs"
+    service_dir = service_impl.parent
     skill_service_impl = ROOT / "apps" / "desktop" / "src" / "services" / "local-service" / "skills" / "skillService.cjs"
     packager = HERMES / "hermes_cli" / "redou_task_skill_packager.py"
     docs = ROOT / "docs" / "architecture" / "source-and-generated-paths.md"
@@ -193,11 +194,15 @@ def assert_path_contract() -> None:
             raise SystemExit(f"required path contract file is missing: {required.relative_to(ROOT)}")
 
     facade_text = service.read_text(encoding="utf-8")
-    service_text = service_impl.read_text(encoding="utf-8")
     skill_service_text = skill_service_impl.read_text(encoding="utf-8")
     packager_text = packager.read_text(encoding="utf-8")
     docs_text = docs.read_text(encoding="utf-8")
     readme_text = readme.read_text(encoding="utf-8")
+
+    service_sources = sorted(service_dir.rglob("*.cjs"))
+
+    def source_tree_contains(snippet: str) -> bool:
+        return any(snippet in path.read_text(encoding="utf-8") for path in service_sources)
 
     service_snippets = [
         "projectHermesHome(project) {\n    return this.projectContextDir(project);",
@@ -211,9 +216,9 @@ def assert_path_contract() -> None:
     if 'module.exports = require("./local-service/index.cjs");' not in facade_text:
         raise SystemExit("redouLocalService.cjs must remain a thin local-service facade")
 
-    missing = [snippet for snippet in service_snippets if snippet not in service_text]
+    missing = [snippet for snippet in service_snippets if not source_tree_contains(snippet)]
     if missing:
-        raise SystemExit("path contract snippets are missing from local-service/index.cjs:\n" + "\n".join(missing))
+        raise SystemExit("path contract snippets are missing from local-service source tree:\n" + "\n".join(missing))
     missing = [snippet for snippet in skill_service_snippets if snippet not in skill_service_text]
     if missing:
         raise SystemExit("path contract snippets are missing from local-service/skills/skillService.cjs:\n" + "\n".join(missing))
@@ -225,7 +230,7 @@ def assert_path_contract() -> None:
     if "docs/architecture/source-and-generated-paths.md" not in readme_text:
         raise SystemExit("README must link to the runtime data path contract")
 
-    scanned_files = [service, service_impl, skill_service_impl, ROOT / "README.md"]
+    scanned_files = [service, *service_sources, ROOT / "README.md"]
     for path in scanned_files:
         text = path.read_text(encoding="utf-8")
         if ".redou-analysis" in text:
@@ -239,7 +244,7 @@ def assert_desktop_packaging_contract() -> None:
     prerequisite_script_path = ROOT / "apps" / "desktop" / "build" / "install-prerequisites.ps1"
     main_path = ROOT / "apps" / "desktop" / "src" / "main.cjs"
     preload_path = ROOT / "apps" / "desktop" / "src" / "preload.cjs"
-    service_path = ROOT / "apps" / "desktop" / "src" / "services" / "local-service" / "index.cjs"
+    service_dir = ROOT / "apps" / "desktop" / "src" / "services" / "local-service"
 
     package_json = json.loads(package_path.read_text(encoding="utf-8"))
     scripts = package_json.get("scripts", {})
@@ -330,7 +335,8 @@ def assert_desktop_packaging_contract() -> None:
     if "updateApp" not in preload_text or "redou:app:update" not in preload_text:
         raise SystemExit("desktop preload must expose the app update IPC bridge")
 
-    service_text = service_path.read_text(encoding="utf-8")
+    service_sources = sorted(service_dir.rglob("*.cjs"))
+    service_text = "\n".join(path.read_text(encoding="utf-8") for path in service_sources)
     required_service_snippets = [
         "app.asar.unpacked",
         'desktopSourcePath("dashboard_bridge.py")',

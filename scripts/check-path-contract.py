@@ -14,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SERVICE_FACADE = ROOT / "apps" / "desktop" / "src" / "services" / "redouLocalService.cjs"
 SERVICE = ROOT / "apps" / "desktop" / "src" / "services" / "local-service" / "index.cjs"
+SERVICE_DIR = SERVICE.parent
 DASHBOARD = ROOT / "apps" / "desktop" / "src" / "dashboard_bridge.py"
 PACKAGER = ROOT / "vendor" / "hermes" / "hermes_cli" / "redou_task_skill_packager.py"
 DOC = ROOT / "docs" / "architecture" / "source-and-generated-paths.md"
@@ -48,22 +49,39 @@ def require_not_contains(path: Path, needle: str) -> None:
         fail(f"{path.relative_to(ROOT)} still contains deprecated text: {needle}")
 
 
+def service_sources() -> list[Path]:
+    return sorted(SERVICE_DIR.rglob("*.cjs"))
+
+
+def require_service_contains(needle: str) -> None:
+    for path in service_sources():
+        if needle in path.read_text(encoding="utf-8"):
+            return
+    fail(f"{SERVICE_DIR.relative_to(ROOT)} source tree is missing expected text: {needle}")
+
+
+def require_service_not_contains(needle: str) -> None:
+    for path in service_sources():
+        if needle in path.read_text(encoding="utf-8"):
+            fail(f"{path.relative_to(ROOT)} still contains deprecated text: {needle}")
+
+
 def main() -> int:
     for rel in LEGACY_ROOT_FILES:
         if (ROOT / rel).exists():
             fail(f"legacy root compatibility file still exists: {rel}")
 
     require_contains(SERVICE_FACADE, 'module.exports = require("./local-service/index.cjs");')
-    require_contains(SERVICE, 'const REDOU_CONTEXT_DIR = ".redou";')
-    require_contains(SERVICE, 'projectHermesHome(project) {\n    return this.projectContextDir(project);')
-    require_contains(SERVICE, 'projectSkillsDir(project) {\n    return path.join(this.projectContextDir(project), REDOU_SKILLS_DIR);')
-    require_contains(SERVICE, 'messagesPath: path.join(root, TASK_MESSAGES_FILE)')
-    require_contains(SERVICE, 'profileHome: this.projectHermesHome(project)')
-    require_contains(SERVICE, 'HERMES_HOME: this.projectHermesHome(project)')
-    require_not_contains(SERVICE, 'profileHomeForProject')
-    require_not_contains(SERVICE, 'this.profileHome(project.hermesProfile)')
-    require_not_contains(SERVICE, 'path.join(this.hermesHome, "profiles"')
-    require_not_contains(SERVICE, 'chat-projects.json.migration-complete')
+    require_service_contains('const REDOU_CONTEXT_DIR = ".redou";')
+    require_service_contains('projectHermesHome(project) {\n    return this.projectContextDir(project);')
+    require_service_contains('projectSkillsDir(project) {\n    return path.join(this.projectContextDir(project), REDOU_SKILLS_DIR);')
+    require_service_contains('messagesPath: path.join(root, TASK_MESSAGES_FILE)')
+    require_service_contains('profileHome: this.projectHermesHome(project)')
+    require_service_contains('HERMES_HOME: this.projectHermesHome(project)')
+    require_service_not_contains('profileHomeForProject')
+    require_service_not_contains('this.profileHome(project.hermesProfile)')
+    require_service_not_contains('path.join(this.hermesHome, "profiles"')
+    require_service_not_contains('chat-projects.json.migration-complete')
 
     require_contains(DASHBOARD, 'profile_home = context_dir.resolve()')
     require_contains(DASHBOARD, '"profileHome": str(profile_home.resolve())')

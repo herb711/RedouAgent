@@ -1,7 +1,7 @@
 {
   "name": "redou-agent-desktop",
   "productName": "Redou Agent",
-  "version": "0.1.10",
+  "version": "0.2.0",
   "private": true,
   "description": "Redou Agent desktop shell",
   "main": "src/main.cjs",
