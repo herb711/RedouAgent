@@ -101,13 +101,22 @@ Electron's platform-specific `userData` path.
 
 ```text
 %APPDATA%/Redou Agent/runtime/
+~/.config/Redou Agent/runtime/
 ```
 
 Python runtime/venv and runtime markers prepared by the desktop app.
+The managed Python executable is platform-specific:
+
+```text
+%APPDATA%/Redou Agent/runtime/venv/Scripts/python.exe
+~/.config/Redou Agent/runtime/venv/bin/python
+```
 
 ```text
 %APPDATA%/Redou Agent/hermes-home/config.yaml
 %APPDATA%/Redou Agent/hermes-home/.env
+~/.config/Redou Agent/hermes-home/config.yaml
+~/.config/Redou Agent/hermes-home/.env
 ```
 
 Global Hermes config and provider credentials managed by Redou's model setup UI.
@@ -117,12 +126,15 @@ config and merge `.env` values into the child process environment.
 ```text
 %APPDATA%/Redou Agent/appData/global/USER.md
 %APPDATA%/Redou Agent/appData/global/GLOBAL_RULES.md
+~/.config/Redou Agent/appData/global/USER.md
+~/.config/Redou Agent/appData/global/GLOBAL_RULES.md
 ```
 
 Global user preferences and global rules edited from Redou.
 
 ```text
 %APPDATA%/Redou Agent/appData/projects/<project-id>/project.json
+~/.config/Redou Agent/appData/projects/<project-id>/project.json
 ```
 
 Project index metadata used by the desktop app. It points at the project-local
@@ -133,6 +145,9 @@ skill bodies.
 %APPDATA%/Redou Agent/appData/state.json
 %APPDATA%/Redou Agent/appData/analysis/
 %APPDATA%/Redou Agent/logs/
+~/.config/Redou Agent/appData/state.json
+~/.config/Redou Agent/appData/analysis/
+~/.config/Redou Agent/logs/
 ```
 
 Active project/task selection, model benchmark/analysis output, and desktop

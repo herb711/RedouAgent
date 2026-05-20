@@ -1,14 +1,16 @@
 {
   "name": "redou-agent-desktop",
   "productName": "Redou Agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Redou Agent desktop shell",
   "main": "src/main.cjs",
   "scripts": {
     "prebuild": "npm --prefix ../../vendor/hermes/web run build",
     "start": "electron .",
-    "build": "electron-builder --win nsis",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win nsis",
+    "build:linux": "electron-builder --linux AppImage deb",
     "test": "node --test --test-force-exit --test-reporter=dot tests/*.test.cjs"
   },
   "devDependencies": {
@@ -70,6 +72,15 @@
       "artifactName": "Redou-Agent-Setup-${version}.${ext}",
       "icon": "assets/icons/redou-agent.ico",
       "target": "nsis"
+    },
+    "linux": {
+      "artifactName": "Redou-Agent-${version}-${arch}.${ext}",
+      "category": "Development",
+      "icon": "assets/icons/redou-agent.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
     },
     "nsis": {
       "oneClick": false,

@@ -1,13 +1,21 @@
 const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
 const fs = require("fs");
 const path = require("path");
-const { spawn, spawnSync } = require("child_process");
+const { spawn } = require("child_process");
 const { autoUpdater } = require("electron-updater");
 const { RedouLocalService } = require("./services/redouLocalService.cjs");
+const {
+  GIT_BASH_ENV,
+  describePlatformPrerequisites,
+  isWindowsShellScript,
+  resolveGitBashPath,
+  resolveNpm,
+  resolvePython,
+  runtimePathExtras,
+  venvPythonPath,
+} = require("./platformRuntime.cjs");
 
 const PRODUCT_NAME = "Redou Agent";
-const PYTHON_ENV = "REDOU_PYTHON";
-const GIT_BASH_ENV = "HERMES_GIT_BASH_PATH";
 
 let mainWindow = null;
 let localService = null;
@@ -22,8 +30,6 @@ let statusUpdateTimer = null;
 let currentStatusTitle = "Starting";
 let shutdownComplete = false;
 let activePythonHermesRoot = null;
-let gitBashLookupComplete = false;
-let cachedGitBashPath = "";
 let updaterConfigured = false;
 let updateInProgress = false;
 
@@ -51,116 +57,18 @@ function desktopAssetPath(...segments) {
 }
 
 function windowIconPath() {
-  return desktopAssetPath("icons", "redou-agent.ico");
+  return process.platform === "win32"
+    ? desktopAssetPath("icons", "redou-agent.ico")
+    : desktopAssetPath("icons", "redou-agent.png");
 }
 
 function hermesHome() {
   return path.join(app.getPath("userData"), "hermes-home");
 }
 
-function isWslBashLauncher(candidate) {
-  const normalized = path.normalize(String(candidate || "")).toLowerCase();
-  return (
-    normalized.endsWith("\\windows\\system32\\bash.exe")
-    || normalized.endsWith("\\microsoft\\windowsapps\\bash.exe")
-  );
-}
-
-function collectCommandOutput(command, args) {
-  try {
-    const result = spawnSync(command, args, {
-      encoding: "utf8",
-      shell: false,
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    if (result.status !== 0 || !result.stdout) return [];
-    return result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  } catch {
-    return [];
-  }
-}
-
-function addGitBashCandidates(candidates, gitPath) {
-  if (!gitPath || !path.isAbsolute(gitPath)) return;
-  const gitRoot = path.dirname(path.dirname(gitPath));
-  candidates.push(path.join(gitRoot, "bin", "bash.exe"));
-  candidates.push(path.join(gitRoot, "usr", "bin", "bash.exe"));
-}
-
-function resolveGitBashPath(options = {}) {
-  const required = Boolean(options.required);
-  if (process.platform !== "win32") return "";
-  if (gitBashLookupComplete) {
-    if (required && !cachedGitBashPath) throw new Error(gitBashMissingMessage());
-    return cachedGitBashPath;
-  }
-
-  const candidates = [
-    process.env[GIT_BASH_ENV],
-    path.join(process.env.LOCALAPPDATA || "", "hermes", "git", "bin", "bash.exe"),
-    path.join(process.env.LOCALAPPDATA || "", "hermes", "git", "usr", "bin", "bash.exe"),
-    path.join(process.env.ProgramFiles || "C:\\Program Files", "Git", "bin", "bash.exe"),
-    path.join(process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)", "Git", "bin", "bash.exe"),
-    path.join(process.env.LOCALAPPDATA || "", "Programs", "Git", "bin", "bash.exe"),
-  ].filter(Boolean);
-
-  for (const gitPath of collectCommandOutput("where.exe", ["git.exe"])) {
-    addGitBashCandidates(candidates, gitPath);
-  }
-  for (const bashPath of collectCommandOutput("where.exe", ["bash.exe"])) {
-    if (!isWslBashLauncher(bashPath)) candidates.push(bashPath);
-  }
-
-  const seen = new Set();
-  for (const candidate of candidates) {
-    if (!candidate || !path.isAbsolute(candidate)) continue;
-    const normalized = path.normalize(candidate);
-    const key = normalized.toLowerCase();
-    if (seen.has(key) || isWslBashLauncher(normalized)) continue;
-    seen.add(key);
-    if (fs.existsSync(normalized)) {
-      cachedGitBashPath = normalized;
-      process.env[GIT_BASH_ENV] = normalized;
-      break;
-    }
-  }
-
-  gitBashLookupComplete = true;
-  if (required && !cachedGitBashPath) throw new Error(gitBashMissingMessage());
-  return cachedGitBashPath;
-}
-
-function gitBashMissingMessage() {
-  return [
-    "Git for Windows (Git Bash) was not found.",
-    "Redou/Hermes uses Git Bash to run local terminal tools on Windows.",
-    "Install Git for Windows, or set HERMES_GIT_BASH_PATH to your bash.exe path, then restart Redou Agent.",
-  ].join(" ");
-}
-
-function gitRuntimePathExtras(gitBashPath) {
-  if (!gitBashPath) return [];
-  const bashDir = path.dirname(gitBashPath);
-  const bashParent = path.dirname(bashDir);
-  const gitRoot = path.basename(bashParent).toLowerCase() === "usr"
-    ? path.dirname(bashParent)
-    : bashParent;
-  return [
-    bashDir,
-    path.join(gitRoot, "cmd"),
-    path.join(gitRoot, "usr", "bin"),
-    path.join(gitRoot, "mingw64", "bin"),
-  ];
-}
-
 function withRuntimePath(env = process.env) {
   const gitBashPath = resolveGitBashPath();
-  const extras = [
-    path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python312"),
-    "C:\\Program Files\\nodejs",
-    ...gitRuntimePathExtras(gitBashPath),
-  ].filter(Boolean);
+  const extras = runtimePathExtras();
   const runtimeEnv = {
     ...env,
     PATH: [...extras, env.PATH || ""].join(path.delimiter),
@@ -711,50 +619,6 @@ ipcMain.handle("redou:analysis:start", (event, body) =>
   getLocalService().startAnalysisBenchmarks(event.sender, body),
 );
 
-function commandWorks(command, args = ["--version"], options = {}) {
-  const usesShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
-  const result = spawnSync(command, args, {
-    ...options,
-    env: withRuntimePath(options.env || process.env),
-    encoding: "utf8",
-    shell: usesShell,
-    windowsHide: true,
-  });
-  return result.status === 0;
-}
-
-function resolvePython() {
-  const candidates = [
-    process.env[PYTHON_ENV],
-    path.join(process.env.LOCALAPPDATA || "", "Programs", "Python", "Python312", "python.exe"),
-    "C:\\Program Files\\Python312\\python.exe",
-    "python.exe",
-  ].filter(Boolean);
-
-  for (const candidate of candidates) {
-    if (candidate.includes("WindowsApps")) continue;
-    if (path.isAbsolute(candidate) && !fs.existsSync(candidate)) continue;
-    if (commandWorks(candidate)) return candidate;
-  }
-
-  throw new Error(
-    `Python 3.12 was not found. Install Python 3.12 or set ${PYTHON_ENV} to python.exe.`,
-  );
-}
-
-function resolveNpm() {
-  const candidates = [
-    path.join("C:\\Program Files\\nodejs", "npm.cmd"),
-    "npm.cmd",
-    "npm",
-  ];
-  for (const candidate of candidates) {
-    if (path.isAbsolute(candidate) && !fs.existsSync(candidate)) continue;
-    if (commandWorks(candidate)) return candidate;
-  }
-  throw new Error("npm was not found. Install Node.js LTS.");
-}
-
 function readJsonFile(filePath) {
   try {
     return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -870,11 +734,12 @@ function pythonRuntimeMarkerMatches(markerPath, installSource, installSourceStam
 
 function runLogged(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const usesShell = process.platform === "win32" && /\.(cmd|bat)$/i.test(command);
+    const runtimeEnv = withRuntimePath(options.env || process.env);
+    const usesShell = isWindowsShellScript(command);
     pushStatus(`> ${command} ${args.join(" ")}`);
     const child = spawn(command, args, {
       cwd: options.cwd || projectRoot(),
-      env: withRuntimePath(options.env || process.env),
+      env: runtimeEnv,
       windowsHide: true,
       shell: usesShell,
     });
@@ -900,7 +765,7 @@ function runLogged(command, args, options = {}) {
 async function ensurePythonRuntime() {
   const root = runtimeRoot();
   const venvDir = path.join(root, "venv");
-  const venvPython = path.join(venvDir, "Scripts", "python.exe");
+  const venvPython = venvPythonPath(venvDir);
   const marker = path.join(root, "python-ready.json");
   const hermesInstallSource = preparePackagedHermesInstallSource();
   const hermesSourceStamp = hermesInstallSourceStamp(hermesInstallSource);
@@ -910,7 +775,7 @@ async function ensurePythonRuntime() {
   fs.mkdirSync(hermesHome(), { recursive: true });
 
   if (!fs.existsSync(venvPython)) {
-    const python = resolvePython();
+    const python = resolvePython({ env: withRuntimePath(process.env) });
     pushStatus("Creating Python virtual environment...");
     await runLogged(python, ["-m", "venv", venvDir]);
     createdVenv = true;
@@ -960,7 +825,7 @@ async function ensureNodeRuntime() {
     throw new Error(`Renderer source directory was not found: ${webDir}`);
   }
 
-  const npm = resolveNpm();
+  const npm = resolveNpm({ env: withRuntimePath(process.env) });
   if (!fs.existsSync(path.join(webDir, "node_modules"))) {
     pushStatus("Installing Redou Agent renderer dependencies...");
     await runLogged(npm, ["install", "--no-fund", "--no-audit", "--progress=false"], {
@@ -994,7 +859,7 @@ async function loadRenderer() {
 async function boot() {
   try {
     renderStatus("Starting Redou Agent");
-    const gitBash = resolveGitBashPath({ required: true });
+    const gitBash = resolveGitBashPath({ required: process.platform === "win32" });
     if (gitBash) pushStatus(`Git Bash ready at ${gitBash}`);
     const python = await ensurePythonRuntime();
     const service = getLocalService();
@@ -1006,6 +871,7 @@ async function boot() {
   } catch (error) {
     rendererLoaded = false;
     pushStatus("");
+    pushStatus(`Required runtime dependencies: ${describePlatformPrerequisites()}`);
     pushStatus(error && error.stack ? error.stack : String(error));
     renderStatus("Redou Agent could not start");
   }

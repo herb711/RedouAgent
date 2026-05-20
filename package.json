@@ -1,11 +1,13 @@
 {
   "name": "redou-agent-workspace",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Redou Agent workspace. Hermes runtime is vendored under vendor/hermes for upstream sync.",
   "scripts": {
     "desktop": "npm --prefix apps/desktop start",
     "desktop:build": "npm --prefix apps/desktop run build",
+    "desktop:build:win": "npm --prefix apps/desktop run build:win",
+    "desktop:build:linux": "npm --prefix apps/desktop run build:linux",
     "desktop:test": "node --test --test-force-exit --test-reporter=dot ./apps/desktop/tests/*.test.cjs",
     "web:dev": "npm --prefix vendor/hermes/web run dev",
     "web:build": "npm --prefix vendor/hermes/web run build",

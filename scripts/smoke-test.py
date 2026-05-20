@@ -136,7 +136,11 @@ def run(label: str, args: list[str], *, cwd: Path | None = None, env: dict[str, 
 
         output = output_path.read_text(encoding="utf-8", errors="replace")
         if output.strip():
-            print(output.rstrip(), flush=True)
+            safe_output = output.rstrip().encode(sys.stdout.encoding or "utf-8", errors="replace").decode(
+                sys.stdout.encoding or "utf-8",
+                errors="replace",
+            )
+            print(safe_output, flush=True)
         if returncode != 0:
             raise SystemExit(f"{label} failed with exit code {returncode}")
     finally:
@@ -240,9 +244,15 @@ def assert_path_contract() -> None:
 
 def assert_desktop_packaging_contract() -> None:
     package_path = ROOT / "apps" / "desktop" / "package.json"
+    linux_install_shortcut_path = ROOT / "Install Redou Agent.sh"
+    linux_launch_shortcut_path = ROOT / "Launch Redou Agent.sh"
+    linux_install_path = ROOT / "install-redou-agent.sh"
+    linux_start_path = ROOT / "start-redou-agent.sh"
+    linux_launcher_generator_path = ROOT / "scripts" / "create-redou-linux-launchers.sh"
     installer_include_path = ROOT / "apps" / "desktop" / "build" / "installer.nsh"
     prerequisite_script_path = ROOT / "apps" / "desktop" / "build" / "install-prerequisites.ps1"
     main_path = ROOT / "apps" / "desktop" / "src" / "main.cjs"
+    platform_runtime_path = ROOT / "apps" / "desktop" / "src" / "platformRuntime.cjs"
     preload_path = ROOT / "apps" / "desktop" / "src" / "preload.cjs"
     service_dir = ROOT / "apps" / "desktop" / "src" / "services" / "local-service"
 
@@ -255,6 +265,11 @@ def assert_desktop_packaging_contract() -> None:
     prebuild = scripts.get("prebuild", "")
     if "../../vendor/hermes/web" not in prebuild or "run build" not in prebuild:
         raise SystemExit("desktop package prebuild must build the Hermes renderer before electron-builder")
+    if scripts.get("build:win") != "electron-builder --win nsis":
+        raise SystemExit("desktop package must keep an explicit Windows build script")
+    build_linux = scripts.get("build:linux", "")
+    if "--linux" not in build_linux or "AppImage" not in build_linux or "deb" not in build_linux:
+        raise SystemExit("desktop package must expose an explicit Linux AppImage/deb build script")
     if "electron-updater" not in package_json.get("dependencies", {}):
         raise SystemExit("desktop package must include electron-updater for in-app release updates")
     if "src/**/*.py" not in build.get("asarUnpack", []):
@@ -279,6 +294,16 @@ def assert_desktop_packaging_contract() -> None:
         raise SystemExit("desktop installer must allow users to choose the installation directory")
     if nsis.get("include") != "build/installer.nsh":
         raise SystemExit("desktop installer must include the Redou NSIS environment-check page")
+
+    linux = build.get("linux", {})
+    linux_targets = linux.get("target", [])
+    if "AppImage" not in linux_targets or "deb" not in linux_targets:
+        raise SystemExit("desktop package must build Linux AppImage and deb artifacts")
+    if linux.get("category") != "Development":
+        raise SystemExit("desktop Linux package must declare a desktop category")
+    linux_icon = ROOT / "apps" / "desktop" / str(linux.get("icon", ""))
+    if linux_icon.name != "redou-agent.png" or not linux_icon.exists():
+        raise SystemExit("desktop Linux package must use a bundled PNG icon")
 
     installer_include_text = installer_include_path.read_text(encoding="utf-8")
     required_installer_snippets = [
@@ -306,6 +331,7 @@ def assert_desktop_packaging_contract() -> None:
         raise SystemExit("desktop prerequisite installer script is incomplete:\n" + "\n".join(missing))
 
     main_text = main_path.read_text(encoding="utf-8")
+    platform_runtime_text = platform_runtime_path.read_text(encoding="utf-8")
     if "app.isPackaged" not in main_text or "process.resourcesPath" not in main_text:
         raise SystemExit("desktop main must resolve packaged runtime resources from process.resourcesPath")
     if "Bundled renderer was not found" not in main_text:
@@ -316,10 +342,53 @@ def assert_desktop_packaging_contract() -> None:
         "pythonRuntimeMarkerMatches",
         "hermesSourceStamp",
         "HERMES_VENDOR_ROOT: pythonHermesRoot()",
+        "venvPythonPath(venvDir)",
     ]
     missing = [snippet for snippet in required_packaged_runtime_snippets if snippet not in main_text]
     if missing:
         raise SystemExit("packaged desktop must stage Hermes Python sources before pip install:\n" + "\n".join(missing))
+    required_platform_runtime_snippets = [
+        'process.platform === "win32"',
+        'path.join(venvDir, "Scripts", "python.exe")',
+        'path.join(venvDir, "bin", "python")',
+        '"python3.12"',
+        '"python3.11"',
+        "Git for Windows",
+    ]
+    missing = [snippet for snippet in required_platform_runtime_snippets if snippet not in platform_runtime_text]
+    if missing:
+        raise SystemExit("desktop platform runtime must preserve Windows and Linux launch paths:\n" + "\n".join(missing))
+
+    linux_install_text = linux_install_path.read_text(encoding="utf-8")
+    linux_start_text = linux_start_path.read_text(encoding="utf-8")
+    linux_install_shortcut_text = linux_install_shortcut_path.read_text(encoding="utf-8")
+    linux_launch_shortcut_text = linux_launch_shortcut_path.read_text(encoding="utf-8")
+    linux_launcher_generator_text = linux_launcher_generator_path.read_text(encoding="utf-8")
+    required_linux_script_snippets = [
+        "python3-venv",
+        "REDOU_PYTHON",
+        "npm",
+        "vendor/hermes/hermes_cli/web_dist/index.html",
+        "create-redou-linux-launchers.sh",
+    ]
+    missing = [snippet for snippet in required_linux_script_snippets if snippet not in linux_install_text]
+    if missing:
+        raise SystemExit("Linux source installer script is incomplete:\n" + "\n".join(missing))
+    if "run build:linux" not in linux_start_text or "node_modules/electron/dist/electron" not in linux_start_text:
+        raise SystemExit("Linux start script must support launch and Linux package build")
+    if "install-redou-agent.sh" not in linux_install_shortcut_text:
+        raise SystemExit("Linux friendly install shortcut must delegate to install-redou-agent.sh")
+    if "start-redou-agent.sh" not in linux_launch_shortcut_text:
+        raise SystemExit("Linux friendly launch shortcut must delegate to start-redou-agent.sh")
+    required_launcher_generator_snippets = [
+        "redou-agent.desktop",
+        "Launch Redou Agent.sh",
+        "update-desktop-database",
+        "XDG_DATA_HOME",
+    ]
+    missing = [snippet for snippet in required_launcher_generator_snippets if snippet not in linux_launcher_generator_text]
+    if missing:
+        raise SystemExit("Linux desktop launcher generator is incomplete:\n" + "\n".join(missing))
     required_update_snippets = [
         "electron-updater",
         "autoUpdater.checkForUpdates",
