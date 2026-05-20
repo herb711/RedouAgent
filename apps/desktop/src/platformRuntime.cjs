@@ -170,6 +170,19 @@ function pythonVersionSupported(version) {
   return parts[0] > 3 || (parts[0] === 3 && parts[1] >= 11);
 }
 
+function pythonMissingMessage() {
+  if (process.platform === "linux") {
+    return [
+      "Python 3.11 or newer was not found.",
+      "Install Python 3.11+ with venv support, for example: sudo apt install python3.12 python3.12-venv python3-pip.",
+      `If Python is installed in a custom location, set ${PYTHON_ENV} to its executable path.`,
+    ].join(" ");
+  }
+
+  const commandName = process.platform === "win32" ? "python.exe" : "python3";
+  return `Python 3.11 or newer was not found. Install Python 3.11+ or set ${PYTHON_ENV} to ${commandName}.`;
+}
+
 function resolvePython(options = {}) {
   const env = options.env || process.env;
   const candidates = process.platform === "win32"
@@ -198,10 +211,7 @@ function resolvePython(options = {}) {
     if (info && pythonVersionSupported(info.version)) return info.path || candidate;
   }
 
-  const commandName = process.platform === "win32" ? "python.exe" : "python3";
-  throw new Error(
-    `Python 3.11 or newer was not found. Install Python 3.11+ or set ${PYTHON_ENV} to ${commandName}.`,
-  );
+  throw new Error(pythonMissingMessage());
 }
 
 function resolveNpm(options = {}) {
@@ -237,7 +247,7 @@ function describePlatformPrerequisites() {
     return "Install Python 3.11+, Node.js 20+, and Git for Windows.";
   }
   if (process.platform === "linux") {
-    return "Install python3, python3-venv, python3-pip, nodejs, npm, git, and bash.";
+    return "Install Python 3.11+ with venv/pip support, nodejs, npm, git, and bash.";
   }
   return "Install Python 3.11+, Node.js 20+, git, and bash.";
 }

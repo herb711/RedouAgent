@@ -262,6 +262,8 @@ def assert_desktop_packaging_contract() -> None:
     extra_resources = build.get("extraResources", [])
     publish = build.get("publish", [])
 
+    if build.get("productName") != "RedouAgent":
+        raise SystemExit("desktop build productName must stay RedouAgent so install paths do not contain spaces")
     prebuild = scripts.get("prebuild", "")
     if "../../vendor/hermes/web" not in prebuild or "run build" not in prebuild:
         raise SystemExit("desktop package prebuild must build the Hermes renderer before electron-builder")
@@ -292,6 +294,8 @@ def assert_desktop_packaging_contract() -> None:
         raise SystemExit("desktop installer must use assisted NSIS mode so users can choose install options")
     if nsis.get("allowToChangeInstallationDirectory") is not True:
         raise SystemExit("desktop installer must allow users to choose the installation directory")
+    if nsis.get("shortcutName") != "Redou Agent":
+        raise SystemExit("desktop installer shortcuts must keep the visible Redou Agent name")
     if nsis.get("include") != "build/installer.nsh":
         raise SystemExit("desktop installer must include the Redou NSIS environment-check page")
 
@@ -301,9 +305,28 @@ def assert_desktop_packaging_contract() -> None:
         raise SystemExit("desktop package must build Linux AppImage and deb artifacts")
     if linux.get("category") != "Development":
         raise SystemExit("desktop Linux package must declare a desktop category")
+    linux_desktop_entry = linux.get("desktop", {}).get("entry", {})
+    if linux_desktop_entry.get("Name") != "Redou Agent":
+        raise SystemExit("desktop Linux launcher must keep the visible Redou Agent name")
     linux_icon = ROOT / "apps" / "desktop" / str(linux.get("icon", ""))
     if linux_icon.name != "redou-agent.png" or not linux_icon.exists():
         raise SystemExit("desktop Linux package must use a bundled PNG icon")
+    deb = build.get("deb", {})
+    deb_depends = deb.get("depends", [])
+    required_deb_depends = [
+        "libgtk-3-0",
+        "libnss3",
+        "python3.12 | python3.11 | python3 (>= 3.11)",
+        "python3.12-venv | python3.11-venv | python3-venv",
+        "python3-pip",
+        "nodejs",
+        "npm",
+        "git",
+        "bash",
+    ]
+    missing = [dependency for dependency in required_deb_depends if dependency not in deb_depends]
+    if missing:
+        raise SystemExit("desktop deb package must declare apt runtime dependencies:\n" + "\n".join(missing))
 
     installer_include_text = installer_include_path.read_text(encoding="utf-8")
     required_installer_snippets = [
