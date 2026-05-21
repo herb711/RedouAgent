@@ -68,6 +68,10 @@ class ContextMethods {
     return this.artifactService.copyTaskAttachments(projectId, taskId, filePaths);
   }
 
+  copyTaskAttachmentBuffers(projectId, taskId, files = []) {
+    return this.artifactService.copyTaskAttachmentBuffers(projectId, taskId, files);
+  }
+
   formatAttachmentSize(size) {
     return this.contextBuilder.formatAttachmentSize(size);
   }

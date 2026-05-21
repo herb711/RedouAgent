@@ -57,6 +57,31 @@ test("copyTaskAttachments stores image and file metadata for a task", () => {
   assert.equal(result.attachments[1].mimeType, "text/plain");
 });
 
+test("copyTaskAttachmentBuffers stores clipboard image metadata for a task", () => {
+  const { service } = makeService();
+  const { project, task } = createProjectAndTask(service);
+
+  const result = service.copyTaskAttachmentBuffers(project.id, task.id, [
+    {
+      name: "clipboard-image.png",
+      data: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      mimeType: "image/png",
+      originalPath: "clipboard",
+      metadata: { source: "clipboard" },
+    },
+  ]);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.warnings, []);
+  assert.equal(result.attachments.length, 1);
+  assert.equal(result.attachments[0].name, "clipboard-image.png");
+  assert.equal(result.attachments[0].mimeType, "image/png");
+  assert.equal(result.attachments[0].originalPath, "clipboard");
+  assert.equal(result.attachments[0].metadata.source, "clipboard");
+  assert.match(result.attachments[0].relativePath, /^uploads[\\/]/);
+  assert.ok(fs.existsSync(result.attachments[0].storedPath));
+});
+
 test("buildTaskContext exposes current and historical attachment paths", () => {
   const { root, service } = makeService();
   const { project, task } = createProjectAndTask(service);

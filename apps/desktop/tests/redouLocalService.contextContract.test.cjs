@@ -149,6 +149,31 @@ test("queued messages can be deleted before they start", () => {
   assert.equal(loaded.messages.some((message) => message.role === "user" && message.content === "delete this queued request"), false);
 });
 
+test("stale queued message logs can be deleted when the in-memory queue is gone", () => {
+  const { service, project, task } = makeService();
+  addActiveRun(service, project, task);
+  const queued = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "delete this stale queued request",
+  });
+  service.taskQueues.clear();
+
+  const response = service.updateQueuedMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    queueId: queued.queueId,
+    action: "delete",
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(response.deleted, true);
+  assert.equal(response.stale, true);
+  assert.equal(response.queueDepth, 0);
+  const loaded = service.getChatTaskMessages(project.id, task.id);
+  assert.equal(loaded.messages.some((message) => message.role === "user" && message.content === "delete this stale queued request"), false);
+});
+
 test("queued messages can be converted into guidance", () => {
   const { service, project, task } = makeService();
   const active = addActiveRun(service, project, task);

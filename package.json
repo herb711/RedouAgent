@@ -1,6 +1,6 @@
 {
   "name": "redou-agent-workspace",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "private": true,
   "description": "Redou Agent workspace. Hermes runtime is vendored under vendor/hermes for upstream sync.",
   "scripts": {
@@ -22,5 +22,21 @@
   },
   "engines": {
     "node": ">=20.0.0"
-  }
+  },
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/herb711/RedouAgent.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/herb711/RedouAgent/issues"
+  },
+  "homepage": "https://github.com/herb711/RedouAgent#readme"
 }

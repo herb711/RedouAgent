@@ -1,5 +1,6 @@
 const fs = require("fs");
 const path = require("path");
+const { isRunLogicallyActive } = require("../processes/processManager.cjs");
 const {
   GLOBAL_RULES_FILE,
   GLOBAL_USER_FILE,
@@ -116,6 +117,7 @@ class RuntimeCoreMethods {
 
   hasActiveRunFor(projectId, taskId = null) {
     for (const run of this.activeRuns.values()) {
+      if (!isRunLogicallyActive(run)) continue;
       if (run.projectId !== projectId) continue;
       if (!taskId || run.taskId === taskId) return true;
     }

@@ -138,6 +138,10 @@ declare global {
         taskId: string,
         filePaths: string[],
       ) => Promise<CopyTaskAttachmentsResponse>;
+      pasteClipboardImageAttachment?: (
+        projectId: string,
+        taskId: string,
+      ) => Promise<CopyTaskAttachmentsResponse>;
       getGlobalContextFile?: (
         kind: GlobalContextFileKind,
       ) => Promise<ContextFileResponse>;
@@ -244,6 +248,8 @@ const redouApiCore = {
       requireRedouMethod("extractTaskRules")(projectId, taskId, target),
     copyTaskAttachments: (projectId: string, taskId: string, filePaths: string[]) =>
       requireRedouMethod("copyTaskAttachments")(projectId, taskId, filePaths),
+    pasteClipboardImageAttachment: (projectId: string, taskId: string) =>
+      requireRedouMethod("pasteClipboardImageAttachment")(projectId, taskId),
     buildTaskContext: (input: BuildContextInput) =>
       requireRedouMethod("buildTaskContext")(input),
     sendChatMessage: (input: SendMessageInput) =>
@@ -427,6 +433,7 @@ export const redouApi = {
   packageTaskSkill: redouApiCore.tasks.packageTaskSkill,
   extractTaskRules: redouApiCore.tasks.extractTaskRules,
   copyTaskAttachments: redouApiCore.tasks.copyTaskAttachments,
+  pasteClipboardImageAttachment: redouApiCore.tasks.pasteClipboardImageAttachment,
   buildTaskContext: redouApiCore.tasks.buildTaskContext,
   sendChatMessage: redouApiCore.tasks.sendChatMessage,
   updateQueuedChatMessage: redouApiCore.tasks.updateQueuedChatMessage,
@@ -944,6 +951,7 @@ export interface QueuedMessageUpdateResponse {
   guided?: boolean;
   runId?: string;
   queueDepth?: number;
+  stale?: boolean;
 }
 
 export interface PaginatedSessions {

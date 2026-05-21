@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const path = require("path");
+const { isRunLogicallyActive } = require("../processes/processManager.cjs");
 
 function nowSeconds() {
   return Date.now() / 1000;
@@ -227,10 +228,12 @@ class AnalyticsService {
   }
 
   getStatus() {
-    const activeRuns = Array.from(this.host.activeRuns.entries()).map(([runId, run]) => ({
-      runId,
-      ...run,
-    }));
+    const activeRuns = Array.from(this.host.activeRuns.entries())
+      .filter(([, run]) => isRunLogicallyActive(run))
+      .map(([runId, run]) => ({
+        runId,
+        ...run,
+      }));
     const activeAnalysisRuns = this.activeAnalysisItems();
     const latestActivityMs = Math.max(
       0,
@@ -281,6 +284,7 @@ class AnalyticsService {
 
   activeRunForTaskSnapshot(projectId, taskId) {
     for (const [runId, run] of this.host.activeRuns.entries()) {
+      if (!isRunLogicallyActive(run)) continue;
       if (run.projectId === projectId && run.taskId === taskId) {
         return { runId, ...run };
       }

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Menu, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, shell, clipboard } = require("electron");
 const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
@@ -64,6 +64,16 @@ function windowIconPath() {
 
 function hermesHome() {
   return path.join(app.getPath("userData"), "hermes-home");
+}
+
+function clipboardImageAttachmentName(now = new Date()) {
+  const pad = (value) => String(value).padStart(2, "0");
+  const stamp = [
+    now.getFullYear(),
+    pad(now.getMonth() + 1),
+    pad(now.getDate()),
+  ].join("") + "-" + [pad(now.getHours()), pad(now.getMinutes()), pad(now.getSeconds())].join("");
+  return `clipboard-image-${stamp}.png`;
 }
 
 function withRuntimePath(env = process.env) {
@@ -487,6 +497,37 @@ ipcMain.handle("redou:sessions:messages", (_event, sessionId) =>
 ipcMain.handle("redou:tasks:attachments:copy", (_event, projectId, taskId, filePaths) =>
   getLocalService().copyTaskAttachments(projectId, taskId, filePaths),
 );
+
+ipcMain.handle("redou:tasks:attachments:paste-clipboard-image", (_event, projectId, taskId) => {
+  const service = getLocalService();
+  const image = clipboard.readImage();
+  if (image.isEmpty()) {
+    const result = service.copyTaskAttachmentBuffers(projectId, taskId, []);
+    return {
+      ...result,
+      warnings: [...result.warnings, "Clipboard does not contain an image."],
+    };
+  }
+
+  const png = image.toPNG();
+  if (!png.length) {
+    const result = service.copyTaskAttachmentBuffers(projectId, taskId, []);
+    return {
+      ...result,
+      warnings: [...result.warnings, "Clipboard image could not be read."],
+    };
+  }
+
+  return service.copyTaskAttachmentBuffers(projectId, taskId, [
+    {
+      name: clipboardImageAttachmentName(),
+      data: png,
+      mimeType: "image/png",
+      originalPath: "clipboard",
+      metadata: { source: "clipboard" },
+    },
+  ]);
+});
 
 ipcMain.handle("redou:context:global:get", (_event, kind) =>
   getLocalService().getGlobalContextFile(kind),

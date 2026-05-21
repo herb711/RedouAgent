@@ -53,6 +53,23 @@ const CHAT_DRAFT_KEY = "redou-agent-chat-draft";
 const LOCAL_CHANNEL = "redou-local-chat";
 const CHAT_SCROLL_BOTTOM_THRESHOLD = 48;
 const CHAT_SCROLL_SETTLE_DELAY_MS = 700;
+const CHAT_COMPOSER_MIN_HEIGHT = 96;
+const CHAT_COMPOSER_DEFAULT_HEIGHT = 96;
+const CHAT_COMPOSER_MAX_HEIGHT = 520;
+const CHAT_COMPOSER_VIEWPORT_MAX_RATIO = 0.48;
+const CHAT_COMPOSER_RESIZE_STEP = 24;
+
+function clampChatComposerHeight(height: number): number {
+  const viewportMax =
+    typeof window === "undefined"
+      ? CHAT_COMPOSER_MAX_HEIGHT
+      : Math.floor(window.innerHeight * CHAT_COMPOSER_VIEWPORT_MAX_RATIO);
+  const maxHeight = Math.max(
+    CHAT_COMPOSER_MIN_HEIGHT,
+    Math.min(CHAT_COMPOSER_MAX_HEIGHT, viewportMax),
+  );
+  return Math.min(Math.max(Math.round(height), CHAT_COMPOSER_MIN_HEIGHT), maxHeight);
+}
 
 type RunState = "idle" | "loading" | "thinking" | "running" | "done" | "error";
 type DeliveryMode = "queue" | "guide";
@@ -1188,6 +1205,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([]);
   const [attachmentWarnings, setAttachmentWarnings] = useState<string[]>([]);
   const [draggingAttachments, setDraggingAttachments] = useState(false);
+  const [composerHeight, setComposerHeight] = useState(CHAT_COMPOSER_DEFAULT_HEIGHT);
+  const [composerResizing, setComposerResizing] = useState(false);
   const [pendingRisk, setPendingRisk] = useState<string | null>(null);
   const [permissions, setPermissions] = useState<ChatPermissions>({});
   const [streaming, setStreaming] = useState("");
@@ -1213,6 +1232,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   );
   const composingRef = useRef(false);
   const dragDepthRef = useRef(0);
+  const composerResizeRef = useRef<{
+    startY: number;
+    startHeight: number;
+    previousCursor: string;
+    previousUserSelect: string;
+  } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const autoScrollRef = useRef(true);
@@ -1231,9 +1256,94 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     selectedIdsRef.current = { projectId: selectedProjectId, taskId: selectedTaskId };
   }, [selectedProjectId, selectedTaskId]);
 
+  useEffect(() => {
+    const onResize = () => {
+      setComposerHeight((height) => clampChatComposerHeight(height));
+    };
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("resize", onResize);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      const resize = composerResizeRef.current;
+      if (!resize) return;
+      document.body.style.cursor = resize.previousCursor;
+      document.body.style.userSelect = resize.previousUserSelect;
+      composerResizeRef.current = null;
+    };
+  }, []);
+
   const isCurrentSelection = useCallback((projectId: string | null, taskId: string | null) => {
     const current = selectedIdsRef.current;
     return current.projectId === projectId && current.taskId === taskId;
+  }, []);
+
+  const finishComposerResize = useCallback(() => {
+    const resize = composerResizeRef.current;
+    if (!resize) return;
+    composerResizeRef.current = null;
+    document.body.style.cursor = resize.previousCursor;
+    document.body.style.userSelect = resize.previousUserSelect;
+    setComposerResizing(false);
+  }, []);
+
+  const beginComposerResize = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const body = document.body;
+    composerResizeRef.current = {
+      startY: event.clientY,
+      startHeight: composerHeight,
+      previousCursor: body.style.cursor,
+      previousUserSelect: body.style.userSelect,
+    };
+    body.style.cursor = "ns-resize";
+    body.style.userSelect = "none";
+    setComposerResizing(true);
+  }, [composerHeight]);
+
+  useEffect(() => {
+    if (!composerResizing) return;
+    const onMouseMove = (event: MouseEvent) => {
+      const resize = composerResizeRef.current;
+      if (!resize) return;
+      event.preventDefault();
+      setComposerHeight(clampChatComposerHeight(resize.startHeight + resize.startY - event.clientY));
+    };
+    const onMouseUp = () => {
+      finishComposerResize();
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+    };
+  }, [composerResizing, finishComposerResize]);
+
+  const onComposerResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setComposerHeight((height) => clampChatComposerHeight(height + CHAT_COMPOSER_RESIZE_STEP));
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setComposerHeight((height) => clampChatComposerHeight(height - CHAT_COMPOSER_RESIZE_STEP));
+      return;
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      setComposerHeight(CHAT_COMPOSER_MIN_HEIGHT);
+      return;
+    }
+    if (event.key === "End") {
+      event.preventDefault();
+      setComposerHeight(clampChatComposerHeight(CHAT_COMPOSER_MAX_HEIGHT));
+    }
   }, []);
 
   const settleProgrammaticScroll = useCallback((delayMs: number) => {
@@ -1914,6 +2024,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       .filter(Boolean);
   }, []);
 
+  const attachClipboardImage = useCallback(async () => {
+    if (!selectedProjectId || !selectedTaskId) return;
+    try {
+      const result = await redouApi.pasteClipboardImageAttachment(selectedProjectId, selectedTaskId);
+      setPendingAttachments((current) => [...current, ...result.attachments]);
+      setAttachmentWarnings(result.warnings);
+    } catch (e) {
+      setAttachmentWarnings([e instanceof Error ? e.message : String(e)]);
+    }
+  }, [selectedProjectId, selectedTaskId]);
+
   const onAttachmentDragEnter = useCallback((event: React.DragEvent<HTMLDivElement>) => {
     if (!Array.from(event.dataTransfer.types).includes("Files")) return;
     event.preventDefault();
@@ -1947,6 +2068,30 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
     void attachFilePaths(filePaths);
   }, [attachFilePaths, copy.droppedFilesUnavailable, filePathsFromDrop, inputDisabled]);
+
+  const onAttachmentPaste = useCallback((event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    if (inputDisabled) return;
+    const filePaths = filePathsFromDrop(event.clipboardData.files);
+    if (filePaths.length > 0) {
+      event.preventDefault();
+      void attachFilePaths(filePaths);
+      return;
+    }
+
+    const items = Array.from(event.clipboardData.items || []);
+    const types = Array.from(event.clipboardData.types || []);
+    const hasImage =
+      items.some((item) => item.type.toLowerCase().startsWith("image/")) ||
+      types.some((type) => type.toLowerCase().startsWith("image/"));
+    const hasFiles = types.includes("Files");
+    const hasText = Boolean(
+      event.clipboardData.getData("text/plain") || event.clipboardData.getData("text/html"),
+    );
+    if (!hasImage && !hasFiles && (hasText || types.length > 0)) return;
+    if (!hasImage && !hasFiles && !window.redouDesktop?.pasteClipboardImageAttachment) return;
+    event.preventDefault();
+    void attachClipboardImage();
+  }, [attachClipboardImage, attachFilePaths, filePathsFromDrop, inputDisabled]);
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -2278,13 +2423,33 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               <div
                 className={cn(
                   "relative flex min-h-24 gap-2 rounded-lg border border-border bg-background/40 p-2 transition-colors",
+                  composerResizing && "border-foreground/30 ring-1 ring-foreground/25",
                   draggingAttachments && !inputDisabled && "border-success/50 bg-success/10",
                 )}
+                style={{ height: composerHeight }}
                 onDragEnter={onAttachmentDragEnter}
                 onDragOver={onAttachmentDragOver}
                 onDragLeave={onAttachmentDragLeave}
                 onDrop={onAttachmentDrop}
               >
+                <div
+                  role="separator"
+                  aria-label="Resize message input"
+                  aria-orientation="horizontal"
+                  aria-valuemin={CHAT_COMPOSER_MIN_HEIGHT}
+                  aria-valuemax={clampChatComposerHeight(CHAT_COMPOSER_MAX_HEIGHT)}
+                  aria-valuenow={composerHeight}
+                  tabIndex={0}
+                  title="Drag to resize input"
+                  className={cn(
+                    "absolute -top-1 left-3 right-3 z-20 h-3 cursor-ns-resize touch-none rounded-full outline-none",
+                    "after:absolute after:left-1/2 after:top-1/2 after:h-1 after:w-14 after:-translate-x-1/2 after:-translate-y-1/2 after:rounded-full after:bg-border after:opacity-0 after:transition-opacity",
+                    "hover:after:opacity-100 focus-visible:after:opacity-100 focus-visible:ring-2 focus-visible:ring-foreground/30",
+                    composerResizing && "after:bg-foreground/45 after:opacity-100",
+                  )}
+                  onMouseDown={beginComposerResize}
+                  onKeyDown={onComposerResizeKeyDown}
+                />
                 {draggingAttachments && !inputDisabled && (
                   <div className="pointer-events-none absolute inset-1 z-10 grid place-items-center rounded-md border border-success/40 bg-background-base/90 text-xs font-medium text-success">
                     <span className="inline-flex items-center gap-2">
@@ -2297,6 +2462,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                   ref={textareaRef}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
+                  onPaste={onAttachmentPaste}
                   onKeyDown={onKeyDown}
                   onCompositionStart={() => {
                     composingRef.current = true;

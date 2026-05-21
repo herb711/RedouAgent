@@ -79,6 +79,53 @@ test("chat project task runtime snapshots are scoped by task id", () => {
   assert.equal(service.getChatTaskMessages(project.id, otherTask.id).is_active, false);
 });
 
+test("completed active run records no longer keep task badges spinning", () => {
+  const { service, project, task } = makeService();
+  const runId = "run-logically-complete";
+  const completedAtMs = Date.now();
+  service.activeRuns.set(runId, {
+    projectId: project.id,
+    taskId: task.id,
+    startedAt: new Date(completedAtMs - 5000).toISOString(),
+    startedAtMs: completedAtMs - 5000,
+    lastActiveAtMs: completedAtMs,
+    completedAt: new Date(completedAtMs).toISOString(),
+    completedAtMs,
+    child: { pid: 4242 },
+  });
+  service.appendTaskMessage(project.id, task.id, "assistant", "Done.", {
+    eventType: "assistant_message",
+    event: {
+      type: "assistant_message",
+      content: "Done.",
+      metadata: { runId },
+    },
+  });
+  service.appendTaskMessage(project.id, task.id, "event", "done", {
+    eventType: "done",
+    event: {
+      type: "done",
+      metadata: {
+        runId,
+        completed: true,
+        exitCode: 0,
+      },
+    },
+  });
+
+  const response = service.getChatProjects();
+  const savedProject = response.projects.find((item) => item.id === project.id);
+  const savedTask = savedProject.tasks.find((item) => item.id === task.id);
+
+  assert.equal(savedTask.is_active, false);
+  assert.equal(savedTask.active_run_id, null);
+  assert.equal(savedTask.runtime_status, "completed");
+  assert.equal(service.getChatTaskMessages(project.id, task.id).is_active, false);
+  assert.equal(service.activeRunForTask(project.id, task.id), null);
+  assert.equal(service.hasActiveRunFor(project.id, task.id), false);
+  assert.equal(service.getStatus().active_sessions, 0);
+});
+
 test("chat project task runtime status distinguishes running completed and interrupted tasks", () => {
   const { service, project, task: completedTask } = makeService();
   const interruptedTask = service.createChatTask(project.id, { title: "Stopped Task" }).task;

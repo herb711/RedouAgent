@@ -21,6 +21,26 @@ class QueueMethods {
     const queue = this.taskQueues.get(key) || [];
     const index = queue.findIndex((item) => String(item?.id || "") === queueId);
     if (index < 0) {
+      if (action === "delete") {
+        const removed = this.removeQueuedUserInputMessage(projectId, taskId, queueId);
+        if (removed) {
+          const activeRun = this.activeRunForTask(projectId, taskId);
+          this.emitQueueUpdate(
+            webContents,
+            projectId,
+            taskId,
+            activeRun?.runId || queueId,
+            "Queued message deleted.",
+            { queueId, queueState: "deleted", activeRunId: activeRun?.runId || null },
+          );
+          return {
+            ok: true,
+            deleted: true,
+            queueDepth: this.queueDepth(projectId, taskId),
+            stale: true,
+          };
+        }
+      }
       return {
         ok: false,
         message: "Queued message was not found. It may have already started.",

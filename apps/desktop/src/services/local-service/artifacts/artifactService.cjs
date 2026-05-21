@@ -152,6 +152,60 @@ class ArtifactService {
     this.log(`redou attachments copied projectId=${projectId} taskId=${taskId} uploadsPath=${this.redact(task.uploadsPath)} count=${attachments.length}`);
     return { ok: true, projectId, taskId, uploadsPath: task.uploadsPath, attachments, warnings };
   }
+
+  copyTaskAttachmentBuffers(projectId, taskId, files = []) {
+    const { project, task } = this.helpers.findProjectAndTask(projectId, taskId);
+    if (!project || !task) throw new Error("Project or task not found");
+
+    const attachments = [];
+    const warnings = [];
+    this.repos.artifacts.ensureDirectory(task.uploadsPath);
+
+    for (const item of Array.isArray(files) ? files : []) {
+      const label = this.compact(item?.name || "clipboard image", 180);
+      const data = Buffer.isBuffer(item?.data) ? item.data : Buffer.from(item?.data || []);
+      if (data.length === 0) {
+        warnings.push(`${label}: skipped because it is empty`);
+        continue;
+      }
+      if (data.length > MAX_ATTACHMENT_BYTES) {
+        warnings.push(`${label}: skipped because it is larger than ${MAX_ATTACHMENT_BYTES} bytes`);
+        continue;
+      }
+      try {
+        const id = crypto.randomUUID();
+        const name = label || "clipboard-image.png";
+        const fileName = `${Date.now()}-${id.slice(0, 8)}-${this.safeAttachmentName(name, "attachment.png")}`;
+        const storedPath = path.join(task.uploadsPath, fileName);
+        const tmp = `${storedPath}.${process.pid}.${Date.now()}.tmp`;
+        fs.writeFileSync(tmp, data);
+        fs.renameSync(tmp, storedPath);
+        attachments.push({
+          id,
+          name,
+          ...(item?.originalPath ? { originalPath: String(item.originalPath) } : {}),
+          storedPath,
+          relativePath: path.join(TASK_UPLOADS_DIR, fileName),
+          size: data.length,
+          mimeType: this.compact(item?.mimeType || simpleMimeType(name), 120),
+          createdAt: this.isoNow(),
+          metadata: {
+            parserStatus: "stored",
+            parserTodo: "Image, PDF, Word and Excel content extraction is intentionally deferred.",
+            ...(item?.metadata && typeof item.metadata === "object" ? item.metadata : {}),
+          },
+        });
+      } catch (error) {
+        warnings.push(`${label}: ${error.message}`);
+      }
+    }
+
+    if (warnings.length > 0) {
+      this.log(`redou attachment buffers warning projectId=${projectId} taskId=${taskId} warnings=${warnings.length}`);
+    }
+    this.log(`redou attachment buffers copied projectId=${projectId} taskId=${taskId} uploadsPath=${this.redact(task.uploadsPath)} count=${attachments.length}`);
+    return { ok: true, projectId, taskId, uploadsPath: task.uploadsPath, attachments, warnings };
+  }
 }
 
 module.exports = {

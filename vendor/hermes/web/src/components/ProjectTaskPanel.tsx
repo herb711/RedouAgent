@@ -1,7 +1,13 @@
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@/components/ui/input";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
-import { redouApi, notifyChatProjectsChanged, type ChatProject, type ChatTask } from "@/lib/api";
+import {
+  CHAT_PROJECTS_CHANGED_EVENT,
+  redouApi,
+  notifyChatProjectsChanged,
+  type ChatProject,
+  type ChatTask,
+} from "@/lib/api";
 import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
@@ -447,6 +453,47 @@ export function ProjectTaskPanel({
     });
     return () => {
       cancelled = true;
+    };
+  }, [loadProjects]);
+
+  useEffect(() => {
+    let refreshTimer: number | null = null;
+    const refreshSoon = (delay = 0) => {
+      if (refreshTimer !== null) return;
+      refreshTimer = window.setTimeout(() => {
+        refreshTimer = null;
+        void loadProjects();
+      }, delay);
+    };
+    const onProjectsChanged = () => refreshSoon();
+    const unsubscribeAgent = redouApi.onAgentEvent((payload) => {
+      const event = payload.event;
+      if (event.type === "raw_log") {
+        if (String(event.content || "").includes("Hermes local runtime started")) {
+          refreshSoon(75);
+        }
+        return;
+      }
+      if (event.type === "queue_update") {
+        refreshSoon(75);
+        return;
+      }
+      if (event.type === "done" || event.type === "error") {
+        refreshSoon(150);
+        return;
+      }
+      if (event.type !== "assistant_delta") {
+        refreshSoon(100);
+      }
+    });
+
+    window.addEventListener(CHAT_PROJECTS_CHANGED_EVENT, onProjectsChanged);
+    return () => {
+      unsubscribeAgent();
+      window.removeEventListener(CHAT_PROJECTS_CHANGED_EVENT, onProjectsChanged);
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+      }
     };
   }, [loadProjects]);
 

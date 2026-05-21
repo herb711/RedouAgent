@@ -33,6 +33,10 @@ function terminateProcessTree(child, { force = true } = {}) {
   }
 }
 
+function isRunLogicallyActive(run) {
+  return Boolean(run) && !run.completedAtMs && !run.completedAt && !run.terminalAtMs;
+}
+
 class ProcessManager {
   constructor({ activeRuns = new Map(), eventBus = null, log = null } = {}) {
     this.activeRuns = activeRuns;
@@ -69,6 +73,7 @@ class ProcessManager {
 
   activeRunForTask(projectId, taskId) {
     for (const [runId, run] of this.activeRuns.entries()) {
+      if (!isRunLogicallyActive(run)) continue;
       if (run.projectId === projectId && run.taskId === taskId) {
         return { runId, ...run };
       }
@@ -272,5 +277,6 @@ class ProcessManager {
 
 module.exports = {
   ProcessManager,
+  isRunLogicallyActive,
   terminateProcessTree,
 };

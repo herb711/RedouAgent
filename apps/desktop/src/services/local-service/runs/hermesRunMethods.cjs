@@ -128,14 +128,6 @@ class HermesRunMethods {
     };
     this.log(`redou hermes call adapter=hermes profile=${project.hermesProfile} sessionId=${sessionId} projectId=${projectId} taskId=${taskId} modelProvider=${effectiveProvider || "-"} model=${effectiveModel || "-"} modelSource=${modelSource} projectPath=${redact(project.path)} messagesPath=${redact(task.messagesPath)} recentMessageCount=${built.metadata.recentMessageCount} includedFiles=${built.metadata.includedFiles.map(redact).join("|")} contextLength=${built.metadata.contextLength}`);
 
-    const startedEvent = {
-      type: "raw_log",
-      content: "Hermes local runtime started.",
-      metadata: { runId, projectId, taskId, context: runMetadata },
-    };
-    this.emitToRenderer(webContents, { runId, projectId, taskId, event: startedEvent });
-    this.persistEvent(projectId, taskId, startedEvent);
-
     if (!this.pythonPath || !fs.existsSync(this.pythonPath)) {
       const warning = "Hermes Python runtime is unavailable. The message was saved locally, but no agent run was started.";
       this.log(`redou hermes fallback projectId=${projectId} taskId=${taskId}: ${warning}`);
@@ -254,6 +246,9 @@ class HermesRunMethods {
           durationMs: event.metadata?.durationMs ?? durationMs,
           durationSeconds: event.metadata?.durationSeconds ?? Math.round(durationMs / 100) / 10,
         };
+        runRecord.completedAtMs = completedAtMs;
+        runRecord.completedAt = event.metadata.completedAt;
+        runRecord.terminalAtMs = completedAtMs;
         if (runRecord.stopRequested) {
           this.updateUserInputEnvelopeStatus(projectId, taskId, currentEnvelope.id, {
             ...currentEnvelope,
@@ -399,6 +394,13 @@ class HermesRunMethods {
         seedAttachmentArtifacts(runRecord.turnArtifacts, attachments);
         this.processManager.registerRun(runId, runRecord);
         this.eventBus.publishTaskStarted({ projectId, taskId, runId });
+        const startedEvent = {
+          type: "raw_log",
+          content: "Hermes local runtime started.",
+          metadata: { runId, projectId, taskId, context: runMetadata },
+        };
+        this.emitToRenderer(webContents, { runId, projectId, taskId, event: startedEvent });
+        this.persistEvent(projectId, taskId, startedEvent);
       },
       onStdoutEvent: (event) => {
         handleEvent(event);

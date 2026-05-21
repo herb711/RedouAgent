@@ -77,6 +77,8 @@ contextBridge.exposeInMainWorld("redouDesktop", {
     ipcRenderer.invoke("redou:sessions:messages", sessionId),
   copyTaskAttachments: (projectId, taskId, filePaths) =>
     ipcRenderer.invoke("redou:tasks:attachments:copy", projectId, taskId, filePaths),
+  pasteClipboardImageAttachment: (projectId, taskId) =>
+    ipcRenderer.invoke("redou:tasks:attachments:paste-clipboard-image", projectId, taskId),
   getGlobalContextFile: (kind) =>
     ipcRenderer.invoke("redou:context:global:get", kind),
   updateGlobalContextFile: (kind, content) =>
