@@ -150,6 +150,14 @@ def _strip_run_stage_json_lines(text: str) -> str:
     return "\n".join(kept).strip()
 
 
+def _stream_recovery_interrupted(text: str) -> bool:
+    lowered = str(text or "").lower()
+    return (
+        "stream stalled mid tool-call" in lowered
+        or "stream interrupted before completion" in lowered
+    )
+
+
 def _is_image_attachment(attachment: Dict[str, Any]) -> bool:
     mime = str(attachment.get("mimeType") or "").lower()
     if mime.startswith("image/"):
@@ -1012,10 +1020,13 @@ def main() -> int:
         if not final_response and last_reasoning_preview:
             final_response = last_reasoning_preview
         result_failed = bool((result or {}).get("failed") or (result or {}).get("error"))
-        result_interrupted = bool((result or {}).get("interrupted"))
-        result_partial = bool((result or {}).get("partial"))
+        stream_recovery_interrupted = _stream_recovery_interrupted(final_response)
+        result_interrupted = bool((result or {}).get("interrupted") or stream_recovery_interrupted)
+        result_partial = bool((result or {}).get("partial") or stream_recovery_interrupted)
         result_completed = (result or {}).get("completed")
         turn_exit_reason = str((result or {}).get("turn_exit_reason") or "")
+        if stream_recovery_interrupted and not turn_exit_reason:
+            turn_exit_reason = "stream_recovery_interrupted"
         done_completed = result_completed
         if (
             result_completed is False
@@ -1026,6 +1037,8 @@ def main() -> int:
             and "max_iterations" not in turn_exit_reason
         ):
             done_completed = True
+        if result_failed or result_interrupted or result_partial:
+            done_completed = False
         if final_response:
             _emit(
                 {
@@ -1134,6 +1147,11 @@ def main() -> int:
                 "metadata": {
                     **metadata,
                     **_turn_timing_metadata(turn_started_at, turn_started_monotonic),
+                    "completed": False,
+                    "failed": True,
+                    "error": str(exc),
+                    "exitCode": 1,
+                    "turnExitReason": "adapter_exception",
                 },
             }
         )

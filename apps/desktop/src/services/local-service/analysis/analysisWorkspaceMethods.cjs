@@ -70,6 +70,13 @@ const {
 
 const REDOU_CONTEXT_DIR = ".redou";
 const REDOU_ANALYSIS_DIR = "analysis";
+const ANALYSIS_DOCKER_START_WAIT_MS = 180000;
+const ANALYSIS_DOCKER_START_POLL_MS = 5000;
+
+function delay(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 class AnalysisWorkspaceMethods {
   nextAnalysisWorkspacePath(key, runId = "") {
@@ -251,6 +258,123 @@ class AnalysisWorkspaceMethods {
       shutdownResult: { code: null, signal: "shutdown", error: "Redou Agent is closing.", output: "" },
       trackingSet: this.activeAnalysisShellChildren,
     });
+  }
+
+  async requestAnalysisDockerDesktopStart(platform = process.platform, cwd = this.projectRoot) {
+    if (this.shuttingDown) {
+      return { status: "skipped", output: "Redou Agent is closing." };
+    }
+    if (platform === "win32") {
+      const script = [
+        "$messages = @()",
+        "try {",
+        "  Start-Service -Name com.docker.service -ErrorAction SilentlyContinue",
+        "  $messages += 'service:start-requested'",
+        "} catch {",
+        "  $messages += ('service:error ' + $_.Exception.Message)",
+        "}",
+        "$paths = @(",
+        "  (Join-Path $env:ProgramFiles 'Docker\\Docker\\Docker Desktop.exe'),",
+        "  (Join-Path ${env:ProgramFiles(x86)} 'Docker\\Docker\\Docker Desktop.exe'),",
+        "  (Join-Path $env:LOCALAPPDATA 'Docker\\Docker Desktop.exe')",
+        ") | Where-Object { $_ -and (Test-Path $_) }",
+        "$desktop = $paths | Select-Object -First 1",
+        "if ($desktop) {",
+        "  Start-Process -FilePath $desktop -WindowStyle Hidden",
+        "  $messages += ('desktop:start-requested ' + $desktop)",
+        "} else {",
+        "  $messages += 'desktop:not-found'",
+        "}",
+        "$messages -join \"`n\"",
+      ].join("\n");
+      const result = await this.runAnalysisShellCommand({
+        command: "powershell.exe",
+        args: ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        cwd,
+        timeoutMs: 60000,
+      });
+      return {
+        status: result.code === 0 ? "started" : "failed",
+        output: result.output || result.error || "",
+        code: result.code,
+      };
+    }
+    if (platform === "darwin") {
+      const result = await this.runAnalysisShellCommand({
+        command: "open",
+        args: ["-g", "-a", "Docker"],
+        cwd,
+        timeoutMs: 60000,
+      });
+      return {
+        status: result.code === 0 ? "started" : "failed",
+        output: result.output || result.error || "",
+        code: result.code,
+      };
+    }
+    return {
+      status: "skipped",
+      output: `Automatic Docker startup is not configured for platform ${platform}.`,
+    };
+  }
+
+  async ensureAnalysisHostDockerAvailable({
+    cwd = this.projectRoot,
+    reason = "",
+    waitMs = ANALYSIS_DOCKER_START_WAIT_MS,
+    pollMs = ANALYSIS_DOCKER_START_POLL_MS,
+    platform = process.platform,
+  } = {}) {
+    if (this.shuttingDown) {
+      return { status: "skipped", reason: "Redou Agent is closing." };
+    }
+    const dockerInfo = async () => this.runAnalysisShellCommand({
+      command: "docker",
+      args: ["info"],
+      cwd,
+      timeoutMs: 60000,
+    });
+    const first = await dockerInfo();
+    if (first.code === 0) {
+      return { status: "completed", output: first.output || first.stdout || "" };
+    }
+
+    const startResult = await this.requestAnalysisDockerDesktopStart(platform, cwd);
+    const deadline = Date.now() + Math.max(0, waitMs);
+    let last = first;
+    while (!this.shuttingDown && Date.now() < deadline) {
+      const sleepMs = Math.min(Math.max(0, pollMs), Math.max(0, deadline - Date.now()));
+      await delay(sleepMs);
+      last = await dockerInfo();
+      if (last.code === 0) {
+        const startOutput = compactMultiline(startResult.output || "", 400);
+        return {
+          status: "completed",
+          startedDocker: true,
+          reason,
+          output: [startOutput, last.output || last.stdout || ""].filter(Boolean).join("\n"),
+          startResult,
+        };
+      }
+      if (pollMs <= 0) {
+        await delay(1);
+      }
+    }
+
+    return {
+      status: "failed",
+      startedDocker: startResult.status === "started",
+      reason,
+      startResult,
+      error: compactMultiline(
+        [
+          `Docker is not available${reason ? ` while ${reason}` : ""}.`,
+          startResult.output ? `Startup attempt: ${startResult.output}` : "",
+          last.output || last.error || first.output || first.error || "",
+        ].filter(Boolean).join("\n"),
+        1600,
+      ),
+    };
   }
 
   backupAnalysisEnvironmentFile(workspacePath, fileName) {
@@ -442,6 +566,19 @@ class AnalysisWorkspaceMethods {
     const envName = analysisEnvName || analysisDockerEnvironmentName(provider, model, key);
     if (!workspacePath || this.shuttingDown) {
       return { status: "skipped", envName, reason: "workspace unavailable" };
+    }
+    const hostDocker = await this.ensureAnalysisHostDockerAvailable({
+      cwd: workspacePath,
+      reason: reason || `preparing Docker test environment ${envName}`,
+    });
+    if (hostDocker.status === "failed") {
+      return {
+        status: "failed",
+        envName,
+        reason: reason || "Docker host unavailable",
+        error: hostDocker.error || "Docker is not available.",
+        hostDocker,
+      };
     }
 
     const composePath = path.join(workspacePath, "docker-compose.yml");

@@ -19,6 +19,40 @@ const {
   toInt,
 } = require("../context/contextUtils.cjs");
 
+function truthyFailureText(value) {
+  if (value == null || value === false) return "";
+  const text = typeof value === "string" ? value.trim() : JSON.stringify(value);
+  if (!text || text === "false" || text === "null") return "";
+  return text;
+}
+
+function doneTerminalStatus(metadata = {}, runRecord = {}) {
+  const exitCode = Number(metadata.exitCode);
+  const turnExitReason = String(metadata.turnExitReason || metadata.turn_exit_reason || "").toLowerCase();
+  if (
+    runRecord?.stopRequested ||
+    metadata.cancelled ||
+    metadata.canceled ||
+    metadata.stopRequested ||
+    metadata.interrupted ||
+    metadata.replacedByRunId
+  ) {
+    return "cancelled";
+  }
+  if (
+    metadata.failed === true ||
+    metadata.partial === true ||
+    truthyFailureText(metadata.error) ||
+    truthyFailureText(metadata.failure) ||
+    truthyFailureText(metadata.exception) ||
+    (metadata.completed === false && /max_iterations|partial|stream|error|failed|failure|exception|invalid/.test(turnExitReason)) ||
+    (Number.isFinite(exitCode) && exitCode !== 0)
+  ) {
+    return "cancelled";
+  }
+  return "completed";
+}
+
 class HermesRunMethods {
   startHermesRun(webContents, input = {}, options = {}) {
     if (this.shuttingDown) {
@@ -249,6 +283,7 @@ class HermesRunMethods {
         runRecord.completedAtMs = completedAtMs;
         runRecord.completedAt = event.metadata.completedAt;
         runRecord.terminalAtMs = completedAtMs;
+        const terminalStatus = doneTerminalStatus(event.metadata, runRecord);
         if (runRecord.stopRequested) {
           this.updateUserInputEnvelopeStatus(projectId, taskId, currentEnvelope.id, {
             ...currentEnvelope,
@@ -260,7 +295,7 @@ class HermesRunMethods {
             stopRequested: true,
           };
         } else {
-          const contextUpdate = runMode === "plan"
+          const contextUpdate = runMode === "plan" || terminalStatus !== "completed"
             ? null
             : this.updateTaskContextAfterTurn(
                 projectId,
@@ -271,9 +306,9 @@ class HermesRunMethods {
               );
           this.updateUserInputEnvelopeStatus(projectId, taskId, currentEnvelope.id, {
             ...currentEnvelope,
-            status: "completed",
+            status: terminalStatus,
           });
-          if (runMode === "plan") {
+          if (runMode === "plan" && terminalStatus === "completed") {
             event.metadata = {
               ...(event.metadata || {}),
               planReviewRequired: true,

@@ -169,11 +169,24 @@ function isInterruptionText(text) {
   return /stopped|interrupted|cancelled|canceled|closing/i.test(String(text || ""));
 }
 
+function isStreamRecoveryInterruptionText(text) {
+  return /stream stalled mid tool-call|stream interrupted before completion/i.test(String(text || ""));
+}
+
 function previousRunMessagesIndicateInterruption(messages, doneIndex) {
   for (let index = doneIndex - 1; index >= 0; index -= 1) {
     const message = messages[index] || {};
     if (String(message.role || "").toLowerCase() === "user") return false;
     if (isInterruptionText(interruptionTextFromMessage(message))) return true;
+  }
+  return false;
+}
+
+function previousRunMessagesIndicateStreamRecovery(messages, doneIndex) {
+  for (let index = doneIndex - 1; index >= 0; index -= 1) {
+    const message = messages[index] || {};
+    if (String(message.role || "").toLowerCase() === "user") return false;
+    if (isStreamRecoveryInterruptionText(interruptionTextFromMessage(message))) return true;
   }
   return false;
 }
@@ -370,6 +383,7 @@ class AnalyticsService {
 
       if (eventType === "done") {
         const status = doneRuntimeStatus(combined);
+        if (previousRunMessagesIndicateStreamRecovery(messages, index)) return "interrupted";
         return status === "failed" && previousRunMessagesIndicateInterruption(messages, index)
           ? "interrupted"
           : status;

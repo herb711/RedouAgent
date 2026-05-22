@@ -130,6 +130,49 @@ test("analysis scheduler creates a fallback docker environment when task1 did no
   );
 });
 
+test("analysis docker preflight passes when the docker daemon is already available", async () => {
+  const { service } = makeService();
+  const calls = [];
+  service.runAnalysisShellCommand = async (input) => {
+    calls.push(input);
+    return { code: 0, output: "Server: Docker Desktop" };
+  };
+
+  const result = await service.ensureAnalysisHostDockerAvailable({ cwd: service.projectRoot });
+
+  assert.equal(result.status, "completed");
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].args, ["info"]);
+});
+
+test("analysis docker preflight starts Docker Desktop on Windows and waits for daemon readiness", async () => {
+  const { service } = makeService();
+  const calls = [];
+  let dockerInfoCalls = 0;
+  service.runAnalysisShellCommand = async (input) => {
+    calls.push(input);
+    if (input.command === "docker") {
+      dockerInfoCalls += 1;
+      return dockerInfoCalls === 1
+        ? { code: 1, output: "failed to connect to the docker API" }
+        : { code: 0, output: "Server: Docker Desktop" };
+    }
+    return { code: 0, output: "service:start-requested\ndesktop:start-requested" };
+  };
+
+  const result = await service.ensureAnalysisHostDockerAvailable({
+    cwd: service.projectRoot,
+    platform: "win32",
+    waitMs: 1000,
+    pollMs: 0,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.startedDocker, true);
+  assert.equal(dockerInfoCalls, 2);
+  assert.ok(calls.some((call) => call.command === "powershell.exe"));
+});
+
 test("analysis batch postprocess writes display logs with docker environment variables", async () => {
   const { root, service } = makeService();
   const workspace = path.join(root, "workspace");
@@ -401,6 +444,44 @@ test("analysis task process status separates completion from evaluator quality",
     }),
     "failed",
   );
+});
+
+test("analysis task process launches through the desktop Hermes adapter", async () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  service.pythonPath = process.execPath;
+  let captured = null;
+  service.processManager.startJsonLineProcess = (input) => {
+    captured = input;
+    const child = {};
+    input.onStarted(child);
+    setImmediate(() => {
+      input.onStdoutEvent({ type: "assistant_message", content: "Done" });
+      input.onStdoutEvent({
+        type: "done",
+        metadata: { inputTokens: 1, outputTokens: 2, apiCalls: 1 },
+      });
+      input.onExit({ code: 0, child });
+    });
+  };
+
+  const result = await service.runAnalysisTaskProcess({
+    runId: "run-adapter",
+    key: "openai--gpt-test",
+    provider: "openai",
+    model: "gpt-test",
+    workspacePath: workspace,
+    task: { id: "task1", title: "Docker environment lab", capability: "environment" },
+    prompt: "Prompt",
+    skipInlineEvaluation: true,
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.inputTokens, 1);
+  assert.equal(captured.command, process.execPath);
+  assert.match(captured.args[0], /hermes_adapter\.py$/);
+  assert.equal(fs.existsSync(captured.args[0]), true);
 });
 
 test("analysis task3 does not award test or pass-loop credit without artifacts", () => {

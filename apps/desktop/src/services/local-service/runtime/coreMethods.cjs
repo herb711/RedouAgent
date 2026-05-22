@@ -19,7 +19,7 @@ const { compact, safeSegment } = require("../shared/textUtils.cjs");
 const { assertChildPath, ensureEmptyFile, ensureTextFile, mkdirp, readText } = require("../shared/fileUtils.cjs");
 const { isoNow, timestampMs, timestampSeconds } = require("../shared/timeUtils.cjs");
 const { desktopSourcePath } = require("../shared/desktopPaths.cjs");
-const { readDotEnv } = require("../analysis/benchmarkUtils.cjs");
+const { readDotEnv, sanitizeEnvValue } = require("../analysis/benchmarkUtils.cjs");
 const {
   defaultTaskState,
   readTaskStateFile,
@@ -27,6 +27,15 @@ const {
   renderTaskContextMarkdown,
   writeTaskStateFiles,
 } = require("../context/contextUtils.cjs");
+
+function sanitizeChildEnv(env) {
+  const clean = {};
+  for (const [key, value] of Object.entries(env || {})) {
+    if (!key || key.includes("\0") || value === undefined || value === null) continue;
+    clean[key] = sanitizeEnvValue(value);
+  }
+  return clean;
+}
 
 class RuntimeCoreMethods {
   setPythonPath(pythonPath) {
@@ -335,14 +344,15 @@ class RuntimeCoreMethods {
       ...this.rootHermesEnv(),
       ...extra,
     };
-    const pythonPath = [this.hermesRoot, baseEnv.PYTHONPATH || ""].filter(Boolean).join(path.delimiter);
-    return {
-      ...baseEnv,
+    const cleanBaseEnv = sanitizeChildEnv(baseEnv);
+    const pythonPath = [this.hermesRoot, cleanBaseEnv.PYTHONPATH || ""].filter(Boolean).join(path.delimiter);
+    return sanitizeChildEnv({
+      ...cleanBaseEnv,
       PYTHONPATH: pythonPath,
       HERMES_PYTHON_SRC_ROOT: this.hermesRoot,
       HERMES_VENDOR_ROOT: this.hermesRoot,
       REDOU_PROJECT_ROOT: this.projectRoot,
-    };
+    });
   }
 
   parseBridgeJson(stdout) {

@@ -76,12 +76,27 @@ function clipboardImageAttachmentName(now = new Date()) {
   return `clipboard-image-${stamp}.png`;
 }
 
+function sanitizeEnvValue(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).replace(/\0/g, "");
+}
+
+function sanitizeEnvObject(env = {}) {
+  const clean = {};
+  for (const [key, value] of Object.entries(env || {})) {
+    if (!key || key.includes("\0") || value === undefined || value === null) continue;
+    clean[key] = sanitizeEnvValue(value);
+  }
+  return clean;
+}
+
 function withRuntimePath(env = process.env) {
+  const cleanEnv = sanitizeEnvObject(env);
   const gitBashPath = resolveGitBashPath();
   const extras = runtimePathExtras();
-  const runtimeEnv = {
-    ...env,
-    PATH: [...extras, env.PATH || ""].join(path.delimiter),
+  const runtimeEnv = sanitizeEnvObject({
+    ...cleanEnv,
+    PATH: [...extras, cleanEnv.PATH || ""].join(path.delimiter),
     PYTHONUTF8: "1",
     PYTHONUNBUFFERED: "1",
     HERMES_HOME: hermesHome(),
@@ -89,9 +104,9 @@ function withRuntimePath(env = process.env) {
     HERMES_PYTHON_SRC_ROOT: pythonHermesRoot(),
     REDOU_PROJECT_ROOT: projectRoot(),
     HERMES_VENDOR_ROOT: pythonHermesRoot(),
-    PYTHONPATH: [pythonHermesRoot(), env.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
+    PYTHONPATH: [pythonHermesRoot(), cleanEnv.PYTHONPATH || ""].filter(Boolean).join(path.delimiter),
     HERMES_QUIET: "1",
-  };
+  });
   if (gitBashPath) {
     runtimeEnv[GIT_BASH_ENV] = gitBashPath;
   }

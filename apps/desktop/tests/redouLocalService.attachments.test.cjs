@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -171,6 +172,28 @@ test("childEnv prefers Redou-managed Hermes .env over stale process env", () => 
       process.env.XIAOMI_API_KEY = previous;
     }
   }
+});
+
+test("childEnv strips null bytes from env values", () => {
+  const { service } = makeService();
+  fs.mkdirSync(service.hermesHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(service.hermesHome, ".env"),
+    "VLLM_API_KEY=redou\0key\n",
+    "utf8",
+  );
+
+  const env = service.childEnv({ REDOU_TEST_ENV: "extra\0value" });
+
+  assert.equal(env.VLLM_API_KEY, "redoukey");
+  assert.equal(env.REDOU_TEST_ENV, "extravalue");
+  const result = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+    env,
+    encoding: "utf8",
+    shell: false,
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0);
 });
 
 test("projects and tasks use only the current Redou markdown files", () => {

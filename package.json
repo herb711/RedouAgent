@@ -1,6 +1,6 @@
 {
   "name": "redou-agent-workspace",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "description": "Redou Agent workspace. Hermes runtime is vendored under vendor/hermes for upstream sync.",
   "scripts": {

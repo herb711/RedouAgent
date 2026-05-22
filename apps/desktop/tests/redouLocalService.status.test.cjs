@@ -216,6 +216,78 @@ test("chat project task runtime status still fails explicit unsuccessful done ev
   assert.equal(savedTask.runtime_status, "failed");
 });
 
+test("chat project task runtime status treats stream-stalled tool calls as interrupted", () => {
+  const { service, project, task } = makeService();
+
+  service.appendTaskMessage(project.id, task.id, "user", "Build a web game.");
+  service.appendTaskMessage(
+    project.id,
+    task.id,
+    "assistant",
+    "I started the UI.\n\nWarning: Stream stalled mid tool-call (write_file); the action was not executed.",
+    {
+      eventType: "assistant_message",
+      event: {
+        type: "assistant_message",
+        content: "I started the UI.\n\nWarning: Stream stalled mid tool-call (write_file); the action was not executed.",
+        metadata: { runId: "run-stalled-tool" },
+      },
+    },
+  );
+  service.appendTaskMessage(project.id, task.id, "event", "done", {
+    eventType: "done",
+    event: {
+      type: "done",
+      metadata: {
+        runId: "run-stalled-tool",
+        completed: false,
+        rawCompleted: true,
+        interrupted: true,
+        partial: true,
+        exitCode: 0,
+        turnExitReason: "stream_recovery_interrupted",
+      },
+    },
+  });
+
+  const response = service.getChatProjects();
+  const savedProject = response.projects.find((item) => item.id === project.id);
+  const savedTask = savedProject.tasks.find((item) => item.id === task.id);
+
+  assert.equal(savedTask.runtime_status, "interrupted");
+});
+
+test("chat project task runtime status repairs old stream-stalled completed metadata", () => {
+  const { service, project, task } = makeService();
+
+  service.appendTaskMessage(project.id, task.id, "user", "Build a web game.");
+  service.appendTaskMessage(project.id, task.id, "assistant", "Warning: Stream stalled mid tool-call (write_file); the action was not executed.", {
+    eventType: "assistant_message",
+    event: {
+      type: "assistant_message",
+      content: "Warning: Stream stalled mid tool-call (write_file); the action was not executed.",
+      metadata: { runId: "run-old-stalled-tool" },
+    },
+  });
+  service.appendTaskMessage(project.id, task.id, "event", "done", {
+    eventType: "done",
+    event: {
+      type: "done",
+      metadata: {
+        runId: "run-old-stalled-tool",
+        completed: true,
+        exitCode: 0,
+      },
+    },
+  });
+
+  const response = service.getChatProjects();
+  const savedProject = response.projects.find((item) => item.id === project.id);
+  const savedTask = savedProject.tasks.find((item) => item.id === task.id);
+
+  assert.equal(savedTask.runtime_status, "interrupted");
+});
+
 test("chat project task runtime status treats latest done as authoritative over older errors", () => {
   const { service, project, task } = makeService();
 

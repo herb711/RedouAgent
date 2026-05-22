@@ -589,9 +589,14 @@ function readDotEnv(file) {
     ) {
       value = value.slice(1, -1);
     }
-    env[match[1]] = value;
+    env[match[1]] = sanitizeEnvValue(value);
   }
   return env;
+}
+
+function sanitizeEnvValue(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).replace(/\0/g, "");
 }
 
 module.exports = {
@@ -650,4 +655,5 @@ module.exports = {
   readRootAgentMaxTurns,
   analysisTaskPromptPath,
   readDotEnv,
+  sanitizeEnvValue,
 };

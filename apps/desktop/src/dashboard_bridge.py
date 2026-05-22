@@ -302,7 +302,7 @@ def _dedupe_strings(values: Iterable[Any]) -> List[str]:
     seen = set()
     out: List[str] = []
     for value in values:
-        text = str(value or "").strip()
+        text = _clean_setup_string(value)
         if not text or text in seen:
             continue
         seen.add(text)
@@ -333,6 +333,10 @@ def _default_model_request_timeout(provider: str, tags: Iterable[Any] = ()) -> i
     if any(token in text for token in ("local", "vllm", "ollama", "custom")):
         return 600
     return 300
+
+
+def _clean_setup_string(value: Any) -> str:
+    return str(value or "").replace("\x00", "").strip()
 
 
 def _catalog_entry(
@@ -419,9 +423,9 @@ def _is_builtin_model_provider(provider: str) -> bool:
 def _provider_model_list(provider_cfg: Dict[str, Any]) -> List[str]:
     model_map = provider_cfg.get("models")
     if isinstance(model_map, dict):
-        return [str(item) for item in model_map.keys()]
+        return [_clean_setup_string(item) for item in model_map.keys()]
     if isinstance(model_map, list):
-        return [str(item) for item in model_map]
+        return [_clean_setup_string(item) for item in model_map]
     return []
 
 
@@ -437,35 +441,35 @@ def _hydrate_catalog_from_config(
     for provider, provider_cfg in user_providers.items():
         if not isinstance(provider_cfg, dict):
             continue
-        provider = str(provider)
+        provider = _clean_setup_string(provider)
         entry = by_provider.get(provider)
         if entry is None:
             entry = _catalog_entry(
                 provider=provider,
-                label=str(provider_cfg.get("name") or provider),
+                label=_clean_setup_string(provider_cfg.get("name") or provider),
                 description="Saved OpenAI-compatible provider.",
-                base_url=str(provider_cfg.get("base_url") or ""),
-                api_key_env=str(provider_cfg.get("key_env") or provider_cfg.get("api_key_env") or ""),
+                base_url=_clean_setup_string(provider_cfg.get("base_url")),
+                api_key_env=_clean_setup_string(provider_cfg.get("key_env") or provider_cfg.get("api_key_env")),
                 models=[],
-                default_model=str(provider_cfg.get("model") or provider_cfg.get("default_model") or ""),
-                base_url_env=str(provider_cfg.get("base_url_env") or ""),
-                region=str(provider_cfg.get("region") or "Custom"),
+                default_model=_clean_setup_string(provider_cfg.get("model") or provider_cfg.get("default_model")),
+                base_url_env=_clean_setup_string(provider_cfg.get("base_url_env")),
+                region=_clean_setup_string(provider_cfg.get("region") or "Custom"),
                 tags=["saved"],
-                docs_url=str(provider_cfg.get("docs_url") or ""),
-                api_mode=str(provider_cfg.get("api_mode") or ""),
-                custom_provider_name=str(provider_cfg.get("name") or provider),
+                docs_url=_clean_setup_string(provider_cfg.get("docs_url")),
+                api_mode=_clean_setup_string(provider_cfg.get("api_mode")),
+                custom_provider_name=_clean_setup_string(provider_cfg.get("name") or provider),
             )
             catalog.append(entry)
             by_provider[provider] = entry
 
         if provider_cfg.get("name"):
-            entry["label"] = str(provider_cfg["name"])
+            entry["label"] = _clean_setup_string(provider_cfg["name"])
         if provider_cfg.get("base_url"):
-            entry["base_url"] = str(provider_cfg["base_url"]).rstrip("/")
+            entry["base_url"] = _clean_setup_string(provider_cfg["base_url"]).rstrip("/")
         if provider_cfg.get("key_env") and not entry.get("api_key_env"):
-            entry["api_key_env"] = str(provider_cfg["key_env"])
+            entry["api_key_env"] = _clean_setup_string(provider_cfg["key_env"])
         if provider_cfg.get("api_mode"):
-            entry["api_mode"] = str(provider_cfg["api_mode"])
+            entry["api_mode"] = _clean_setup_string(provider_cfg["api_mode"])
         configured_timeout = _positive_int(
             provider_cfg.get("request_timeout_seconds"),
             default=None,
@@ -475,9 +479,9 @@ def _hydrate_catalog_from_config(
         if configured_timeout is not None:
             entry["request_timeout_seconds"] = configured_timeout
 
-        configured_model = str(
-            provider_cfg.get("model") or provider_cfg.get("default_model") or ""
-        ).strip()
+        configured_model = _clean_setup_string(
+            provider_cfg.get("model") or provider_cfg.get("default_model")
+        )
         configured_models = _provider_model_list(provider_cfg)
         model_timeout = None
         model_map = provider_cfg.get("models")
@@ -741,18 +745,20 @@ def _build_model_setup_catalog(cfg: Dict[str, Any] | None = None) -> List[Dict[s
         provider_cfg = user_providers.get(entry.get("provider"))
         if not isinstance(provider_cfg, dict):
             provider_cfg = {}
-        key = str(entry.get("api_key_env") or "")
-        base_key = str(entry.get("base_url_env") or "")
+        key = _clean_setup_string(entry.get("api_key_env"))
+        base_key = _clean_setup_string(entry.get("base_url_env"))
+        env_key_value = _clean_setup_string(env_on_disk.get(key)) if key else ""
+        env_base_value = _clean_setup_string(env_on_disk.get(base_key)) if base_key else ""
         has_inline_key = (
             entry.get("provider") == current.get("provider")
             and isinstance(model_cfg, dict)
-            and bool(model_cfg.get("api_key"))
+            and bool(_clean_setup_string(model_cfg.get("api_key")))
         )
-        has_provider_inline_key = bool(provider_cfg.get("api_key"))
+        has_provider_inline_key = bool(_clean_setup_string(provider_cfg.get("api_key")))
         entry["api_key_set"] = bool(
-            (key and env_on_disk.get(key)) or has_inline_key or has_provider_inline_key
+            env_key_value or has_inline_key or has_provider_inline_key
         )
-        entry["base_url_set"] = bool(base_key and env_on_disk.get(base_key))
+        entry["base_url_set"] = bool(env_base_value)
     return catalog
 
 
@@ -760,13 +766,13 @@ def _current_model(cfg: Dict[str, Any]) -> Dict[str, str]:
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, dict):
         return {
-            "provider": str(model_cfg.get("provider", "") or ""),
-            "model": str(
-                model_cfg.get("default", model_cfg.get("model", model_cfg.get("name", ""))) or ""
+            "provider": _clean_setup_string(model_cfg.get("provider")),
+            "model": _clean_setup_string(
+                model_cfg.get("default", model_cfg.get("model", model_cfg.get("name")))
             ),
-            "base_url": str(model_cfg.get("base_url", "") or ""),
+            "base_url": _clean_setup_string(model_cfg.get("base_url")),
         }
-    return {"provider": "", "model": str(model_cfg) if model_cfg else "", "base_url": ""}
+    return {"provider": "", "model": _clean_setup_string(model_cfg) if model_cfg else "", "base_url": ""}
 
 
 def _fallback_model_options(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -965,28 +971,30 @@ def _saved_model_setup_key(
     provider: str,
     api_key_env: str,
 ) -> str:
+    provider = _clean_setup_string(provider)
+    api_key_env = _clean_setup_string(api_key_env)
     if api_key_env:
         env_on_disk = load_env()
-        key = str(env_on_disk.get(api_key_env) or os.environ.get(api_key_env, "") or "").strip()
+        key = _clean_setup_string(env_on_disk.get(api_key_env) or os.environ.get(api_key_env, ""))
         if key:
             return key
 
     user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
     provider_cfg = user_providers.get(provider) if isinstance(user_providers, dict) else None
     if isinstance(provider_cfg, dict):
-        key_env = str(provider_cfg.get("key_env") or provider_cfg.get("api_key_env") or "").strip()
+        key_env = _clean_setup_string(provider_cfg.get("key_env") or provider_cfg.get("api_key_env"))
         if key_env:
             env_on_disk = load_env()
-            key = str(env_on_disk.get(key_env) or os.environ.get(key_env, "") or "").strip()
+            key = _clean_setup_string(env_on_disk.get(key_env) or os.environ.get(key_env, ""))
             if key:
                 return key
-        key = str(provider_cfg.get("api_key") or "").strip()
+        key = _clean_setup_string(provider_cfg.get("api_key"))
         if key:
             return key
 
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     if isinstance(model_cfg, dict) and str(model_cfg.get("provider") or "") == provider:
-        return str(model_cfg.get("api_key") or "").strip()
+        return _clean_setup_string(model_cfg.get("api_key"))
     return ""
 
 
@@ -1009,14 +1017,14 @@ def _fallback_setup_models(
 
 
 def _refresh_model_setup_models(payload: Dict[str, Any]) -> Dict[str, Any]:
-    provider = str(payload.get("provider") or "").strip()
-    selected_model = str(payload.get("model") or "").strip()
-    base_url = str(payload.get("base_url") or "").strip().rstrip("/")
-    api_key = str(payload.get("api_key") or "").strip()
-    api_key_env = str(payload.get("api_key_env") or "").strip()
-    base_url_env = str(payload.get("base_url_env") or "").strip()
-    api_mode = str(payload.get("api_mode") or "").strip()
-    custom_provider_name = str(payload.get("custom_provider_name") or "").strip()
+    provider = _clean_setup_string(payload.get("provider"))
+    selected_model = _clean_setup_string(payload.get("model"))
+    base_url = _clean_setup_string(payload.get("base_url")).rstrip("/")
+    api_key = _clean_setup_string(payload.get("api_key"))
+    api_key_env = _clean_setup_string(payload.get("api_key_env"))
+    base_url_env = _clean_setup_string(payload.get("base_url_env"))
+    api_mode = _clean_setup_string(payload.get("api_mode"))
+    custom_provider_name = _clean_setup_string(payload.get("custom_provider_name"))
     payload_models = _dedupe_strings(payload.get("models") or [])
     request_timeout_seconds = _positive_int(
         payload.get("request_timeout_seconds"),
@@ -1168,14 +1176,14 @@ def _refresh_model_setup_models(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _setup_main_model(payload: Dict[str, Any]) -> Dict[str, Any]:
-    provider = str(payload.get("provider") or "").strip()
-    model = str(payload.get("model") or "").strip()
-    base_url = str(payload.get("base_url") or "").strip().rstrip("/")
-    api_key = str(payload.get("api_key") or "").strip()
-    api_key_env = str(payload.get("api_key_env") or "").strip()
-    base_url_env = str(payload.get("base_url_env") or "").strip()
-    api_mode = str(payload.get("api_mode") or "").strip()
-    custom_provider_name = str(payload.get("custom_provider_name") or "").strip()
+    provider = _clean_setup_string(payload.get("provider"))
+    model = _clean_setup_string(payload.get("model"))
+    base_url = _clean_setup_string(payload.get("base_url")).rstrip("/")
+    api_key = _clean_setup_string(payload.get("api_key"))
+    api_key_env = _clean_setup_string(payload.get("api_key_env"))
+    base_url_env = _clean_setup_string(payload.get("base_url_env"))
+    api_mode = _clean_setup_string(payload.get("api_mode"))
+    custom_provider_name = _clean_setup_string(payload.get("custom_provider_name"))
     models = _dedupe_strings(payload.get("models") or [])
     request_timeout_seconds = _positive_int(
         payload.get("request_timeout_seconds"),

@@ -153,7 +153,7 @@ const COPY = {
       needs_attention: "需处理",
       failed: "失败",
       completed: "已完成",
-      cancelled: "已取消",
+      cancelled: "已中断",
       paused: "暂停",
     },
     stageLabels: {
@@ -296,7 +296,7 @@ const COPY = {
       needs_attention: "Needs Attention",
       failed: "Failed",
       completed: "Completed",
-      cancelled: "Cancelled",
+      cancelled: "Interrupted",
       paused: "Paused",
     },
     stageLabels: {
@@ -629,6 +629,21 @@ function latestTodoItemsFromMessages(messages: ChatTaskMessage[]): TodoItem[] {
   return hasTodo ? items : [];
 }
 
+function messageRunMode(message: ChatTaskMessage): "execute" | "plan" {
+  const metadata = isRecord(message.metadata) ? message.metadata : {};
+  const event = isRecord(metadata.event) ? metadata.event : null;
+  const eventMetadata = event && isRecord(event.metadata) ? event.metadata : {};
+  return metadata.runMode === "plan" || eventMetadata.runMode === "plan" ? "plan" : "execute";
+}
+
+function latestRunModeFromMessages(messages: ChatTaskMessage[]): "execute" | "plan" {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role === "user") return messageRunMode(message);
+  }
+  return "execute";
+}
+
 function cleanText(value: unknown, fallback = "", maxLength = 160): string {
   const text = String(value ?? "")
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "sk-...redacted")
@@ -834,6 +849,66 @@ function overviewStatusForTask(task: ChatTask, session: SessionInfo | null): Nor
   });
 }
 
+function truthyFailureText(value: unknown): string {
+  if (value == null || value === false) return "";
+  const text = typeof value === "string" ? value.trim() : JSON.stringify(value);
+  return !text || text === "false" || text === "null" ? "" : text;
+}
+
+function doneEventSuccess(rawEvent: Record<string, unknown> | null): boolean {
+  const metadata = rawEvent && isRecord(rawEvent.metadata) ? rawEvent.metadata : {};
+  const exitCode = Number(metadata.exitCode);
+  const turnExitReason = String(metadata.turnExitReason ?? metadata.turn_exit_reason ?? "").toLowerCase();
+  if (
+    metadata.cancelled ||
+    metadata.canceled ||
+    metadata.stopRequested ||
+    metadata.interrupted ||
+    metadata.replacedByRunId ||
+    metadata.partial
+  ) {
+    return false;
+  }
+  if (
+    metadata.failed === true ||
+    truthyFailureText(metadata.error) ||
+    truthyFailureText(metadata.failure) ||
+    truthyFailureText(metadata.exception) ||
+    (metadata.completed === false && /max_iterations|partial|stream|error|failed|failure|exception|invalid/.test(turnExitReason)) ||
+    (Number.isFinite(exitCode) && exitCode !== 0)
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function statusFromTerminalEvent(event: TaskEventView): NormalizedTaskStatus | null {
+  if (event.type === "done") return doneEventSuccess(event.raw) ? "completed" : "cancelled";
+  if (event.type === "error") {
+    const rawMetadata = isRecord(event.raw?.metadata) ? event.raw.metadata : {};
+    const text = `${event.summary} ${event.raw?.message ?? ""} ${rawMetadata.message ?? ""} ${rawMetadata.reason ?? ""}`;
+    return /stopped|interrupted|cancelled|canceled|closing/i.test(text) ? "cancelled" : "failed";
+  }
+  return null;
+}
+
+function statusFromLatestTerminalEvent(events: TaskEventView[]): NormalizedTaskStatus | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index].type === "done" && doneEventSuccess(events[index].raw)) {
+      for (let previous = index - 1; previous >= 0; previous -= 1) {
+        if (events[previous].type === "user") break;
+        const text = `${events[previous].summary} ${events[previous].raw?.content ?? ""} ${events[previous].raw?.message ?? ""}`;
+        if (/stream stalled mid tool-call|stream interrupted before completion/i.test(text)) {
+          return "cancelled";
+        }
+      }
+    }
+    const status = statusFromTerminalEvent(events[index]);
+    if (status) return status;
+  }
+  return null;
+}
+
 function messageEvent(message: ChatTaskMessage, index: number): TaskEventView | null {
   const metadata = isRecord(message.metadata) ? message.metadata : {};
   const rawEvent = isRecord(metadata.event) ? metadata.event : null;
@@ -866,6 +941,8 @@ function messageEvent(message: ChatTaskMessage, index: number): TaskEventView | 
   const success =
     typeof successValue === "boolean"
       ? successValue
+      : type === "done"
+        ? doneEventSuccess(rawEvent)
       : type === "command_end" || type === "tool_end"
         ? !ERROR_RE.test(message.content)
         : undefined;
@@ -896,7 +973,17 @@ function summarizeEventMessage(
     return cleanText(rawEvent?.summary ?? rawEvent?.path ?? message.content, "file changed", 180);
   }
   if (type === "error") return cleanText(rawEvent?.message ?? rawEvent?.details ?? message.content, "error", 220);
-  if (type === "done") return cleanText(rawEvent?.summary ?? message.content, "done", 120);
+  if (type === "done") {
+    const rawMetadata = rawEvent && isRecord(rawEvent.metadata) ? rawEvent.metadata : {};
+    if (!doneEventSuccess(rawEvent)) {
+      return cleanText(
+        rawMetadata.error ?? rawMetadata.turnExitReason ?? rawMetadata.turn_exit_reason ?? rawEvent?.summary ?? message.content,
+        "interrupted",
+        160,
+      );
+    }
+    return cleanText(rawEvent?.summary ?? message.content, "done", 120);
+  }
   if (type === "run_stage") {
     return cleanText(rawEvent?.label ?? rawEvent?.stage ?? message.content, "stage event", 140);
   }
@@ -1083,6 +1170,7 @@ function buildStageTimeline(
       byStage.set(stageName, event);
     }
     const timeline = Array.from(byStage.entries()).map(([name, event]) => {
+      const rawStage = cleanText(event.raw?.stage, "", 80).toLowerCase();
       const rawStatus = cleanText(event.raw?.status, "running", 40).toLowerCase();
       const eventStatus: StageEventStatus =
         rawStatus === "completed" || rawStatus === "done"
@@ -1095,11 +1183,13 @@ function buildStageTimeline(
       return {
         key: "analysis" as StageKey,
         label: name,
+        terminal: rawStage === "done" || rawStage === "completed",
         status: eventStatus,
         timestampMs: event.timestampMs,
       };
     });
     const active =
+      [...timeline].reverse().find((item) => item.terminal && item.status === "completed") ??
       [...timeline].reverse().find((item) => item.status === "running") ??
       [...timeline].reverse().find((item) => item.status === "failed") ??
       timeline.find((item) => item.status === "pending") ??
@@ -1326,16 +1416,20 @@ function buildTaskViewModel(
     numberOrZero(session?.message_count) > 0 ||
     Boolean(task.hermesSessionId || task.session_id);
   const needsAttention = ATTENTION_RE.test(`${preview} ${error} ${current?.summary ?? ""}`);
-  const hasCompleted = hasCompletedEvent(displayEventViews) || task.runtime_status === "completed";
-  const status = normalizeTaskStatus(task.runtime_status, {
+  const terminalStatus = statusFromLatestTerminalEvent(displayEventViews);
+  const hasCompleted = terminalStatus === "completed" || (!terminalStatus && (hasCompletedEvent(displayEventViews) || task.runtime_status === "completed"));
+  const status = normalizeTaskStatus(terminalStatus ?? task.runtime_status, {
     hasCompleted,
     hasError: Boolean(error),
     hasStarted,
-    needsAttention: needsAttention && !session?.is_active && task.runtime_status !== "completed",
+    needsAttention: needsAttention && !session?.is_active && (terminalStatus ?? task.runtime_status) !== "completed",
     queueDepth: numberOrZero(task.queue_depth ?? session?.queue_depth),
     running: Boolean(task.is_active ?? session?.is_active),
   });
-  const stage = buildStageTimeline(displayEventViews, copy);
+  const showStageTimeline = latestRunModeFromMessages(events) === "plan";
+  const stage = showStageTimeline
+    ? buildStageTimeline(displayEventViews, copy)
+    : { currentStage: "", inferredStage: false, timeline: [] };
   const providerModel = providerModelFrom(task, session, copy);
   const artifacts = artifactsInput.length > 0 ? artifactsInput : extractArtifacts(project, task, displayEventViews);
   const createdAt = taskCreatedMs(task);
@@ -2169,6 +2263,23 @@ function StatusSpecificDetails({
             [copy.failedStage, task.currentStage],
             [copy.currentTool, task.currentTool],
             [copy.currentCommand, task.currentCommand],
+          ]}
+        />
+        <TaskProgressDetails copy={copy} task={task} />
+      </>
+    );
+  }
+
+  if (task.status === "cancelled") {
+    return (
+      <>
+        <DetailGrid
+          rows={[
+            [copy.status, task.statusLabel],
+            [copy.recentResult, task.lastError || task.needsAttentionReason],
+            [copy.totalDuration, formatDuration(task.durationMs, true)],
+            [copy.provider, task.provider],
+            [copy.modelName, task.model],
           ]}
         />
         <TaskProgressDetails copy={copy} task={task} />

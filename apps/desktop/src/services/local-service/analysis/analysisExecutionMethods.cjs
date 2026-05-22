@@ -13,6 +13,7 @@ const {
   writeJsonAtomic,
 } = require("../shared/fileUtils.cjs");
 const { compact, compactMultiline, regexEscape, safeSegment } = require("../shared/textUtils.cjs");
+const { desktopSourcePath } = require("../shared/desktopPaths.cjs");
 const { isoNow } = require("../shared/timeUtils.cjs");
 const { yamlString } = require("../shared/yamlUtils.cjs");
 const { redact, toInt } = require("../context/contextUtils.cjs");
@@ -191,6 +192,17 @@ class AnalysisExecutionMethods {
       this.emitAnalysisEvent(item.webContents, { type: "changed", runId: item.runId });
     };
 
+    const hostDocker = await this.ensureAnalysisHostDockerAvailable({
+      cwd: workspacePath || this.projectRoot,
+      reason: `cleaning up Docker test environment ${envName}`,
+      waitMs: 30000,
+    });
+    if (hostDocker.status === "failed") {
+      const message = `Skipped Docker cleanup for ${envName}: ${compactMultiline(hostDocker.error, 800)}`;
+      writeCleanupSummary(message);
+      return { status: "skipped", envName, reason: message, hostDocker };
+    }
+
     const composePath = path.join(workspacePath || "", "docker-compose.yml");
     if (!workspacePath || !fs.existsSync(composePath)) {
       const fallback = await this.removeAnalysisDockerContainer(envName, workspacePath || this.projectRoot);
@@ -249,6 +261,13 @@ class AnalysisExecutionMethods {
     item.workspacePath = workspacePath;
     const analysisEnvName = analysisDockerEnvironmentName(item.provider, item.model, item.key);
     const modelRunName = analysisModelRunName(item.provider, item.model, item.key);
+    const hostDocker = await this.ensureAnalysisHostDockerAvailable({
+      cwd: workspacePath,
+      reason: "starting model capability benchmark",
+    });
+    if (hostDocker.status === "failed") {
+      throw new Error(hostDocker.error || "Docker is not available for model capability benchmark.");
+    }
     try {
       const staleCleanup = await this.removeAnalysisDockerContainer(analysisEnvName, workspacePath);
       if (staleCleanup.status === "completed") {

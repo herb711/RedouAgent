@@ -71,7 +71,7 @@ function clampChatComposerHeight(height: number): number {
   return Math.min(Math.max(Math.round(height), CHAT_COMPOSER_MIN_HEIGHT), maxHeight);
 }
 
-type RunState = "idle" | "loading" | "thinking" | "running" | "done" | "error";
+type RunState = "idle" | "loading" | "thinking" | "running" | "done" | "error" | "interrupted";
 type DeliveryMode = "queue" | "guide";
 type RunMode = "execute" | "plan";
 type TodoPlanStatus = "pending" | "in_progress" | "completed" | "cancelled";
@@ -132,6 +132,7 @@ const CHAT_COPY = {
       running: "运行中",
       loading: "加载中",
       error: "错误",
+      interrupted: "已中断",
       done: "完成",
       idle: "空闲",
     },
@@ -255,6 +256,7 @@ const CHAT_COPY = {
       running: "running",
       loading: "loading",
       error: "error",
+      interrupted: "interrupted",
       done: "done",
       idle: "idle",
     },
@@ -781,6 +783,39 @@ function eventMetadata(event: AgentEvent | null): Record<string, unknown> {
   return event?.metadata && typeof event.metadata === "object" ? event.metadata : {};
 }
 
+function truthyFailureText(value: unknown): string {
+  if (value == null || value === false) return "";
+  const text = typeof value === "string" ? value.trim() : JSON.stringify(value);
+  return !text || text === "false" || text === "null" ? "" : text;
+}
+
+function runStateFromDoneEvent(event: AgentEvent): RunState {
+  const metadata = eventMetadata(event);
+  const exitCode = Number(metadata.exitCode);
+  const turnExitReason = String(metadata.turnExitReason ?? metadata.turn_exit_reason ?? "").toLowerCase();
+  if (
+    metadata.cancelled ||
+    metadata.canceled ||
+    metadata.stopRequested ||
+    metadata.interrupted ||
+    metadata.replacedByRunId ||
+    metadata.partial
+  ) {
+    return "interrupted";
+  }
+  if (
+    metadata.failed === true ||
+    truthyFailureText(metadata.error) ||
+    truthyFailureText(metadata.failure) ||
+    truthyFailureText(metadata.exception) ||
+    (metadata.completed === false && /max_iterations|error|failed|failure|exception|invalid/.test(turnExitReason)) ||
+    (Number.isFinite(exitCode) && exitCode !== 0)
+  ) {
+    return "error";
+  }
+  return "done";
+}
+
 function isRiskApprovalEvent(event: AgentEvent | null): boolean {
   return !!event && (
     event.type === "risk_approval_required" ||
@@ -986,7 +1021,11 @@ function formatEventForRawLog(event: AgentEvent, message: ChatTaskMessage): stri
     case "error":
       return [`[error] ${event.message}`, event.details || ""].filter(Boolean).join("\n");
     case "done":
-      return "[done] This turn finished.";
+      return runStateFromDoneEvent(event) === "interrupted"
+        ? "[done] This turn was interrupted."
+        : runStateFromDoneEvent(event) === "error"
+          ? "[done] This turn ended with an error."
+          : "[done] This turn finished.";
     case "assistant_message":
     case "assistant_delta":
       return event.content || message.content;
@@ -1603,6 +1642,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         return;
       }
       if (event.type === "done") {
+        const terminalState = runStateFromDoneEvent(event);
         const pendingStreaming = streamingRef.current.trim();
         streamingRef.current = "";
         setStreaming("");
@@ -1620,7 +1660,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           }
           return appendAgentEvent(next, event);
         });
-        setRunState("done");
+        setRunState(terminalState);
         setCurrentRunId(null);
         return;
       }
@@ -2144,6 +2184,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           ? copy.status.loading
           : runState === "error"
             ? copy.status.error
+            : runState === "interrupted"
+              ? copy.status.interrupted
             : runState === "done"
               ? copy.status.done
               : copy.status.idle;
@@ -2692,6 +2734,7 @@ function StatusBadge({ label, state }: { label: string; state: RunState }) {
       className={cn(
         "inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs",
         state === "error" && "border-destructive/40 bg-destructive/5 text-destructive",
+        state === "interrupted" && "border-warning/40 bg-warning/5 text-warning",
         state === "done" && "border-success/40 bg-success/5 text-success",
         (state === "thinking" || state === "running" || state === "loading") &&
           "border-warning/40 bg-warning/5 text-warning",
@@ -2702,6 +2745,8 @@ function StatusBadge({ label, state }: { label: string; state: RunState }) {
         <Loader2 className="h-3.5 w-3.5 animate-spin" />
       ) : state === "done" ? (
         <CheckCircle2 className="h-3.5 w-3.5" />
+      ) : state === "interrupted" ? (
+        <AlertTriangle className="h-3.5 w-3.5" />
       ) : state === "error" ? (
         <AlertCircle className="h-3.5 w-3.5" />
       ) : (

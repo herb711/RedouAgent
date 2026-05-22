@@ -107,6 +107,10 @@ function defaultRequestTimeoutSeconds(provider: ModelSetupProvider | null): numb
   return /local|vllm|ollama|custom/.test(text) ? 600 : 300;
 }
 
+function cleanModelSetupInput(value: string): string {
+  return value.replace(/\0/g, "");
+}
+
 export function ModelSetupDialog({ onClose, onSaved }: Props) {
   const { locale } = useI18n();
   const copy = COPY[locale];
@@ -212,7 +216,8 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
     return [current, ...choices];
   }, [selectedModel, selectedProvider]);
   const apiKeyEnv = selectedProvider?.api_key_env ?? "";
-  const pendingApiKey = !!apiKey.trim();
+  const cleanedApiKey = cleanModelSetupInput(apiKey).trim();
+  const pendingApiKey = !!cleanedApiKey;
   const keyReady =
     !!selectedProvider &&
     (selectedProvider.api_key_optional ||
@@ -265,7 +270,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
         provider: selectedProvider.provider,
         model: selectedModel.trim(),
         base_url: baseUrl.trim(),
-        api_key: apiKey.trim(),
+        api_key: cleanedApiKey,
         api_key_env: selectedProvider.api_key_env,
         base_url_env: selectedProvider.base_url_env,
         api_mode: selectedProvider.api_mode,
@@ -328,7 +333,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
         provider: selectedProvider.provider,
         model: selectedModel.trim(),
         base_url: baseUrl.trim(),
-        api_key: apiKey.trim(),
+        api_key: cleanedApiKey,
         api_key_env: selectedProvider.api_key_env,
         base_url_env: selectedProvider.base_url_env,
         api_mode: selectedProvider.api_mode,
@@ -569,7 +574,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
                     </div>
                     <Input
                       value={apiKey}
-                      onChange={(event) => setApiKey(event.target.value)}
+                      onChange={(event) => setApiKey(cleanModelSetupInput(event.target.value))}
                       placeholder={
                         selectedProvider.api_key_set
                           ? copy.leaveEmpty
@@ -586,7 +591,7 @@ export function ModelSetupDialog({ onClose, onSaved }: Props) {
                         disabled={!canRefreshModels}
                         prefix={refreshingModels ? <Spinner /> : <RefreshCw />}
                       >
-                        {selectedProvider.api_key_set && !apiKey.trim()
+                        {selectedProvider.api_key_set && !cleanedApiKey
                           ? copy.refreshModels
                           : copy.saveKeyRefreshModels}
                       </Button>

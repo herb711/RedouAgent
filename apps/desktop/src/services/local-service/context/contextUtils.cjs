@@ -800,7 +800,18 @@ function completedRunIdsFromMessages(messages = []) {
     const runId = combined.runId ? String(combined.runId) : "";
     if (!runId) continue;
     if (eventType === "done") {
-      if (combined.cancelled || combined.stopRequested || combined.replacedByRunId) {
+      const turnExitReason = String(combined.turnExitReason || combined.turn_exit_reason || "").toLowerCase();
+      const unsuccessful =
+        combined.cancelled ||
+        combined.canceled ||
+        combined.stopRequested ||
+        combined.replacedByRunId ||
+        combined.interrupted ||
+        combined.partial ||
+        combined.failed ||
+        combined.error ||
+        (combined.completed === false && /max_iterations|partial|stream|error|failed|failure|exception|invalid/.test(turnExitReason));
+      if (unsuccessful) {
         cancelled.add(runId);
       } else {
         completed.add(runId);
