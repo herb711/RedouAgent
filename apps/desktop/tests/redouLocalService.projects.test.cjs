@@ -91,12 +91,57 @@ test("first run seeds a default project and task", () => {
   const project = response.projects[0];
   const task = project.tasks[0];
   assert.equal(project.name, "默认项目");
-  assert.equal(project.path, "");
+  assert.equal(project.path, service.defaultChatProjectWorkspacePath());
+  assert.equal(project.workspace_path, service.defaultChatProjectWorkspacePath());
+  assert.equal(project.contextPath, path.join(service.defaultChatProjectWorkspacePath(), ".redou"));
   assert.equal(task.title, "开始对话");
   assert.equal(response.current_project_id, project.id);
   assert.equal(response.current_task_id, task.id);
+  assert.equal(fs.existsSync(project.path), true);
   assert.equal(fs.existsSync(project.rulesPath), true);
   assert.equal(fs.existsSync(task.messagesPath), true);
+});
+
+test("empty workspace default project migrates to the default project workspace", () => {
+  const { service } = makeBareService();
+  service.db.initDb();
+  service.ensureGlobalFiles();
+  const createdAt = new Date().toISOString();
+  const projectId = "default-project-old";
+  const taskId = "task-old";
+  const fallbackContext = service.projectDir(projectId);
+  const fallbackTaskContext = path.join(fallbackContext, "tasks", taskId);
+  fs.mkdirSync(fallbackTaskContext, { recursive: true });
+  fs.writeFileSync(path.join(fallbackContext, "PROJECT_RULES.md"), "# Project Rules\n\n- keep me\n", "utf8");
+  fs.writeFileSync(path.join(fallbackTaskContext, "messages.jsonl"), "{\"role\":\"user\",\"content\":\"hello\"}\n", "utf8");
+  service.db.repositories.tasks.writeProject({
+    id: projectId,
+    name: "默认项目",
+    path: "",
+    workspace_path: "",
+    createdAt,
+    updatedAt: createdAt,
+    tasks: [
+      {
+        id: taskId,
+        projectId,
+        title: "开始对话",
+        createdAt,
+        updatedAt: createdAt,
+      },
+    ],
+  });
+
+  service.ensureInitialized();
+
+  const project = service.readProject(projectId);
+  const task = project.tasks[0];
+  assert.equal(project.path, service.defaultChatProjectWorkspacePath());
+  assert.equal(project.workspace_path, service.defaultChatProjectWorkspacePath());
+  assert.equal(project.contextPath, path.join(service.defaultChatProjectWorkspacePath(), ".redou"));
+  assert.match(fs.readFileSync(project.rulesPath, "utf8"), /keep me/);
+  assert.match(fs.readFileSync(project.rulesPath, "utf8"), /configured project workspace path/);
+  assert.equal(fs.readFileSync(task.messagesPath, "utf8"), "{\"role\":\"user\",\"content\":\"hello\"}\n");
 });
 
 test("default project seeding runs only once", () => {
@@ -268,6 +313,22 @@ test("restart selection fallback uses the latest task and persists it", () => {
   assert.equal(staleTaskResponse.current_project_id, project.id);
   assert.equal(staleTaskResponse.current_task_id, latestTask.id);
   assert.equal(service.getState().current_task_id, latestTask.id);
+});
+
+test("empty projects can be selected without a task", () => {
+  const { service } = makeService();
+  const { project: emptyProject } = service.createChatProject({ name: "Empty Project" });
+  service.deleteChatTask(emptyProject.id, emptyProject.tasks[0].id);
+  service.createChatProject({ name: "Filled Project" });
+
+  const selected = service.setActiveChatProject(emptyProject.id);
+  assert.equal(selected.ok, true);
+  assert.equal(selected.project.id, emptyProject.id);
+  assert.equal(selected.task, null);
+
+  const state = service.getChatProjects();
+  assert.equal(state.current_project_id, emptyProject.id);
+  assert.equal(state.current_task_id, "");
 });
 
 test("task packaging delegates generation to the Hermes packager", () => {

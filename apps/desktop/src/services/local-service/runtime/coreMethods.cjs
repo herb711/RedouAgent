@@ -14,6 +14,7 @@ const {
   TASK_RULES_FILE,
   TASK_STATE_FILE,
   TASK_UPLOADS_DIR,
+  DEFAULT_CHAT_PROJECT_NAME,
 } = require("../constants.cjs");
 const { compact, safeSegment } = require("../shared/textUtils.cjs");
 const { assertChildPath, ensureEmptyFile, ensureTextFile, mkdirp, readText } = require("../shared/fileUtils.cjs");
@@ -22,6 +23,8 @@ const { desktopSourcePath } = require("../shared/desktopPaths.cjs");
 const { readDotEnv, sanitizeEnvValue } = require("../analysis/benchmarkUtils.cjs");
 const {
   defaultTaskState,
+  appendDedupeRules,
+  projectWorkspaceOutputRule,
   readTaskStateFile,
   redact,
   renderTaskContextMarkdown,
@@ -54,6 +57,14 @@ class RuntimeCoreMethods {
     return path.join(this.appDataRoot(), "projects");
   }
 
+  workspacesDir() {
+    return path.join(this.appDataRoot(), "workspaces");
+  }
+
+  defaultChatProjectWorkspacePath() {
+    return path.join(this.workspacesDir(), "default-project");
+  }
+
   statePath() {
     return path.join(this.appDataRoot(), "state.json");
   }
@@ -68,6 +79,21 @@ class RuntimeCoreMethods {
 
   taskDir(projectId, taskId) {
     return path.join(this.projectDir(projectId), "tasks", safeSegment(taskId, "task"));
+  }
+
+  needsDefaultChatProjectWorkspace(project) {
+    const workspacePath = String(project?.path || project?.workspace_path || "").trim();
+    return !workspacePath && String(project?.name || "") === DEFAULT_CHAT_PROJECT_NAME;
+  }
+
+  withDefaultChatProjectWorkspace(project) {
+    if (!this.needsDefaultChatProjectWorkspace(project)) return project;
+    const workspacePath = this.defaultChatProjectWorkspacePath();
+    return {
+      ...project,
+      path: workspacePath,
+      workspace_path: workspacePath,
+    };
   }
 
   projectContextDir(project) {
@@ -217,20 +243,21 @@ class RuntimeCoreMethods {
   }
 
   normalizeProject(project) {
-    const id = safeSegment(project.id || project.name, `project-${Date.now().toString(36)}`);
-    const createdAt = project.createdAt || (project.created_at ? new Date(project.created_at * 1000).toISOString() : isoNow());
-    const updatedAt = project.updatedAt || (project.updated_at ? new Date(project.updated_at * 1000).toISOString() : createdAt);
-    const workspacePath = project.path || project.workspace_path || "";
+    const projectInput = this.withDefaultChatProjectWorkspace(project);
+    const id = safeSegment(projectInput.id || projectInput.name, `project-${Date.now().toString(36)}`);
+    const createdAt = projectInput.createdAt || (projectInput.created_at ? new Date(projectInput.created_at * 1000).toISOString() : isoNow());
+    const updatedAt = projectInput.updatedAt || (projectInput.updated_at ? new Date(projectInput.updated_at * 1000).toISOString() : createdAt);
+    const workspacePath = projectInput.path || projectInput.workspace_path || "";
     const appDataRoot = this.projectDir(id);
-    const contextRoot = this.projectContextDir({ ...project, id, path: workspacePath, workspace_path: workspacePath });
+    const contextRoot = this.projectContextDir({ ...projectInput, id, path: workspacePath, workspace_path: workspacePath });
     const hermesHomePath = contextRoot;
     const rulesPath = path.join(contextRoot, PROJECT_RULES_FILE);
     const normalized = {
       id,
-      name: project.name || "Untitled Project",
+      name: projectInput.name || "Untitled Project",
       path: workspacePath,
       workspace_path: workspacePath,
-      hermesProfile: project.hermesProfile || this.desiredProjectProfileName(id),
+      hermesProfile: projectInput.hermesProfile || this.desiredProjectProfileName(id),
       appDataPath: appDataRoot,
       contextPath: contextRoot,
       hermesHomePath,
@@ -238,9 +265,9 @@ class RuntimeCoreMethods {
       rulesPath,
       createdAt,
       updatedAt,
-      created_at: project.created_at || Math.floor(new Date(createdAt).getTime() / 1000),
+      created_at: projectInput.created_at || Math.floor(new Date(createdAt).getTime() / 1000),
       updated_at: Math.floor(new Date(updatedAt).getTime() / 1000),
-      tasks: Array.isArray(project.tasks) ? project.tasks : [],
+      tasks: Array.isArray(projectInput.tasks) ? projectInput.tasks : [],
     };
     normalized.tasks = normalized.tasks.map((task) => this.normalizeTask(normalized, task));
     return normalized;
@@ -286,12 +313,41 @@ class RuntimeCoreMethods {
     };
   }
 
+  copyMissingProjectContextEntries(sourceRoot, targetRoot, options = {}) {
+    const sourcePath = path.resolve(sourceRoot || "");
+    const targetPath = path.resolve(targetRoot || "");
+    if (!sourceRoot || !targetRoot || sourcePath === targetPath || !fs.existsSync(sourcePath)) return;
+    mkdirp(targetPath);
+    for (const entry of fs.readdirSync(sourcePath, { withFileTypes: true })) {
+      if (options.skipProjectJson && entry.name === "project.json") continue;
+      if (entry.name.endsWith(".tmp")) continue;
+      const source = path.join(sourcePath, entry.name);
+      const target = path.join(targetPath, entry.name);
+      if (entry.isDirectory()) {
+        this.copyMissingProjectContextEntries(source, target);
+      } else if (entry.isFile() && !fs.existsSync(target)) {
+        mkdirp(path.dirname(target));
+        fs.copyFileSync(source, target);
+      }
+    }
+  }
+
+  migrateDefaultChatProjectWorkspace(project, normalized) {
+    if (!this.needsDefaultChatProjectWorkspace(project)) return;
+    const id = safeSegment(project.id || project.name, normalized.id);
+    this.copyMissingProjectContextEntries(this.projectDir(id), normalized.contextPath, {
+      skipProjectJson: true,
+    });
+  }
+
   ensureProject(project) {
     const normalized = this.normalizeProject(project);
+    this.migrateDefaultChatProjectWorkspace(project, normalized);
     mkdirp(normalized.appDataPath);
     mkdirp(this.projectContextDir(normalized));
     mkdirp(this.projectSkillsDir(normalized));
     ensureTextFile(normalized.rulesPath, "# Project Rules\n\n");
+    appendDedupeRules(normalized.rulesPath, [projectWorkspaceOutputRule(normalized.path || normalized.workspace_path)]);
     this.ensureProjectHermesProfile(normalized);
     normalized.tasks = normalized.tasks.map((task) => this.ensureTask(normalized, task));
     this.writeProject(normalized);

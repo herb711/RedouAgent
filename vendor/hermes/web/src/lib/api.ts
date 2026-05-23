@@ -102,6 +102,9 @@ declare global {
       deleteChatProject?: (
         projectId: string,
       ) => Promise<ChatProjectDeleteResponse>;
+      setActiveChatProject?: (
+        projectId: string,
+      ) => Promise<ChatProjectSelectionResponse>;
       createChatTask?: (
         projectId: string,
         body: ChatTaskCreateRequest,
@@ -238,6 +241,8 @@ const redouApiCore = {
       requireRedouMethod("updateChatProject")(projectId, body),
     deleteChatProject: (projectId: string) =>
       requireRedouMethod("deleteChatProject")(projectId),
+    setActiveChatProject: (projectId: string) =>
+      requireRedouMethod("setActiveChatProject")(projectId),
     createChatTask: (projectId: string, body: ChatTaskCreateRequest) =>
       requireRedouMethod("createChatTask")(projectId, body),
     updateChatTask: (projectId: string, taskId: string, body: ChatTaskUpdateRequest) =>
@@ -436,6 +441,7 @@ export const redouApi = {
   createChatProject: redouApiCore.tasks.createChatProject,
   updateChatProject: redouApiCore.tasks.updateChatProject,
   deleteChatProject: redouApiCore.tasks.deleteChatProject,
+  setActiveChatProject: redouApiCore.tasks.setActiveChatProject,
   createChatTask: redouApiCore.tasks.createChatTask,
   updateChatTask: redouApiCore.tasks.updateChatTask,
   deleteChatTask: redouApiCore.tasks.deleteChatTask,
@@ -684,6 +690,12 @@ export interface ChatTaskMutationResponse {
   ok: boolean;
   project: ChatProject;
   task: ChatTask;
+}
+
+export interface ChatProjectSelectionResponse {
+  ok: boolean;
+  project: ChatProject;
+  task: ChatTask | null;
 }
 
 export interface RelatedPackagedSkill {

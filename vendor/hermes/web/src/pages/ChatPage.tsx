@@ -1332,6 +1332,32 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     return current.projectId === projectId && current.taskId === taskId;
   }, []);
 
+  const setSelectedRoute = useCallback(
+    (
+      projectId: string | null,
+      taskId: string | null,
+      options: { replace?: boolean } = {},
+    ) => {
+      selectedIdsRef.current = { projectId, taskId };
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        if (projectId) {
+          next.set("project", projectId);
+        } else {
+          next.delete("project");
+        }
+        if (taskId) {
+          next.set("task", taskId);
+        } else {
+          next.delete("task");
+        }
+        next.delete("resume");
+        return next;
+      }, options);
+    },
+    [setSearchParams],
+  );
+
   const finishComposerResize = useCallback(() => {
     const resize = composerResizeRef.current;
     if (!resize) return;
@@ -1447,39 +1473,48 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const refreshProjects = useCallback(async () => {
     const data = await redouApi.getChatProjects();
     setProjects(data.projects);
+    const currentSelection = selectedIdsRef.current;
+    const currentProject = currentSelection.projectId
+      ? data.projects.find((project) => project.id === currentSelection.projectId) ?? null
+      : null;
+    const currentTask = currentProject && currentSelection.taskId
+      ? currentProject.tasks.find((task) => task.id === currentSelection.taskId) ?? null
+      : null;
+
+    if (currentTask) {
+      return;
+    }
+
+    if (currentProject && currentProject.tasks.length === 0) {
+      if (currentSelection.taskId) {
+        setSelectedRoute(currentProject.id, null, { replace: true });
+      }
+      return;
+    }
+
     const nextProject =
-      data.projects.find((project) => project.id === selectedProjectId) ??
+      currentProject ??
       data.projects.find((project) => project.id === data.current_project_id) ??
       data.projects[0] ??
       null;
     const nextTask =
-      nextProject?.tasks.find((task) => task.id === selectedTaskId) ??
+      nextProject?.tasks.find((task) => task.id === currentSelection.taskId) ??
       nextProject?.tasks.find((task) => task.id === data.current_task_id) ??
       nextProject?.tasks[0] ??
       null;
 
-    const hasValidSelection = Boolean(
-      selectedProjectId &&
-        selectedTaskId &&
-        data.projects
-          .find((project) => project.id === selectedProjectId)
-          ?.tasks.some((task) => task.id === selectedTaskId),
-    );
-
-    if (nextProject && nextTask && !hasValidSelection) {
-      const next = new URLSearchParams(searchParams);
-      next.set("project", nextProject.id);
-      next.set("task", nextTask.id);
-      next.delete("resume");
-      setSearchParams(next, { replace: true });
-    } else if (!nextProject && !nextTask && (selectedProjectId || selectedTaskId)) {
-      const next = new URLSearchParams(searchParams);
-      next.delete("project");
-      next.delete("task");
-      next.delete("resume");
-      setSearchParams(next, { replace: true });
+    if (nextProject) {
+      const nextTaskId = nextTask?.id ?? null;
+      if (
+        currentSelection.projectId !== nextProject.id ||
+        currentSelection.taskId !== nextTaskId
+      ) {
+        setSelectedRoute(nextProject.id, nextTaskId, { replace: true });
+      }
+    } else if (currentSelection.projectId || currentSelection.taskId) {
+      setSelectedRoute(null, null, { replace: true });
     }
-  }, [searchParams, selectedProjectId, selectedTaskId, setSearchParams]);
+  }, [setSelectedRoute]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1752,29 +1787,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [mobilePanelOpen]);
 
   const selectTask = useCallback(
-    (project: ChatProject, task: ChatTask) => {
-      if (project.id === selectedProjectId && task.id === selectedTaskId) {
+    (project: ChatProject, task: ChatTask | null) => {
+      const nextTaskId = task?.id ?? null;
+      if (project.id === selectedProjectId && nextTaskId === selectedTaskId) {
         return;
       }
-      const next = new URLSearchParams(searchParams);
-      next.set("project", project.id);
-      next.set("task", task.id);
-      next.delete("resume");
-      setSearchParams(next);
-      void redouApi.setActiveChatTask(project.id, task.id).catch((e) => {
+      setSelectedRoute(project.id, nextTaskId);
+      const request = task
+        ? redouApi.setActiveChatTask(project.id, task.id)
+        : redouApi.setActiveChatProject(project.id);
+      void request.catch((e) => {
         setError(e instanceof Error ? e.message : String(e));
       });
     },
-    [searchParams, selectedProjectId, selectedTaskId, setSearchParams],
+    [selectedProjectId, selectedTaskId, setSelectedRoute],
   );
 
   const clearTaskSelection = useCallback(() => {
-    const next = new URLSearchParams(searchParams);
-    next.delete("project");
-    next.delete("task");
-    next.delete("resume");
-    setSearchParams(next);
-  }, [searchParams, setSearchParams]);
+    setSelectedRoute(null, null);
+  }, [setSelectedRoute]);
 
   const inputDisabled = !selectedProjectId || !selectedTaskId || runState === "loading";
   const agentBusy = runState === "thinking" || runState === "running";

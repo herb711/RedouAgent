@@ -61,6 +61,8 @@ contextBridge.exposeInMainWorld("redouDesktop", {
   updateChatProject: (projectId, body) =>
     ipcRenderer.invoke("redou:projects:update", projectId, body),
   deleteChatProject: (projectId) => ipcRenderer.invoke("redou:projects:delete", projectId),
+  setActiveChatProject: (projectId) =>
+    ipcRenderer.invoke("redou:projects:select", projectId),
   createChatTask: (projectId, body) =>
     ipcRenderer.invoke("redou:tasks:create", projectId, body),
   updateChatTask: (projectId, taskId, body) =>

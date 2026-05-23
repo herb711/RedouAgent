@@ -287,6 +287,15 @@ class ProjectMethods {
     );
   }
 
+  setActiveChatProject(projectId) {
+    const project = this.readProject(projectId);
+    if (!project) throw new Error("Project not found");
+    const task = this.latestTaskForProject(project);
+    this.saveState({ current_project_id: project.id, current_task_id: task?.id || "" });
+    this.log(`redou project selected projectId=${project.id} taskId=${task?.id || ""}`);
+    return { ok: true, project: this.ensureProject(project), task: task || null };
+  }
+
   setActiveChatTask(projectId, taskId) {
     const { project, task } = this.findProjectAndTask(projectId, taskId);
     if (!project || !task) throw new Error("Project or task not found");

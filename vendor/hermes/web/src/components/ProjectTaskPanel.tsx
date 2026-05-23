@@ -37,7 +37,7 @@ interface Props {
   selectedProjectId: string | null;
   selectedTaskId: string | null;
   onClearSelection?(): void;
-  onSelect(project: ChatProject, task: ChatTask): void;
+  onSelect(project: ChatProject, task: ChatTask | null): void;
 }
 
 type ContextEditorTarget =
@@ -365,6 +365,13 @@ export function ProjectTaskPanel({
     saving: false,
     target: null,
   });
+  const selectPanelItem = useCallback(
+    (project: ChatProject, task: ChatTask | null) => {
+      onSelect(project, task);
+    },
+    [onSelect],
+  );
+
   const selectedProject =
     projects.find((project) => project.id === selectedProjectId) ??
     projects[0] ??
@@ -411,35 +418,12 @@ export function ProjectTaskPanel({
     try {
       const data = await redouApi.getChatProjects();
       setProjects(data.projects);
-
-      const nextProject =
-        data.projects.find((project) => project.id === selectedProjectId) ??
-        data.projects.find((project) => project.id === data.current_project_id) ??
-        data.projects[0] ??
-        null;
-      const nextTask =
-        nextProject?.tasks.find((task) => task.id === selectedTaskId) ??
-        nextProject?.tasks.find((task) => task.id === data.current_task_id) ??
-        nextProject?.tasks[0] ??
-        null;
-
-      const hasValidSelection = Boolean(
-        selectedProjectId &&
-          selectedTaskId &&
-          data.projects
-            .find((project) => project.id === selectedProjectId)
-            ?.tasks.some((task) => task.id === selectedTaskId),
-      );
-
-      if (nextProject && nextTask && !hasValidSelection) {
-        onSelect(nextProject, nextTask);
-      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
-  }, [onSelect, selectedProjectId, selectedTaskId]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -605,11 +589,11 @@ export function ProjectTaskPanel({
     setProjects((prev) => [result.project, ...prev]);
     notifyChatProjectsChanged();
     const task = result.project.tasks[0];
-    if (task) onSelect(result.project, task);
+    selectPanelItem(result.project, task ?? null);
     setProjectFormOpen(false);
     setProjectName("");
     setWorkspacePath("");
-  }, [copy.newProject, onSelect, projectName, workspacePath]);
+  }, [copy.newProject, projectName, selectPanelItem, workspacePath]);
 
   const createTask = useCallback(async () => {
     if (!selectedProject) return;
@@ -630,18 +614,19 @@ export function ProjectTaskPanel({
       ),
     );
     notifyChatProjectsChanged();
-    onSelect(result.project, result.task);
+    selectPanelItem(result.project, result.task);
     setTaskTitle("");
-  }, [copy.newTask, onSelect, selectedProject, selectedTask, taskTitle]);
+  }, [copy.newTask, selectedProject, selectedTask, selectPanelItem, taskTitle]);
 
   const selectProject = useCallback(
     (project: ChatProject) => {
       const task =
         project.tasks.find((item) => item.id === selectedTaskId) ??
-        project.tasks[0];
-      if (task) onSelect(project, task);
+        project.tasks[0] ??
+        null;
+      selectPanelItem(project, task);
     },
-    [onSelect, selectedTaskId],
+    [selectPanelItem, selectedTaskId],
   );
 
   const selectFirstAvailable = useCallback(
@@ -659,12 +644,16 @@ export function ProjectTaskPanel({
         nextProject?.tasks[0] ??
         null;
       if (nextProject && nextTask) {
-        onSelect(nextProject, nextTask);
+        selectPanelItem(nextProject, nextTask);
+        return;
+      }
+      if (nextProject) {
+        selectPanelItem(nextProject, null);
         return;
       }
       onClearSelection?.();
     },
-    [onClearSelection, onSelect],
+    [onClearSelection, selectPanelItem],
   );
 
   const confirmDelete = useCallback(async () => {
@@ -1196,7 +1185,7 @@ export function ProjectTaskPanel({
                               <>
                                 <button
                                   type="button"
-                                  onClick={() => onSelect(project, task)}
+                                  onClick={() => selectPanelItem(project, task)}
                                   onDoubleClick={() => beginTaskRename(project, task)}
                                   className="flex min-w-0 flex-1 items-center gap-2 text-left"
                                 >

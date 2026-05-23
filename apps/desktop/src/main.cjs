@@ -473,6 +473,10 @@ ipcMain.handle("redou:projects:delete", (_event, projectId) =>
   getLocalService().deleteChatProject(projectId),
 );
 
+ipcMain.handle("redou:projects:select", (_event, projectId) =>
+  getLocalService().setActiveChatProject(projectId),
+);
+
 ipcMain.handle("redou:tasks:create", (_event, projectId, body) =>
   getLocalService().createChatTask(projectId, body),
 );
