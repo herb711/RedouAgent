@@ -211,14 +211,17 @@ test("guide delivery is stored as a control event and never as ordinary user his
     taskId: task.id,
     userInput: "steer the active run only",
     deliveryMode: "guide",
+    goalMode: true,
   });
 
   assert.equal(response.guided, true);
   assert.equal(active.writes.length, 1);
+  assert.equal(JSON.parse(active.writes[0]).goalMode, true);
   const loaded = service.getChatTaskMessages(project.id, task.id);
   assert.equal(loaded.messages.some((message) => message.role === "user" && message.content === "steer the active run only"), false);
   const control = loaded.messages.find((message) => message.metadata.eventType === "control_event");
   assert.ok(control);
+  assert.equal(control.metadata.goalMode, true);
   assert.equal(control.metadata.inputEnvelope.deliveryMode, "guide");
 
   const built = service.buildTaskContext({
@@ -320,6 +323,97 @@ test("Hermes run payload includes effective permission policy", () => {
   assert.equal(captured.input.permissions.mode, "ask");
   assert.equal(captured.input.permissions.approval_timeout_seconds, 123);
   assert.equal(JSON.parse(captured.options.env.REDOU_PERMISSIONS_JSON).approval_timeout_seconds, 123);
+});
+
+test("Hermes run payload forwards goal mode to the adapter", () => {
+  const { service, project, task } = makeService();
+  let captured = null;
+  service.pythonPath = process.execPath;
+  service.processManager.startJsonLineProcess = (options) => {
+    captured = options;
+    const child = {
+      pid: 1,
+      killed: false,
+      stdin: { destroyed: false, write() {} },
+      kill() {},
+    };
+    options.onStarted?.(child);
+    return child;
+  };
+
+  const response = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "fix the failing tests",
+    runMode: "execute",
+    goalMode: true,
+  });
+
+  assert.equal(response.ok, true);
+  assert.equal(captured.input.goalMode, true);
+  assert.equal(captured.input.goalText, "fix the failing tests");
+  assert.equal(captured.input.metadata.goalMode, true);
+});
+
+test("Hermes run payload uses root agent max_turns with input override priority", () => {
+  const { service, project, task } = makeService();
+  fs.mkdirSync(service.hermesHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(service.hermesHome, "config.yaml"),
+    "agent:\n  max_turns: 321\n",
+    "utf8",
+  );
+  service.pythonPath = process.execPath;
+  const captured = [];
+  service.processManager.startJsonLineProcess = (options) => {
+    captured.push(options);
+    const child = {
+      pid: 1,
+      killed: false,
+      stdin: { destroyed: false, write() {} },
+      kill() {},
+    };
+    options.onStarted?.(child);
+    return child;
+  };
+
+  const fromConfig = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: task.id,
+    userInput: "hello configured budget",
+  });
+  assert.equal(fromConfig.ok, true);
+  assert.equal(captured.at(-1).input.maxIterations, 321);
+
+  const overrideTask = service.createChatTask(project.id, { title: "Override budget" }).task;
+  const fromInput = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: overrideTask.id,
+    userInput: "hello input budget",
+    maxIterations: 77.9,
+  });
+  assert.equal(fromInput.ok, true);
+  assert.equal(captured.at(-1).input.maxIterations, 77);
+
+  const invalidTask = service.createChatTask(project.id, { title: "Invalid budget" }).task;
+  const fromInvalidInput = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: invalidTask.id,
+    userInput: "hello invalid budget",
+    maxIterations: "not-a-number",
+  });
+  assert.equal(fromInvalidInput.ok, true);
+  assert.equal(captured.at(-1).input.maxIterations, 321);
+
+  const cappedTask = service.createChatTask(project.id, { title: "Capped budget" }).task;
+  const fromCappedInput = service.sendMessage(null, {
+    projectId: project.id,
+    taskId: cappedTask.id,
+    userInput: "hello capped budget",
+    maxIterations: 20001,
+  });
+  assert.equal(fromCappedInput.ok, true);
+  assert.equal(captured.at(-1).input.maxIterations, 10000);
 });
 
 test("interrupt_replace cancels the active run and starts a replacement turn", () => {

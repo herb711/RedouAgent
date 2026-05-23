@@ -156,3 +156,74 @@ test("managed project profile config inherits root agent max turns", () => {
   const text = fs.readFileSync(path.join(profileHome, "config.yaml"), "utf8");
   assert.match(text, /agent:\n  max_turns: 321\n  service_tier: flex/);
 });
+
+test("managed project profile config inherits root MCP servers", () => {
+  const { root, service } = makeBareService();
+  const profileHome = path.join(root, "workspace", ".redou");
+  fs.mkdirSync(profileHome, { recursive: true });
+  fs.mkdirSync(service.hermesHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(service.hermesHome, "config.yaml"),
+    [
+      "model:",
+      "  provider: auto",
+      "  model: ''",
+      "mcp_servers:",
+      "  minimax:",
+      "    command: npx",
+      "    args:",
+      "      - -y",
+      "      - minimax-mcp-js",
+      "    env:",
+      "      MINIMAX_API_KEY: ${MINIMAX_API_KEY}",
+      "    enabled: true",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  service.writeManagedProfileConfig(profileHome, "C:\\work");
+
+  const text = fs.readFileSync(path.join(profileHome, "config.yaml"), "utf8");
+  assert.match(text, /mcp_servers:\n  minimax:\n    command: npx/);
+  assert.match(text, /MINIMAX_API_KEY: \${MINIMAX_API_KEY}/);
+});
+
+test("plugin service exposes MCP management through the dashboard bridge", () => {
+  const { service } = makeBareService();
+  const calls = [];
+  service.runDashboardBridge = (action, payload = {}) => {
+    calls.push({ action, payload });
+    if (action === "get_mcp_hub") {
+      return { servers: [], presets: {} };
+    }
+    if (action === "install_mcp_server") {
+      return { ok: true, name: payload.name || "minimax" };
+    }
+    if (action === "test_mcp_server") {
+      return { ok: true, name: payload.name, tools: [] };
+    }
+    if (action === "remove_mcp_server") {
+      return { ok: true, name: payload.name };
+    }
+    throw new Error(`unexpected action ${action}`);
+  };
+
+  assert.deepEqual(service.getMcpHub(), { servers: [], presets: {} });
+  assert.deepEqual(service.installMcpServer({ preset: "minimax", name: "minimax" }), {
+    ok: true,
+    name: "minimax",
+  });
+  assert.deepEqual(service.testMcpServer("minimax"), {
+    ok: true,
+    name: "minimax",
+    tools: [],
+  });
+  assert.deepEqual(service.removeMcpServer("minimax"), { ok: true, name: "minimax" });
+  assert.deepEqual(calls, [
+    { action: "get_mcp_hub", payload: {} },
+    { action: "install_mcp_server", payload: { preset: "minimax", name: "minimax" } },
+    { action: "test_mcp_server", payload: { name: "minimax" } },
+    { action: "remove_mcp_server", payload: { name: "minimax" } },
+  ]);
+});

@@ -351,7 +351,6 @@ export function ProjectTaskPanel({
   const [projectFormOpen, setProjectFormOpen] = useState(false);
   const [projectName, setProjectName] = useState("");
   const [workspacePath, setWorkspacePath] = useState("");
-  const [workspaceDraft, setWorkspaceDraft] = useState("");
   const [taskTitle, setTaskTitle] = useState("");
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
@@ -405,10 +404,6 @@ export function ProjectTaskPanel({
     },
     [locale],
   );
-
-  useEffect(() => {
-    queueMicrotask(() => setWorkspaceDraft(selectedProject?.workspace_path ?? ""));
-  }, [selectedProject?.id, selectedProject?.workspace_path]);
 
   const loadProjects = useCallback(async () => {
     setLoading(true);
@@ -615,19 +610,6 @@ export function ProjectTaskPanel({
     setProjectName("");
     setWorkspacePath("");
   }, [copy.newProject, onSelect, projectName, workspacePath]);
-
-  const updateWorkspace = useCallback(async () => {
-    if (!selectedProject) return;
-    const result = await redouApi.updateChatProject(selectedProject.id, {
-      workspace_path: workspaceDraft.trim() || null,
-    });
-    setProjects((prev) =>
-      prev.map((project) =>
-        project.id === result.project.id ? result.project : project,
-      ),
-    );
-    notifyChatProjectsChanged();
-  }, [selectedProject, workspaceDraft]);
 
   const createTask = useCallback(async () => {
     if (!selectedProject) return;
@@ -1072,22 +1054,6 @@ export function ProjectTaskPanel({
                       >
                         <FolderOpen className="h-3.5 w-3.5" />
                       </button>
-                      <button
-                        type="button"
-                        className="shrink-0 rounded px-1.5 py-0.5 text-midground/70 transition-colors hover:bg-card/60 hover:text-midground"
-                        onClick={() => void pickDirectory(setWorkspaceDraft)}
-                      >
-                        {copy.choose}
-                      </button>
-                      {workspaceDraft !== project.workspace_path && (
-                        <button
-                          type="button"
-                          className="shrink-0 rounded bg-midground px-1.5 py-0.5 text-background-base"
-                          onClick={() => void updateWorkspace()}
-                        >
-                          {copy.save}
-                        </button>
-                      )}
                     </div>
 
                     <div className="mx-2 my-1 space-y-1">
@@ -1147,7 +1113,13 @@ export function ProjectTaskPanel({
                       </div>
                     </div>
 
-                    <div className="mx-2 mb-1 flex items-center gap-1.5 rounded-md border border-border/60 bg-background/30 px-2 py-1">
+                    <form
+                      className="mx-2 mb-1 flex items-center gap-1.5 rounded-md border border-border/60 bg-background/30 px-2 py-1"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void createTask();
+                      }}
+                    >
                       <Plus className="h-4 w-4 shrink-0 text-muted-foreground" />
                       <input
                         value={taskTitle}
@@ -1156,13 +1128,12 @@ export function ProjectTaskPanel({
                         className="h-7 min-w-0 flex-1 bg-transparent text-sm text-midground outline-none placeholder:text-muted-foreground"
                       />
                       <button
-                        type="button"
+                        type="submit"
                         className="rounded px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-card/60 hover:text-midground"
-                        onClick={() => void createTask()}
                       >
                         {copy.add}
                       </button>
-                    </div>
+                    </form>
 
                     <div className="space-y-0.5">
                       {tasks.map((task) => {

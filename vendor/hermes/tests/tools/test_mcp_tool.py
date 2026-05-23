@@ -450,6 +450,95 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_mcp_error_result_falls_back_to_same_tool_on_backup_server(self):
+        from tools import mcp_tool
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        primary_session = MagicMock()
+        primary_session.call_tool = AsyncMock(
+            return_value=_make_call_result("primary failed", is_error=True)
+        )
+        backup_session = MagicMock()
+        backup_session.call_tool = AsyncMock(
+            return_value=_make_call_result("backup ok", is_error=False)
+        )
+        primary = _make_mock_server(
+            "primary_srv",
+            session=primary_session,
+            tools=[_make_mcp_tool("speak")],
+        )
+        backup = _make_mock_server(
+            "backup_srv",
+            session=backup_session,
+            tools=[_make_mcp_tool("speak")],
+        )
+        _servers["primary_srv"] = primary
+        _servers["backup_srv"] = backup
+
+        try:
+            handler = _make_tool_handler("primary_srv", "speak", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"text": "hello"}))
+            assert result["result"] == "backup ok"
+            assert result["mcp_fallback"]["from"] == "primary_srv"
+            assert result["mcp_fallback"]["to"] == "backup_srv"
+            primary_session.call_tool.assert_called_once_with(
+                "speak", arguments={"text": "hello"}
+            )
+            backup_session.call_tool.assert_called_once_with(
+                "speak", arguments={"text": "hello"}
+            )
+        finally:
+            _servers.pop("primary_srv", None)
+            _servers.pop("backup_srv", None)
+            mcp_tool._server_error_counts.pop("primary_srv", None)
+            mcp_tool._server_error_counts.pop("backup_srv", None)
+            mcp_tool._server_breaker_opened_at.pop("primary_srv", None)
+            mcp_tool._server_breaker_opened_at.pop("backup_srv", None)
+
+    def test_mcp_soft_failure_text_falls_back_to_same_tool_on_backup_server(self):
+        from tools import mcp_tool
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        primary_session = MagicMock()
+        primary_session.call_tool = AsyncMock(
+            return_value=_make_call_result(
+                "Failed to generate audio: API Error: login fail",
+                is_error=False,
+            )
+        )
+        backup_session = MagicMock()
+        backup_session.call_tool = AsyncMock(
+            return_value=_make_call_result("backup audio ready", is_error=False)
+        )
+        primary = _make_mock_server(
+            "primary_audio",
+            session=primary_session,
+            tools=[_make_mcp_tool("text_to_audio")],
+        )
+        backup = _make_mock_server(
+            "backup_audio",
+            session=backup_session,
+            tools=[_make_mcp_tool("text_to_audio")],
+        )
+        _servers["primary_audio"] = primary
+        _servers["backup_audio"] = backup
+
+        try:
+            handler = _make_tool_handler("primary_audio", "text_to_audio", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"text": "hello"}))
+            assert result["result"] == "backup audio ready"
+            assert result["mcp_fallback"]["errors"][0]["server"] == "primary_audio"
+            assert "login fail" in result["mcp_fallback"]["errors"][0]["error"].lower()
+        finally:
+            _servers.pop("primary_audio", None)
+            _servers.pop("backup_audio", None)
+            mcp_tool._server_error_counts.pop("primary_audio", None)
+            mcp_tool._server_error_counts.pop("backup_audio", None)
+            mcp_tool._server_breaker_opened_at.pop("primary_audio", None)
+            mcp_tool._server_breaker_opened_at.pop("backup_audio", None)
+
     def test_disconnected_server(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 

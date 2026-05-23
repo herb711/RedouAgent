@@ -14,10 +14,12 @@ from collections.abc import Iterable, Mapping
 REDOU_DISABLED_TOOLSETS: tuple[str, ...] = (
     "memory",
     "session_search",
+    "tts",
 )
 
 REDOU_DISABLED_TOOLS: tuple[str, ...] = (
     "skill_manage",
+    "text_to_speech",
 )
 
 REDOU_PROJECT_ID_ENV = "REDOU_PROJECT_ID"

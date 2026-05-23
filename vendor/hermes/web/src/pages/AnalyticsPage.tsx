@@ -248,6 +248,18 @@ function radarPointColor(score: number, status: string): string {
   return "#f87171";
 }
 
+function scoreIsFinal(status: string): boolean {
+  return status === "completed" || status === "failed";
+}
+
+function scoreLabel(score: number, status: string): string {
+  return scoreIsFinal(status) ? `${score}` : "-";
+}
+
+function scoreValueClass(score: number, status: string): string {
+  return scoreIsFinal(status) ? scoreColor(score) : "text-muted-foreground";
+}
+
 function taskScoreAverage(tasks: AnalysisBenchmarkTaskResult[]): number {
   if (tasks.length === 0) return 0;
   return Math.round(
@@ -469,15 +481,15 @@ function TaskRow({ task, nowMs }: { task: AnalysisBenchmarkTaskResult; nowMs: nu
             <Metric label={copy.duration} value={formatDuration(taskDurationMs(task, nowMs))} icon={<Clock3 />} />
             <Metric label={copy.tokens} value={formatTokens(tokenTotal)} icon={<BarChart3 />} />
             <Metric label={copy.apiCalls} value={String(task.apiCalls || 0)} icon={<Cpu />} />
-            <Metric label={copy.score} value={`${task.score}`} icon={<FileText />} valueClassName={scoreColor(task.score)} />
+            <Metric label={copy.score} value={scoreLabel(task.score, task.status)} icon={<FileText />} valueClassName={scoreValueClass(task.score, task.status)} />
           </div>
         </div>
         <div className="flex flex-col items-end gap-2">
           <Badge tone="secondary" className="text-[10px]">
             {statusLabel(task.status, localeKey)}
           </Badge>
-          <span className={cn("font-expanded text-lg", scoreColor(task.score))}>
-            {task.score}
+          <span className={cn("font-expanded text-lg", scoreValueClass(task.score, task.status))}>
+            {scoreLabel(task.score, task.status)}
           </span>
         </div>
       </button>
@@ -605,6 +617,7 @@ function ModelResultCard({
     result.totals.cacheReadTokens +
     result.totals.reasoningTokens;
   const overall = benchmarkOverallScore(result);
+  const overallLabel = scoreLabel(overall, result.status);
 
   return (
     <Card className="min-w-0">
@@ -635,7 +648,7 @@ function ModelResultCard({
           <div className="flex flex-col items-center justify-center border border-border/50 bg-background/20 p-3">
             <AbilityRadarChart result={result} />
             <div className="grid w-full grid-cols-3 gap-2">
-              <Metric label={copy.overall} value={`${overall}`} icon={<BarChart3 />} valueClassName={scoreColor(overall)} />
+              <Metric label={copy.overall} value={overallLabel} icon={<BarChart3 />} valueClassName={scoreValueClass(overall, result.status)} />
               <Metric label={copy.duration} value={formatDuration(totalDurationMs(result, nowMs))} icon={<Clock3 />} />
               <Metric label={copy.tokens} value={formatTokens(totalTokens)} icon={<Cpu />} />
             </div>

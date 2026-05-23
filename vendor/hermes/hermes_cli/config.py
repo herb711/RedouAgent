@@ -14,6 +14,7 @@ This module provides:
 
 import copy
 import logging
+import math
 import os
 import platform
 import re
@@ -27,6 +28,11 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_AGENT_MAX_TURNS = 200
+HARD_MAX_AGENT_MAX_TURNS = 10000
+DEFAULT_GOAL_MAX_TURNS = 50
+HARD_MAX_GOAL_MAX_TURNS = 500
 
 # Track which (config_path, mtime_ns, size) tuples we've already warned about
 # so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
@@ -441,7 +447,7 @@ DEFAULT_CONFIG = {
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
-        "max_turns": 90,
+        "max_turns": DEFAULT_AGENT_MAX_TURNS,
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has
@@ -1121,7 +1127,7 @@ DEFAULT_CONFIG = {
         # asks the user to /goal resume. Protects against judge false
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
-        "max_turns": 20,
+        "max_turns": DEFAULT_GOAL_MAX_TURNS,
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.
@@ -2558,7 +2564,7 @@ OPTIONAL_ENV_VARS = {
         "category": "setting",
     },
     "HERMES_MAX_ITERATIONS": {
-        "description": "Maximum tool-calling iterations per conversation (default: 90)",
+        "description": "Maximum tool-calling iterations per conversation (default: 200)",
         "prompt": "Max iterations",
         "url": None,
         "password": False,
@@ -3988,18 +3994,46 @@ def _normalize_root_model_keys(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _normalize_turn_budget(value: Any, fallback: int, hard_max: int) -> int:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(parsed):
+        return fallback
+    return max(1, min(math.floor(parsed), hard_max))
+
+
+def normalize_agent_max_turns(value: Any, fallback: int = DEFAULT_AGENT_MAX_TURNS) -> int:
+    return _normalize_turn_budget(value, fallback, HARD_MAX_AGENT_MAX_TURNS)
+
+
+def normalize_goal_max_turns(value: Any, fallback: int = DEFAULT_GOAL_MAX_TURNS) -> int:
+    return _normalize_turn_budget(value, fallback, HARD_MAX_GOAL_MAX_TURNS)
+
+
 def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize legacy root-level max_turns into agent.max_turns."""
+    """Normalize legacy root-level max_turns plus agent/goals turn budgets."""
     config = dict(config)
-    agent_config = dict(config.get("agent") or {})
+    raw_agent_config = config.get("agent")
+    agent_config = dict(raw_agent_config) if isinstance(raw_agent_config, dict) else {}
 
     if "max_turns" in config and "max_turns" not in agent_config:
         agent_config["max_turns"] = config["max_turns"]
 
-    if "max_turns" not in agent_config:
-        agent_config["max_turns"] = DEFAULT_CONFIG["agent"]["max_turns"]
+    agent_config["max_turns"] = normalize_agent_max_turns(
+        agent_config.get("max_turns"),
+        DEFAULT_AGENT_MAX_TURNS,
+    )
 
     config["agent"] = agent_config
+    raw_goals_config = config.get("goals")
+    goals_config = dict(raw_goals_config) if isinstance(raw_goals_config, dict) else {}
+    goals_config["max_turns"] = normalize_goal_max_turns(
+        goals_config.get("max_turns"),
+        DEFAULT_GOAL_MAX_TURNS,
+    )
+    config["goals"] = goals_config
     config.pop("max_turns", None)
     return config
 

@@ -181,8 +181,8 @@ def test_make_agent_redou_runtime_disables_cross_boundary_toolsets():
         assert kwargs["platform"] == "redou"
         assert kwargs["skip_context_files"] is True
         assert kwargs["skip_memory"] is True
-        assert kwargs["disabled_toolsets"] == ["memory", "session_search"]
-        assert kwargs["disabled_tools"] == ["skill_manage"]
+        assert kwargs["disabled_toolsets"] == ["memory", "session_search", "tts"]
+        assert kwargs["disabled_tools"] == ["skill_manage", "text_to_speech"]
 
 
 def test_probe_config_health_flags_null_sections():

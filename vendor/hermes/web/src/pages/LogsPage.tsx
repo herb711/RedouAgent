@@ -18,7 +18,12 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 
-const FILES = ["agent", "errors", "gateway"] as const;
+const FILE_OPTIONS = [
+  { value: "redou", label: "Redou", title: "Redou" },
+  { value: "agent", label: "agent", title: "agent.log" },
+  { value: "errors", label: "问题日志", title: "问题日志" },
+] as const;
+type LogFile = (typeof FILE_OPTIONS)[number]["value"];
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
 const COMPONENTS = ["all", "gateway", "agent", "tools", "cli", "cron"] as const;
 const LINE_COUNTS = [50, 100, 200, 500] as const;
@@ -47,7 +52,7 @@ const toOptions = <T extends string>(values: readonly T[]) =>
   values.map((v) => ({ value: v, label: v }));
 
 export default function LogsPage() {
-  const [file, setFile] = useState<(typeof FILES)[number]>("agent");
+  const [file, setFile] = useState<LogFile>("agent");
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
   const [component, setComponent] =
     useState<(typeof COMPONENTS)[number]>("all");
@@ -59,6 +64,8 @@ export default function LogsPage() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
+  const selectedFile =
+    FILE_OPTIONS.find((option) => option.value === file) ?? FILE_OPTIONS[0];
 
   const fetchLogs = useCallback(() => {
     setLoading(true);
@@ -82,7 +89,7 @@ export default function LogsPage() {
       <span className="flex items-center gap-2">
         {loading && <Spinner className="shrink-0 text-base text-primary" />}
         <Badge tone="secondary" className="text-[10px]">
-          {file} · {level} · {component}
+          {selectedFile.label} · {level} · {component}
         </Badge>
       </span>,
     );
@@ -128,6 +135,7 @@ export default function LogsPage() {
     loading,
     setAfterTitle,
     setEnd,
+    selectedFile.label,
     t.common.live,
     t.common.refresh,
     t.logs.autoRefresh,
@@ -156,8 +164,11 @@ export default function LogsPage() {
         <FilterGroup label={t.logs.file}>
           <Segmented
             value={file}
-            onChange={setFile}
-            options={toOptions(FILES)}
+            onChange={(value) => setFile(value as LogFile)}
+            options={FILE_OPTIONS.map(({ value, label }) => ({
+              value,
+              label,
+            }))}
           />
         </FilterGroup>
 
@@ -195,7 +206,7 @@ export default function LogsPage() {
         <CardHeader className="py-3 px-4">
           <CardTitle className="text-sm flex items-center gap-2">
             <FileText className="h-4 w-4" />
-            {file}.log
+            {selectedFile.title}
           </CardTitle>
         </CardHeader>
         <CardContent className="p-0">

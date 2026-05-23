@@ -32,6 +32,7 @@ const {
   analysisDockerEnvironmentName,
   analysisFinalScoreFromLog,
   analysisLatestMigratedTaskSummary,
+  analysisMigratedTaskScore,
   analysisMigratedTaskSectionsFromSummary,
   analysisModelRunName,
   analysisTaskBatchScript,
@@ -40,8 +41,6 @@ const {
   analysisTaskProcessStatus,
   analysisTaskPromptPath,
   analysisTaskSectionsFromGradeLog,
-  analysisTestCounts,
-  analysisTestPassRatio,
   averageScore,
   clampScore,
   commandText,
@@ -60,7 +59,6 @@ const {
   pathExists,
   pathExistsAny,
   readDotEnv,
-  readRelativeJson,
   readRelativeText,
   readRelativeTextAny,
   readRootAgentMaxTurns,
@@ -71,6 +69,108 @@ const {
 
 const REDOU_CONTEXT_DIR = ".redou";
 const REDOU_ANALYSIS_DIR = "analysis";
+
+const LIVE_USAGE_FIELDS = [
+  "inputTokens",
+  "outputTokens",
+  "cacheReadTokens",
+  "reasoningTokens",
+  "apiCalls",
+];
+
+function analysisInfrastructureError(message, details = null) {
+  const error = new Error(message);
+  error.analysisInfrastructureFailure = true;
+  error.details = details;
+  return error;
+}
+
+function isAnalysisInfrastructureError(error) {
+  return Boolean(error && error.analysisInfrastructureFailure === true);
+}
+
+function emptyLiveUsage() {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    reasoningTokens: 0,
+    apiCalls: 0,
+  };
+}
+
+function usageFromMetadata(metadata) {
+  if (!metadata || typeof metadata !== "object") return null;
+  const usage = {
+    inputTokens: toInt(metadata.inputTokens),
+    outputTokens: toInt(metadata.outputTokens),
+    cacheReadTokens: toInt(metadata.cacheReadTokens),
+    reasoningTokens: toInt(metadata.reasoningTokens),
+    apiCalls: toInt(metadata.apiCalls),
+  };
+  return LIVE_USAGE_FIELDS.some((field) => usage[field] > 0) ? usage : null;
+}
+
+function parseHermesApiUsageLine(line) {
+  const text = String(line || "");
+  if (!/\bAPI call #/i.test(text)) return null;
+  const numberMatch = text.match(/\bAPI call #(\d+)/i);
+  const inputMatch = text.match(/\bin=(\d+)/i);
+  const outputMatch = text.match(/\bout=(\d+)/i);
+  const cacheMatch = text.match(/\bcache=(\d+)(?:\/\d+)?/i);
+  const reasoningMatch = text.match(/\breasoning=(\d+)/i);
+  const usage = {
+    inputTokens: inputMatch ? toInt(inputMatch[1]) : 0,
+    outputTokens: outputMatch ? toInt(outputMatch[1]) : 0,
+    cacheReadTokens: cacheMatch ? toInt(cacheMatch[1]) : 0,
+    reasoningTokens: reasoningMatch ? toInt(reasoningMatch[1]) : 0,
+    apiCalls: numberMatch ? toInt(numberMatch[1]) : 0,
+  };
+  return LIVE_USAGE_FIELDS.some((field) => usage[field] > 0) ? usage : null;
+}
+
+function liveUsageChanged(left, right) {
+  return LIVE_USAGE_FIELDS.some((field) => toInt(left?.[field]) !== toInt(right?.[field]));
+}
+
+function maxLiveUsage(left, right) {
+  const next = emptyLiveUsage();
+  for (const field of LIVE_USAGE_FIELDS) {
+    next[field] = Math.max(toInt(left?.[field]), toInt(right?.[field]));
+  }
+  return next;
+}
+
+function analysisEvaluatorCompleted(evaluation) {
+  return String(evaluation?.evaluatorStatus || "") === "completed";
+}
+
+function analysisTaskEvaluatorSummary(task, evaluation, postProcessResult = null) {
+  const status = String(evaluation?.evaluatorStatus || "").trim();
+  const score = clampScore(evaluation?.score);
+  const sections = Array.isArray(evaluation?.sections) ? evaluation.sections : [];
+  const incompleteSections = sections
+    .filter((section) => clampScore(section.score) < 100)
+    .slice(0, 4)
+    .map((section) => `${section.label || section.id}: ${clampScore(section.score)}`);
+  const lines = [];
+  if (status === "completed") {
+    lines.push(`Fixed evaluator score for ${task?.id || "task"}: ${score}/100.`);
+  } else if (status === "missing") {
+    lines.push(`Fixed evaluator did not produce a valid result for ${task?.id || "task"}.`);
+  } else if (status === "skipped") {
+    lines.push(`Fixed evaluator skipped for ${task?.id || "task"}.`);
+  } else {
+    lines.push(`Fixed evaluator result unavailable for ${task?.id || "task"}.`);
+  }
+  if (incompleteSections.length > 0) {
+    lines.push(`Incomplete sections: ${incompleteSections.join("; ")}.`);
+  }
+  if (postProcessResult?.summary) {
+    lines.push(postProcessResult.summary);
+  }
+  return compactMultiline(lines.filter(Boolean).join("\n"), 1200);
+}
 
 class AnalysisExecutionMethods {
   copyAnalysisDisplayArtifacts(workspacePath, taskId, modelRunName = "") {
@@ -303,12 +403,72 @@ class AnalysisExecutionMethods {
         reason,
       });
       if (result.status === "failed") {
-        throw new Error(`Docker test environment ${analysisEnvName} is unavailable: ${compactMultiline(result.error || result.output, 1000)}`);
+        throw analysisInfrastructureError(
+          `Docker test environment ${analysisEnvName} is unavailable: ${compactMultiline(result.error || result.output, 1000)}`,
+          result,
+        );
+      }
+      if (result.status !== "completed") {
+        throw analysisInfrastructureError(
+          `Docker test environment ${analysisEnvName} could not be prepared: ${compactMultiline(result.reason || result.output || result.status, 1000)}`,
+          result,
+        );
       }
       dockerReady = result.status === "completed";
       return result;
     };
     const appendTaskSummary = (summary, extra) => [summary, extra].filter(Boolean).join("\n\n");
+    const finishInfrastructureInterrupted = (task, message, completedTaskResult = null, taskStartedAtMs = 0) => {
+      const cleanMessage = compactMultiline(
+        [
+          message,
+          "Benchmark interrupted by the Docker test environment before the model could be evaluated further. Completed task scores are partial and should not be treated as a full model score.",
+        ].filter(Boolean).join("\n"),
+        1800,
+      );
+      const completedAt = isoNow();
+      const interruptedResult = this.updateAnalysisResult(item.key, (result) => {
+        const tasks = result.tasks.map((candidate) => {
+          if (completedTaskResult && candidate.id === completedTaskResult.id) {
+            return completedTaskResult;
+          }
+          const status = String(candidate.status || "").toLowerCase();
+          if (candidate.id === task.id || ["pending", "queued", "running"].includes(status)) {
+            const durationMs = candidate.id === task.id && taskStartedAtMs
+              ? Math.max(toInt(candidate.durationMs), Date.now() - taskStartedAtMs)
+              : toInt(candidate.durationMs);
+            return {
+              ...candidate,
+              status: "interrupted",
+              completedAt,
+              durationMs,
+              error: cleanMessage,
+              summary: candidate.id === task.id
+                ? cleanMessage
+                : "Skipped because the Docker test environment was unavailable.",
+              score: 0,
+              sections: [],
+            };
+          }
+          return candidate;
+        });
+        const totals = this.analysisTotals(tasks);
+        return {
+          ...result,
+          status: "interrupted",
+          completedAt,
+          updatedAt: completedAt,
+          tasks,
+          totals,
+          abilityScores: this.analysisAbilityScores(tasks),
+          summary: cleanMessage,
+        };
+      });
+      const visibleTask = completedTaskResult || interruptedResult?.tasks?.find((candidate) => candidate.id === task.id) || {};
+      this.syncAnalysisWorkspaceTaskStage(item, task, visibleTask.status || "interrupted", visibleTask.summary || cleanMessage, visibleTask);
+      this.syncAnalysisWorkspaceFinished(item, "interrupted", cleanMessage, interruptedResult);
+      this.emitAnalysisEvent(item.webContents, { type: "changed", runId: item.runId, taskId: task.id });
+    };
     const postProcessTask = async (task) => {
       await this.syncAnalysisDockerArtifacts(workspacePath, analysisEnvName, modelRunName);
       const batch = await this.runAnalysisTaskBatchPostprocess({
@@ -327,7 +487,8 @@ class AnalysisExecutionMethods {
         this.markAnalysisInterrupted(item, "Stopped because Redou Agent is closing.");
         return;
       }
-      const startedAt = isoNow();
+      const taskStartedAtMs = Date.now();
+      const startedAt = new Date(taskStartedAtMs).toISOString();
       this.syncAnalysisWorkspaceTaskStage(item, task, "running", "Running");
       this.updateAnalysisTask(item.key, task.id, () => ({
         status: "running",
@@ -352,20 +513,51 @@ class AnalysisExecutionMethods {
             modelRunName,
           }),
           modelRunName,
+          skipInlineEvaluation: task.id === "task1",
           postProcessBeforeEvaluation: task.id === "task1"
             ? null
             : async () => postProcessTask(task),
         });
         if (task.id === "task1" && taskResult.status !== "interrupted") {
+          let task1Batch = null;
+          try {
+            task1Batch = await postProcessTask(task);
+          } catch (postError) {
+            task1Batch = {
+              status: "failed",
+              summary: `Batch post-processing failed: ${postError instanceof Error ? postError.message : String(postError)}`,
+              error: postError instanceof Error ? postError.message : String(postError),
+            };
+          }
+          const task1Evaluation = this.evaluateAnalysisTask(task.id, workspacePath, [], "", {
+            analysisEnvName,
+            modelRunName,
+          });
+          const task1EvaluatorSummary = analysisTaskEvaluatorSummary(task, task1Evaluation, task1Batch);
+          taskResult.score = task1Evaluation.score;
+          taskResult.sections = task1Evaluation.sections;
+          taskResult.evaluatorSummary = task1EvaluatorSummary;
+          taskResult.summary = task1EvaluatorSummary;
+          taskResult.status = analysisEvaluatorCompleted(task1Evaluation) && task1Batch?.status !== "failed"
+            ? "completed"
+            : "failed";
+          taskResult.error = taskResult.status === "failed"
+            ? (task1Batch?.error || task1EvaluatorSummary)
+            : null;
           try {
             const ensureResult = await ensureDockerReady("Task1 completed; preparing Docker environment for remaining analysis tasks.");
-            const batch = await postProcessTask(task);
             const details = [
               ensureResult.createdFallback ? `Scheduler created Docker test environment ${analysisEnvName}.` : "",
-              batch.summary,
             ].filter(Boolean).join("\n");
             taskResult.summary = appendTaskSummary(taskResult.summary, details);
+            taskResult.evaluatorSummary = appendTaskSummary(taskResult.evaluatorSummary, details);
           } catch (postError) {
+            if (isAnalysisInfrastructureError(postError)) {
+              const message = postError instanceof Error ? postError.message : String(postError);
+              this.updateAnalysisTask(item.key, task.id, () => taskResult);
+              finishInfrastructureInterrupted(task, message, taskResult, taskStartedAtMs);
+              return;
+            }
             failed = true;
             const message = postError instanceof Error ? postError.message : String(postError);
             taskResult.status = "failed";
@@ -381,6 +573,11 @@ class AnalysisExecutionMethods {
       } catch (error) {
         if (this.shuttingDown || item.stopRequested) {
           this.markAnalysisInterrupted(item, "Stopped because Redou Agent is closing.");
+          return;
+        }
+        if (isAnalysisInfrastructureError(error)) {
+          const message = error instanceof Error ? error.message : String(error);
+          finishInfrastructureInterrupted(task, message, null, taskStartedAtMs);
           return;
         }
         failed = true;
@@ -447,6 +644,7 @@ class AnalysisExecutionMethods {
     task,
     prompt,
     maxIterations,
+    webContents = null,
     skipInlineEvaluation = false,
     preparedRunDir = "",
     modelRunName = "",
@@ -501,7 +699,39 @@ class AnalysisExecutionMethods {
       let finalAssistantText = "";
       let doneMetadata = {};
       let childError = null;
+      const logUsage = emptyLiveUsage();
+      let metadataUsage = emptyLiveUsage();
+      let lastFlushedUsage = emptyLiveUsage();
+      let lastLiveUsageFlushAtMs = 0;
       const permissions = this.unattendedPermissions();
+
+      const currentLiveUsage = () => maxLiveUsage(logUsage, metadataUsage);
+
+      const flushLiveUsage = (force = false) => {
+        const usage = currentLiveUsage();
+        if (!LIVE_USAGE_FIELDS.some((field) => usage[field] > 0)) return;
+        if (!force && !liveUsageChanged(usage, lastFlushedUsage)) return;
+        const nowMs = Date.now();
+        if (!force && nowMs - lastLiveUsageFlushAtMs < 2000 && usage.apiCalls === lastFlushedUsage.apiCalls) {
+          return;
+        }
+        lastFlushedUsage = { ...usage };
+        lastLiveUsageFlushAtMs = nowMs;
+        this.updateAnalysisTask(key, task.id, (current) => {
+          if (String(current.status || "").toLowerCase() !== "running") {
+            return {};
+          }
+          return {
+            durationMs: Math.max(toInt(current.durationMs), nowMs - taskStartedAtMs),
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            cacheReadTokens: usage.cacheReadTokens,
+            reasoningTokens: usage.reasoningTokens,
+            apiCalls: usage.apiCalls,
+          };
+        });
+        this.emitAnalysisEvent(webContents, { type: "changed", runId, taskId: task.id });
+      };
 
       const recordEvent = (rawEvent) => {
         const event = rawEvent && typeof rawEvent === "object"
@@ -513,6 +743,11 @@ class AnalysisExecutionMethods {
         }
         if (event.type === "done" && event.metadata && typeof event.metadata === "object") {
           doneMetadata = event.metadata;
+        }
+        const eventUsage = usageFromMetadata(event.metadata);
+        if (eventUsage) {
+          metadataUsage = maxLiveUsage(metadataUsage, eventUsage);
+          flushLiveUsage();
         }
       };
 
@@ -567,7 +802,17 @@ class AnalysisExecutionMethods {
           recordEvent(event);
         },
         onStderrLine: (line) => {
-          recordEvent({ type: "raw_log", content: redact(line), metadata: { stream: "stderr", folded: true } });
+          const content = redact(line);
+          recordEvent({ type: "raw_log", content, metadata: { stream: "stderr", folded: true } });
+          const usage = parseHermesApiUsageLine(content);
+          if (usage) {
+            logUsage.inputTokens += usage.inputTokens;
+            logUsage.outputTokens += usage.outputTokens;
+            logUsage.cacheReadTokens += usage.cacheReadTokens;
+            logUsage.reasoningTokens += usage.reasoningTokens;
+            logUsage.apiCalls = Math.max(logUsage.apiCalls, usage.apiCalls);
+            flushLiveUsage();
+          }
         },
         onError: (error) => {
           childError = error;
@@ -579,6 +824,7 @@ class AnalysisExecutionMethods {
               delete currentAnalysisItem.child;
               delete currentAnalysisItem.currentTaskId;
             }
+            flushLiveUsage(true);
 
             const stopped = this.shuttingDown || currentAnalysisItem?.stopRequested === true;
             let postProcessResult = null;
@@ -608,23 +854,31 @@ class AnalysisExecutionMethods {
             const failureSummary = finalAssistantText || compact(errors.join(" "), 600);
             const modelCallFailed = isAnalysisModelCallFailure(failureSummary);
             const evaluation = skipInlineEvaluation || modelCallFailed
-              ? { score: 0, sections: [] }
+              ? { score: 0, sections: [], evaluatorStatus: skipInlineEvaluation ? "skipped" : "failed" }
               : this.evaluateAnalysisTask(task.id, workspacePath, events, finalAssistantText, {
                   analysisEnvName,
                   modelRunName: resolvedModelRunName,
                 });
             const postProcessFailed = postProcessResult?.status === "failed";
+            const evaluatorCompleted = analysisEvaluatorCompleted(evaluation);
             const status = analysisTaskProcessStatus({
               stopped,
               childError,
               exitCode: code,
               modelCallFailed,
               postProcessFailed,
-              finalAssistantText,
+              hasEvaluation: evaluatorCompleted || skipInlineEvaluation,
+              evaluationRequired: !skipInlineEvaluation && !modelCallFailed,
             });
+            const evaluatorSummary = skipInlineEvaluation
+              ? compactMultiline(finalAssistantText || "Inline evaluation skipped.", 1200)
+              : analysisTaskEvaluatorSummary(task, evaluation, postProcessResult);
             const summary = stopped
               ? "Stopped because Redou Agent is closing."
-              : [failureSummary, postProcessResult?.summary].filter(Boolean).join("\n\n");
+              : modelCallFailed
+                ? failureSummary
+                : evaluatorSummary;
+            const finalUsage = currentLiveUsage();
             const taskResult = {
               id: task.id,
               title: task.title,
@@ -633,15 +887,17 @@ class AnalysisExecutionMethods {
               startedAt: taskStartedAt,
               completedAt: new Date(completedAtMs).toISOString(),
               durationMs,
-              inputTokens: toInt(doneMetadata.inputTokens),
-              outputTokens: toInt(doneMetadata.outputTokens),
-              cacheReadTokens: toInt(doneMetadata.cacheReadTokens),
-              reasoningTokens: toInt(doneMetadata.reasoningTokens),
-              apiCalls: toInt(doneMetadata.apiCalls),
+              inputTokens: toInt(doneMetadata.inputTokens) || finalUsage.inputTokens,
+              outputTokens: toInt(doneMetadata.outputTokens) || finalUsage.outputTokens,
+              cacheReadTokens: toInt(doneMetadata.cacheReadTokens) || finalUsage.cacheReadTokens,
+              reasoningTokens: toInt(doneMetadata.reasoningTokens) || finalUsage.reasoningTokens,
+              apiCalls: toInt(doneMetadata.apiCalls) || finalUsage.apiCalls,
               estimatedCostUsd: Number(doneMetadata.estimatedCostUsd || 0),
               score: evaluation.score,
               sections: evaluation.sections,
               summary,
+              evaluatorSummary,
+              modelSummary: finalAssistantText,
               error: stopped
                 ? "Stopped because Redou Agent is closing."
                 : childError
@@ -665,7 +921,7 @@ class AnalysisExecutionMethods {
     const commands = commandText(events);
     const allEventText = `${commands}\n${events.map((event) => event.content || event.message || "").join("\n")}\n${finalAssistantText}`;
     if (isAnalysisModelCallFailure(allEventText)) {
-      return { score: 0, sections: [] };
+      return { score: 0, sections: [], evaluatorStatus: "failed" };
     }
     const analysisEnvName = String(context.analysisEnvName || "agent-lab").trim() || "agent-lab";
     const escapedEnvName = regexEscape(analysisEnvName);
@@ -673,7 +929,21 @@ class AnalysisExecutionMethods {
     const gradeLogScore = analysisFinalScoreFromLog(gradeLogText);
     const gradeLogSections = analysisTaskSectionsFromGradeLog(taskId, gradeLogText);
     if (["task1", "task2", "task3", "task4"].includes(taskId) && gradeLogSections.length > 0) {
-      return { score: gradeLogScore ?? averageScore(gradeLogSections), sections: gradeLogSections };
+      return { score: gradeLogScore ?? averageScore(gradeLogSections), sections: gradeLogSections, evaluatorStatus: "completed" };
+    }
+    if (["task1", "task2", "task3", "task4"].includes(taskId)) {
+      return {
+        score: 0,
+        sections: [
+          sectionScore(
+            "fixed_evaluator",
+            "Fixed evaluator",
+            0,
+            `${taskId}_grade_all.log missing or did not contain fixed phase scores`,
+          ),
+        ],
+        evaluatorStatus: "missing",
+      };
     }
     if (taskId === "task1") {
       const dockerfile = pathExists(workspacePath, "Dockerfile");
@@ -797,39 +1067,19 @@ class AnalysisExecutionMethods {
 
     const migratedMatch = /^task([5-9])$/.exec(taskId);
     if (migratedMatch) {
-      const taskNumber = migratedMatch[1];
       const modelRunName = String(context.modelRunName || "unknown-model").trim() || "unknown-model";
-      const runRel = `model_runs/${modelRunName}/task${taskNumber}`;
-      const resultsRel = `model_runs/${modelRunName}/results`;
-      let summary = null;
-      for (const index of [3, 2, 1]) {
-        summary = readRelativeJson(workspacePath, `${resultsRel}/task${taskNumber}_submit_${index}_summary.json`);
-        if (summary) break;
-      }
-      const testRatio = analysisTestPassRatio(summary);
-      const testScore = testRatio * 100;
-      const testCounts = analysisTestCounts(summary);
-      const testEvidence = testCounts
-        ? `${testCounts.passedCount}/${testCounts.adjustedTotal} passed`
-        : summary
-          ? `metric=${testRatio}`
-          : "summary json missing";
-      const report = readRelativeText(workspacePath, `${resultsRel}/task${taskNumber}_report.md`);
-      const runFiles = listFilesRecursive(path.join(workspacePath, "model_runs", modelRunName, `task${taskNumber}`), 220);
-      const prepareRe = new RegExp(`task_project_prepare\\.py[^\\r\\n]*task\\s+${taskNumber}|task_project_prepare\\.py`, "i");
-      const evaluateRe = new RegExp(`task_project_evaluate\\.py[^\\r\\n]*task\\s+${taskNumber}|task_project_evaluate\\.py`, "i");
-      const sections = [
-        sectionScore("working_copy", "Isolated working copy", runFiles.length > 0 ? 100 : 0, `${runFiles.length} files in ${runRel}`),
-        sectionScore("automated_tests", "Automated hidden tests", testScore, testEvidence),
-        sectionScore("official_submission", "Official evaluator run", summary ? 100 : hasAny(allEventText, [evaluateRe]) ? 50 : 0, "task_project_evaluate.py summary"),
-        sectionScore("source_integrity", "Original source untouched", summary?.original_source_unchanged === true ? 100 : summary ? 20 : 0, "original source checksum"),
-        sectionScore("container_execution", "Container-only commands", hasContainerExecCommand(commands, analysisEnvName, [prepareRe]) || hasContainerExecCommand(commands, analysisEnvName, [evaluateRe]) ? 100 : 0, `${analysisEnvName} prepare/evaluate usage`),
-        sectionScore("report", "Delivery report", report.length > 1000 ? 100 : report ? 55 : 0, `task${taskNumber}_report.md`),
-      ];
-      return { score: summary ? clampScore(testScore) : 0, sections };
+      const summary = analysisLatestMigratedTaskSummary(workspacePath, modelRunName, taskId);
+      const sections = analysisMigratedTaskSectionsFromSummary(taskId, workspacePath, modelRunName, summary);
+      return {
+        score: analysisMigratedTaskScore(taskId, workspacePath, modelRunName, summary) ?? 0,
+        sections: sections.length > 0
+          ? sections
+          : [sectionScore("fixed_evaluator", "Fixed evaluator", 0, `${taskId} evaluator summary missing`)],
+        evaluatorStatus: summary ? "completed" : "missing",
+      };
     }
 
-    return { score: 0, sections: [] };
+    return { score: 0, sections: [], evaluatorStatus: "missing" };
   }
 
   analysisTotals(tasks) {

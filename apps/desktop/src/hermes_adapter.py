@@ -76,6 +76,35 @@ Follow the Redou Plan Mode behavior:
 The user will review the plan in Redou before any execution turn is started.
 """.strip()
 
+DEFAULT_AGENT_MAX_TURNS = 200
+HARD_MAX_AGENT_MAX_TURNS = 10000
+
+
+def normalize_max_turns(value: Any, fallback: int = DEFAULT_AGENT_MAX_TURNS) -> int:
+    if value is None:
+        return fallback
+    if isinstance(value, str) and not value.strip():
+        return fallback
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return fallback
+    return max(1, min(int(parsed // 1), HARD_MAX_AGENT_MAX_TURNS))
+
+
+def configured_agent_max_turns() -> int:
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config() or {}
+        agent = config.get("agent") if isinstance(config, dict) else {}
+        value = agent.get("max_turns") if isinstance(agent, dict) else None
+        return normalize_max_turns(value, DEFAULT_AGENT_MAX_TURNS)
+    except Exception:
+        return DEFAULT_AGENT_MAX_TURNS
+
 
 def _project_root() -> Path:
     return _REDOU_PROJECT_ROOT
@@ -276,6 +305,28 @@ def _build_run_message(
             )
 
     return _enrich_with_attached_images(user_context, image_paths)
+
+
+def _goal_max_turns_from_config() -> int:
+    try:
+        from hermes_cli.config import DEFAULT_GOAL_MAX_TURNS, load_config, normalize_goal_max_turns
+
+        cfg = load_config() or {}
+        goals_cfg = cfg.get("goals") or {}
+        return normalize_goal_max_turns(
+            goals_cfg.get("max_turns"),
+            DEFAULT_GOAL_MAX_TURNS,
+        )
+    except Exception:
+        return 50
+
+
+def _goal_text_from_payload(payload: Dict[str, Any], user_context: str) -> str:
+    for key in ("goalText", "userInput"):
+        text = str(payload.get(key) or "").strip()
+        if text:
+            return text
+    return str(user_context or "").strip()
 
 
 def _tool_name(name: Any) -> str:
@@ -766,10 +817,39 @@ def main() -> int:
         user_context,
     )
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+
+        with contextlib.redirect_stdout(sys.stderr):
+            mcp_tool_names = discover_mcp_tools()
+        if mcp_tool_names:
+            _emit(
+                {
+                    "type": "raw_log",
+                    "content": f"MCP tools ready: {len(mcp_tool_names)} tool(s).",
+                    "metadata": {
+                        "folded": True,
+                        "mcpToolCount": len(mcp_tool_names),
+                        "mcpTools": sorted(mcp_tool_names)[:20],
+                        **metadata,
+                    },
+                }
+            )
+    except Exception as exc:
+        _emit(
+            {
+                "type": "raw_log",
+                "content": f"MCP discovery skipped: {exc}",
+                "metadata": {"folded": True, "mcpDiscoveryFailed": True, **metadata},
+            }
+        )
     session_id = str(payload.get("hermesSessionId") or "").strip() or None
     model = str(payload.get("model") or "")
     provider = str(payload.get("provider") or "")
-    max_iterations = int(payload.get("maxIterations") or 40)
+    max_iterations = normalize_max_turns(
+        payload.get("maxIterations"),
+        configured_agent_max_turns(),
+    )
     direct_api_key = str(payload.get("apiKey") or payload.get("api_key") or "").strip() or None
     direct_base_url = str(payload.get("baseUrl") or payload.get("base_url") or "").strip() or None
     direct_api_mode = str(payload.get("apiMode") or payload.get("api_mode") or "").strip() or None
@@ -781,6 +861,83 @@ def main() -> int:
     agent_holder: Dict[str, Any] = {}
     pending_steers: list[str] = []
     pending_lock = threading.Lock()
+    goal_lock = threading.RLock()
+    goal_state: Dict[str, Any] = {"enabled": False, "manager": None}
+    goal_max_turns = _goal_max_turns_from_config()
+
+    def current_goal_session_id() -> str:
+        agent = agent_holder.get("agent")
+        return str(getattr(agent, "session_id", None) or session_id or "").strip()
+
+    def get_goal_manager() -> Any:
+        sid = current_goal_session_id()
+        if not sid:
+            return None
+        with goal_lock:
+            existing = goal_state.get("manager")
+            if existing is not None and getattr(existing, "session_id", None) == sid:
+                return existing
+            try:
+                from hermes_cli.goals import GoalManager
+            except Exception as exc:
+                _emit(
+                    {
+                        "type": "raw_log",
+                        "content": f"Hermes goal mode unavailable: {exc}",
+                        "metadata": {"folded": True, "goalMode": True, **metadata},
+                    }
+                )
+                return None
+            manager = GoalManager(session_id=sid, default_max_turns=goal_max_turns)
+            goal_state["manager"] = manager
+            return manager
+
+    def activate_goal_mode(goal_text: str, source: str) -> bool:
+        text = str(goal_text or "").strip()
+        if not text:
+            _emit(
+                {
+                    "type": "raw_log",
+                    "content": "Hermes goal mode was requested, but no goal text was available.",
+                    "metadata": {"folded": True, "goalMode": True, "goalSource": source, **metadata},
+                }
+            )
+            return False
+        manager = get_goal_manager()
+        if manager is None:
+            return False
+        try:
+            state = manager.set(text)
+        except Exception as exc:
+            _emit(
+                {
+                    "type": "raw_log",
+                    "content": f"Hermes goal mode could not be activated: {exc}",
+                    "metadata": {"folded": True, "goalMode": True, "goalSource": source, **metadata},
+                }
+            )
+            return False
+        with goal_lock:
+            goal_state["enabled"] = True
+        _emit(
+            {
+                "type": "raw_log",
+                "content": f"Hermes goal mode enabled ({state.max_turns}-turn budget).",
+                "metadata": {
+                    "folded": True,
+                    "goalMode": True,
+                    "goalSource": source,
+                    "goalMaxTurns": state.max_turns,
+                    "goalPreview": _compact_text(text, 240),
+                    **metadata,
+                },
+            }
+        )
+        return True
+
+    def redou_goal_loop_enabled() -> bool:
+        with goal_lock:
+            return bool(goal_state.get("enabled"))
 
     def control_loop() -> None:
         for raw_line in sys.stdin:
@@ -808,6 +965,8 @@ def main() -> int:
             text = str(command.get("text") or "").strip()
             if not text:
                 continue
+            if command.get("goalMode") is True:
+                activate_goal_mode(text, "guide")
             with pending_lock:
                 agent = agent_holder.get("agent")
                 if agent is None:
@@ -1001,91 +1160,182 @@ def main() -> int:
         for steer_text in early_steers:
             agent.steer(steer_text)
         threading.Thread(target=control_loop, daemon=True).start()
+        if payload.get("goalMode") is True and run_mode == "execute":
+            activate_goal_mode(_goal_text_from_payload(payload, user_context), "initial")
+
+        def run_agent_turn(turn_message: Any, turn_history: Any, persist_override: Any = None) -> Dict[str, Any]:
+            nonlocal last_reasoning_preview
+            turn_local_started_at = _utc_iso()
+            turn_local_started_monotonic = time.monotonic()
+            streamed_response_parts.clear()
+            last_reasoning_preview = ""
+            with contextlib.redirect_stdout(sys.stderr):
+                turn_result = agent.run_conversation(
+                    turn_message,
+                    conversation_history=turn_history or None,
+                    stream_callback=stream_delta,
+                    persist_user_message=persist_override,
+                )
+            turn_final_response = _strip_run_stage_json_lines(
+                str((turn_result or {}).get("final_response") or "").strip()
+            )
+            turn_streamed_response = _strip_run_stage_json_lines(
+                "".join(streamed_response_parts).strip()
+            )
+            if not turn_final_response and turn_streamed_response:
+                turn_final_response = turn_streamed_response
+            if not turn_final_response and last_reasoning_preview:
+                turn_final_response = last_reasoning_preview
+            turn_failed = bool((turn_result or {}).get("failed") or (turn_result or {}).get("error"))
+            turn_stream_recovery_interrupted = _stream_recovery_interrupted(turn_final_response)
+            turn_interrupted = bool((turn_result or {}).get("interrupted") or turn_stream_recovery_interrupted)
+            turn_partial = bool((turn_result or {}).get("partial") or turn_stream_recovery_interrupted)
+            turn_completed_raw = (turn_result or {}).get("completed")
+            turn_exit_reason = str((turn_result or {}).get("turn_exit_reason") or "")
+            if turn_stream_recovery_interrupted and not turn_exit_reason:
+                turn_exit_reason = "stream_recovery_interrupted"
+            turn_done_completed = turn_completed_raw
+            if (
+                turn_completed_raw is False
+                and turn_final_response
+                and not turn_failed
+                and not turn_interrupted
+                and not turn_partial
+                and "max_iterations" not in turn_exit_reason
+            ):
+                turn_done_completed = True
+            if turn_failed or turn_interrupted or turn_partial:
+                turn_done_completed = False
+            return {
+                "result": turn_result,
+                "final_response": turn_final_response,
+                "result_failed": turn_failed,
+                "result_interrupted": turn_interrupted,
+                "result_partial": turn_partial,
+                "result_completed": turn_completed_raw,
+                "done_completed": turn_done_completed,
+                "turn_exit_reason": turn_exit_reason,
+                "timing": _turn_timing_metadata(turn_local_started_at, turn_local_started_monotonic),
+            }
+
         run_message = _build_run_message(payload, user_context, provider, model)
-        with contextlib.redirect_stdout(sys.stderr):
-            result = agent.run_conversation(
-                run_message,
-                conversation_history=conversation_history or None,
-                stream_callback=stream_delta,
-                persist_user_message=user_context if not isinstance(run_message, str) else None,
-            )
-        final_response = _strip_run_stage_json_lines(
-            str((result or {}).get("final_response") or "").strip()
-        )
-        streamed_response = _strip_run_stage_json_lines(
-            "".join(streamed_response_parts).strip()
-        )
-        if not final_response and streamed_response:
-            final_response = streamed_response
-        if not final_response and last_reasoning_preview:
-            final_response = last_reasoning_preview
-        result_failed = bool((result or {}).get("failed") or (result or {}).get("error"))
-        stream_recovery_interrupted = _stream_recovery_interrupted(final_response)
-        result_interrupted = bool((result or {}).get("interrupted") or stream_recovery_interrupted)
-        result_partial = bool((result or {}).get("partial") or stream_recovery_interrupted)
-        result_completed = (result or {}).get("completed")
-        turn_exit_reason = str((result or {}).get("turn_exit_reason") or "")
-        if stream_recovery_interrupted and not turn_exit_reason:
-            turn_exit_reason = "stream_recovery_interrupted"
-        done_completed = result_completed
-        if (
-            result_completed is False
-            and final_response
-            and not result_failed
-            and not result_interrupted
-            and not result_partial
-            and "max_iterations" not in turn_exit_reason
-        ):
-            done_completed = True
-        if result_failed or result_interrupted or result_partial:
-            done_completed = False
-        if final_response:
-            _emit(
-                {
-                    "type": "assistant_message",
-                    "content": final_response,
-                    "metadata": {
-                        **metadata,
-                        **_turn_timing_metadata(turn_started_at, turn_started_monotonic),
-                        "hermesSessionId": getattr(agent, "session_id", session_id),
-                        "apiCalls": (result or {}).get("api_calls"),
-                        "inputTokens": (result or {}).get("input_tokens"),
-                        "outputTokens": (result or {}).get("output_tokens"),
-                        "cacheReadTokens": (result or {}).get("cache_read_tokens"),
-                        "cacheWriteTokens": (result or {}).get("cache_write_tokens"),
-                        "reasoningTokens": (result or {}).get("reasoning_tokens"),
-                        "estimatedCostUsd": (result or {}).get("estimated_cost_usd"),
-                        "costStatus": (result or {}).get("cost_status"),
-                        "costSource": (result or {}).get("cost_source"),
-                    },
-                }
-            )
-        elif (result or {}).get("failed") or (result or {}).get("error"):
-            _emit(
-                {
-                    "type": "run_stage",
-                    "stage": "failed",
-                    "label": "失败",
-                    "status": "failed",
-                    "source": "hermes",
-                    "timestamp": _utc_iso(),
-                    "details": _compact_text((result or {}).get("error") or "Hermes runtime failed."),
-                    "metadata": metadata,
-                }
-            )
-            _emit(
-                {
-                    "type": "error",
-                    "message": _compact_text((result or {}).get("error") or "Hermes runtime failed."),
-                    "metadata": {
-                        **metadata,
-                        "hermesSessionId": getattr(agent, "session_id", session_id),
-                        "apiCalls": (result or {}).get("api_calls"),
-                        "provider": provider,
-                        "model": model,
-                    },
-                }
-            )
+        run_history = conversation_history or None
+        persist_override = user_context if not isinstance(run_message, str) else None
+        last_turn: Dict[str, Any] | None = None
+        goal_decision: Dict[str, Any] | None = None
+
+        while True:
+            last_turn = run_agent_turn(run_message, run_history, persist_override)
+            result = last_turn["result"] or {}
+            final_response = str(last_turn["final_response"] or "")
+            if final_response:
+                _emit(
+                    {
+                        "type": "assistant_message",
+                        "content": final_response,
+                        "metadata": {
+                            **metadata,
+                            **last_turn["timing"],
+                            "hermesSessionId": getattr(agent, "session_id", session_id),
+                            "apiCalls": result.get("api_calls"),
+                            "inputTokens": result.get("input_tokens"),
+                            "outputTokens": result.get("output_tokens"),
+                            "cacheReadTokens": result.get("cache_read_tokens"),
+                            "cacheWriteTokens": result.get("cache_write_tokens"),
+                            "reasoningTokens": result.get("reasoning_tokens"),
+                            "estimatedCostUsd": result.get("estimated_cost_usd"),
+                            "costStatus": result.get("cost_status"),
+                            "costSource": result.get("cost_source"),
+                            "goalMode": redou_goal_loop_enabled(),
+                        },
+                    }
+                )
+            elif result.get("failed") or result.get("error"):
+                _emit(
+                    {
+                        "type": "run_stage",
+                        "stage": "failed",
+                        "label": "失败",
+                        "status": "failed",
+                        "source": "hermes",
+                        "timestamp": _utc_iso(),
+                        "details": _compact_text(result.get("error") or "Hermes runtime failed."),
+                        "metadata": metadata,
+                    }
+                )
+                _emit(
+                    {
+                        "type": "error",
+                        "message": _compact_text(result.get("error") or "Hermes runtime failed."),
+                        "metadata": {
+                            **metadata,
+                            "hermesSessionId": getattr(agent, "session_id", session_id),
+                            "apiCalls": result.get("api_calls"),
+                            "provider": provider,
+                            "model": model,
+                        },
+                    }
+                )
+
+            run_history = result.get("messages") or run_history
+            if (
+                not redou_goal_loop_enabled()
+                or run_mode == "plan"
+                or last_turn["result_failed"]
+                or last_turn["result_interrupted"]
+                or last_turn["result_partial"]
+                or not final_response.strip()
+            ):
+                break
+
+            manager = get_goal_manager()
+            if manager is None or not manager.is_active():
+                break
+            try:
+                goal_decision = manager.evaluate_after_turn(
+                    final_response,
+                    user_initiated=True,
+                    messages=run_history or [],
+                )
+            except Exception as exc:
+                _emit(
+                    {
+                        "type": "raw_log",
+                        "content": f"Hermes goal evaluation failed: {exc}",
+                        "metadata": {"folded": True, "goalMode": True, **metadata},
+                    }
+                )
+                break
+            goal_message = str(goal_decision.get("message") or "")
+            if goal_message:
+                _emit(
+                    {
+                        "type": "raw_log",
+                        "content": goal_message,
+                        "metadata": {
+                            "folded": True,
+                            "goalMode": True,
+                            "goalVerdict": goal_decision.get("verdict"),
+                            "goalStatus": goal_decision.get("status"),
+                            **metadata,
+                        },
+                    }
+                )
+            if not goal_decision.get("should_continue"):
+                break
+            continuation_prompt = str(goal_decision.get("continuation_prompt") or "")
+            if not continuation_prompt:
+                break
+            run_message = continuation_prompt
+            persist_override = None
+
+        result = (last_turn or {}).get("result") or {}
+        done_completed = (last_turn or {}).get("done_completed")
+        result_completed = (last_turn or {}).get("result_completed")
+        result_failed = bool((last_turn or {}).get("result_failed"))
+        result_partial = bool((last_turn or {}).get("result_partial"))
+        result_interrupted = bool((last_turn or {}).get("result_interrupted"))
+        turn_exit_reason = str((last_turn or {}).get("turn_exit_reason") or "")
         _emit(
             {
                 "type": "done",
@@ -1109,6 +1359,16 @@ def main() -> int:
                     "estimatedCostUsd": (result or {}).get("estimated_cost_usd"),
                     "costStatus": (result or {}).get("cost_status"),
                     "costSource": (result or {}).get("cost_source"),
+                    "goalMode": redou_goal_loop_enabled(),
+                    **(
+                        {
+                            "goalVerdict": goal_decision.get("verdict"),
+                            "goalStatus": goal_decision.get("status"),
+                            "goalReason": goal_decision.get("reason"),
+                        }
+                        if goal_decision
+                        else {}
+                    ),
                     **(
                         {"pendingSteer": (result or {}).get("pending_steer")}
                         if (result or {}).get("pending_steer")

@@ -31,6 +31,7 @@ const {
   analysisDockerEnvironmentName,
   analysisFinalScoreFromLog,
   analysisLatestMigratedTaskSummary,
+  analysisMigratedTaskScore,
   analysisMigratedTaskSectionsFromSummary,
   analysisModelRunName,
   analysisTaskBatchScript,
@@ -39,8 +40,6 @@ const {
   analysisTaskProcessStatus,
   analysisTaskPromptPath,
   analysisTaskSectionsFromGradeLog,
-  analysisTestCounts,
-  analysisTestPassRatio,
   averageScore,
   clampScore,
   commandText,
@@ -59,7 +58,6 @@ const {
   pathExists,
   pathExistsAny,
   readDotEnv,
-  readRelativeJson,
   readRelativeText,
   readRelativeTextAny,
   readRootAgentMaxTurns,
@@ -85,18 +83,100 @@ class AnalysisStateMethods {
   }
 
   ensureAnalysisWorkspaceProject() {
+    const workspacePath = this.analysisWorkspaceRoot();
+    mkdirp(workspacePath);
     const existing = this.readProject(ANALYSIS_WORKSPACE_PROJECT_ID);
-    if (existing) return existing;
+    if (existing) {
+      const existingPath = String(existing.path || existing.workspace_path || "").trim();
+      const pathAlreadyMatches =
+        existingPath && path.resolve(existingPath) === path.resolve(workspacePath);
+      const nextUpdatedAt = pathAlreadyMatches ? existing.updatedAt : isoNow();
+      return this.ensureProject({
+        ...existing,
+        name: existing.name || ANALYSIS_WORKSPACE_PROJECT_NAME,
+        path: workspacePath,
+        workspace_path: workspacePath,
+        updatedAt: nextUpdatedAt,
+      });
+    }
     const createdAt = isoNow();
     return this.ensureProject({
       id: ANALYSIS_WORKSPACE_PROJECT_ID,
       name: ANALYSIS_WORKSPACE_PROJECT_NAME,
-      path: "",
-      workspace_path: "",
+      path: workspacePath,
+      workspace_path: workspacePath,
       createdAt,
       updatedAt: createdAt,
       tasks: [],
     });
+  }
+
+  removeAnalysisWorkspacePath(target, label) {
+    const targetPath = assertChildPath(this.analysisWorkspaceRoot(), target, label);
+    if (!fs.existsSync(targetPath)) return "";
+    removeDirectoryWithRetries(targetPath);
+    return targetPath;
+  }
+
+  removeAnalysisDataPath(target, label) {
+    const targetPath = assertChildPath(this.analysisDir(), target, label);
+    if (!fs.existsSync(targetPath)) return "";
+    removeDirectoryWithRetries(targetPath);
+    return targetPath;
+  }
+
+  removeAnalysisStoreFile() {
+    const storePath = assertChildPath(this.analysisDir(), this.analysisStorePath(), "analysis results");
+    if (!fs.existsSync(storePath)) return "";
+    fs.rmSync(storePath, { force: true });
+    return storePath;
+  }
+
+  deleteAnalysisWorkspaceProjectData() {
+    const deletedPaths = [];
+    const workspacePath = this.removeAnalysisDataPath(this.analysisWorkspaceRoot(), "analysis workspaces");
+    if (workspacePath) deletedPaths.push(workspacePath);
+    const storePath = this.removeAnalysisStoreFile();
+    if (storePath) deletedPaths.push(storePath);
+    return { deletedPaths };
+  }
+
+  deleteAnalysisWorkspaceTaskData(task = {}) {
+    const key = String(task.analysisKey || "").trim();
+    const runId = String(task.analysisRunId || "").trim();
+    if (!key && !runId) return { deletedPaths: [], removedResults: 0 };
+
+    const store = this.readAnalysisStore();
+    const removedResults = [];
+    const remainingResults = [];
+    for (const result of store.results) {
+      const matchesRun = runId && result.runId === runId;
+      const matchesKey = !runId && key && result.key === key;
+      if (matchesRun || matchesKey) {
+        removedResults.push(result);
+      } else {
+        remainingResults.push(result);
+      }
+    }
+
+    const deletedPaths = [];
+    for (const result of removedResults) {
+      const workspacePath = String(result.workspacePath || "").trim();
+      if (!workspacePath) continue;
+      const deleted = this.removeAnalysisWorkspacePath(workspacePath, "analysis task workspace");
+      if (deleted) deletedPaths.push(deleted);
+    }
+
+    if (removedResults.length > 0) {
+      if (remainingResults.length > 0) {
+        this.writeAnalysisStore({ ...store, results: remainingResults });
+      } else {
+        const storePath = this.removeAnalysisStoreFile();
+        if (storePath) deletedPaths.push(storePath);
+      }
+    }
+
+    return { deletedPaths, removedResults: removedResults.length };
   }
 
   createAnalysisWorkspaceTask(model, runId, maxIterations) {
@@ -309,7 +389,7 @@ class AnalysisStateMethods {
       const gradeLogSections = analysisTaskSectionsFromGradeLog(taskId, gradeLogText);
       const migratedSummary = analysisLatestMigratedTaskSummary(workspacePath, modelRunName, taskId);
       const migratedSections = analysisMigratedTaskSectionsFromSummary(taskId, workspacePath, modelRunName, migratedSummary);
-      const migratedScore = migratedSummary ? clampScore(analysisTestPassRatio(migratedSummary) * 100) : null;
+      const migratedScore = analysisMigratedTaskScore(taskId, workspacePath, modelRunName, migratedSummary);
       const rawSections = Array.isArray(task.sections)
         ? task.sections.map((section) => ({
             id: String(section.id || ""),
@@ -342,6 +422,8 @@ class AnalysisStateMethods {
         sections,
         error: task.error ? String(task.error) : null,
         summary: String(task.summary || ""),
+        evaluatorSummary: String(task.evaluatorSummary || ""),
+        modelSummary: String(task.modelSummary || ""),
         artifacts: analysisTaskDisplayArtifacts(workspacePath, taskId),
       };
     });

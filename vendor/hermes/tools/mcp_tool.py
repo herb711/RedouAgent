@@ -2089,11 +2089,49 @@ def _interrupted_call_result() -> str:
 # Config loading
 # ---------------------------------------------------------------------------
 
+def _resolve_mcp_env_placeholder(name: str) -> Optional[str]:
+    value = os.environ.get(name)
+    if value:
+        return value
+    try:
+        from hermes_cli.config import get_env_value
+
+        value = get_env_value(name)
+        if value:
+            return value
+    except Exception:
+        pass
+    try:
+        from hermes_cli.auth import read_credential_pool
+
+        pool = read_credential_pool(None)
+        for entries in pool.values():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                label = str(entry.get("label") or "")
+                source = str(entry.get("source") or "")
+                if label != name and source != f"env:{name}":
+                    continue
+                token = (
+                    entry.get("runtime_api_key")
+                    or entry.get("agent_key")
+                    or entry.get("access_token")
+                )
+                if token:
+                    return str(token)
+    except Exception:
+        pass
+    return None
+
+
 def _interpolate_env_vars(value):
-    """Recursively resolve ``${VAR}`` placeholders from ``os.environ``."""
+    """Recursively resolve ``${VAR}`` placeholders from env and auth stores."""
     if isinstance(value, str):
         def _replace(m):
-            return os.environ.get(m.group(1), m.group(0))
+            return _resolve_mcp_env_placeholder(m.group(1)) or m.group(0)
         return re.sub(r"\$\{([^}]+)\}", _replace, value)
     if isinstance(value, dict):
         return {k: _interpolate_env_vars(v) for k, v in value.items()}
@@ -2162,7 +2200,229 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
     ``handler(args_dict, **kwargs) -> str``
     """
 
+    def _breaker_block_message(target_name: str) -> Optional[str]:
+        if _server_error_counts.get(target_name, 0) < _CIRCUIT_BREAKER_THRESHOLD:
+            return None
+        opened_at = _server_breaker_opened_at.get(target_name, 0.0)
+        age = time.monotonic() - opened_at
+        if age >= _CIRCUIT_BREAKER_COOLDOWN_SEC:
+            return None
+        remaining = max(1, int(_CIRCUIT_BREAKER_COOLDOWN_SEC - age))
+        return (
+            f"MCP server '{target_name}' is unreachable after "
+            f"{_server_error_counts[target_name]} consecutive failures. "
+            f"Auto-retry available in ~{remaining}s."
+        )
+
+    def _server_has_tool(server: MCPServerTask, raw_tool_name: str) -> bool:
+        for mcp_tool in (getattr(server, "_tools", None) or []):
+            if getattr(mcp_tool, "name", None) == raw_tool_name:
+                return True
+        return False
+
+    def _candidate_servers() -> List[tuple[str, MCPServerTask]]:
+        with _lock:
+            snapshot = list(_servers.items())
+        primary = [(name, server) for name, server in snapshot if name == server_name]
+        backups = [
+            (name, server)
+            for name, server in snapshot
+            if name != server_name and _server_has_tool(server, tool_name)
+        ]
+        return primary + backups
+
+    def _result_error_text(result_json: str) -> Optional[str]:
+        try:
+            parsed = json.loads(result_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        if "error" in parsed:
+            return str(parsed.get("error") or "MCP tool returned an error")
+        result = parsed.get("result")
+        if isinstance(result, str):
+            normalized = result.strip().lower()
+            soft_error_prefixes = (
+                "failed to ",
+                "error:",
+                "api error:",
+                "tool error:",
+                "exception:",
+            )
+            soft_error_markers = (
+                " api error:",
+                " authorization",
+                " unauthorized",
+                " authentication",
+                " login fail",
+            )
+            if normalized.startswith(soft_error_prefixes) or any(
+                marker in normalized for marker in soft_error_markers
+            ):
+                return result.strip()
+        return None
+
+    def _annotate_fallback_success(
+        result_json: str,
+        from_name: str,
+        to_name: str,
+        errors: List[dict],
+    ) -> str:
+        try:
+            parsed = json.loads(result_json)
+        except (json.JSONDecodeError, TypeError):
+            return result_json
+        if not isinstance(parsed, dict):
+            return result_json
+        parsed.setdefault(
+            "mcp_fallback",
+            {
+                "from": from_name,
+                "to": to_name,
+                "errors": errors,
+            },
+        )
+        return json.dumps(parsed, ensure_ascii=False)
+
     def _handler(args: dict, **kwargs) -> str:
+        errors: List[dict] = []
+        candidates = _candidate_servers()
+        if not candidates:
+            _bump_server_error(server_name)
+            return json.dumps({
+                "error": f"MCP server '{server_name}' is not connected"
+            }, ensure_ascii=False)
+
+        def _has_later_candidate(target_name: str) -> bool:
+            names = [name for name, _server in candidates]
+            try:
+                return names.index(target_name) < len(names) - 1
+            except ValueError:
+                return False
+
+        def _is_structured_auth_error(result_json: str) -> bool:
+            try:
+                parsed = json.loads(result_json)
+            except (json.JSONDecodeError, TypeError):
+                return False
+            return isinstance(parsed, dict) and bool(parsed.get("needs_reauth"))
+
+        def _call_server(target_name: str, server: MCPServerTask) -> tuple[Optional[str], str]:
+            blocked = _breaker_block_message(target_name)
+            if blocked:
+                return None, blocked
+            if not server or not server.session:
+                _bump_server_error(target_name)
+                return None, f"MCP server '{target_name}' is not connected"
+
+            async def _call():
+                async with server._rpc_lock:
+                    result = await server.session.call_tool(tool_name, arguments=args)
+                if result.isError:
+                    error_text = ""
+                    for block in (result.content or []):
+                        if hasattr(block, "text"):
+                            error_text += block.text
+                    return json.dumps({
+                        "error": _sanitize_error(
+                            error_text or "MCP tool returned an error"
+                        )
+                    }, ensure_ascii=False)
+
+                parts: List[str] = []
+                for block in (result.content or []):
+                    if hasattr(block, "text") and block.text:
+                        parts.append(block.text)
+                        continue
+                    image_tag = _cache_mcp_image_block(block)
+                    if image_tag:
+                        parts.append(image_tag)
+                text_result = "\n".join(parts) if parts else ""
+
+                structured = getattr(result, "structuredContent", None)
+                if structured is not None:
+                    if text_result:
+                        return json.dumps({
+                            "result": text_result,
+                            "structuredContent": structured,
+                        }, ensure_ascii=False)
+                    return json.dumps({"result": structured}, ensure_ascii=False)
+                return json.dumps({"result": text_result}, ensure_ascii=False)
+
+            def _call_once():
+                timeout_value = getattr(server, "tool_timeout", None)
+                if not isinstance(timeout_value, (int, float)) or timeout_value <= 0:
+                    timeout_value = tool_timeout
+                return _run_on_mcp_loop(_call(), timeout=timeout_value)
+
+            try:
+                result = _call_once()
+                error_text = _result_error_text(result)
+                if error_text:
+                    _bump_server_error(target_name)
+                    return None, _sanitize_error(error_text)
+                _reset_server_error(target_name)
+                return result, ""
+            except InterruptedError:
+                raise
+            except Exception as exc:
+                recovered = _handle_auth_error_and_retry(
+                    target_name, exc, _call_once,
+                    f"tools/call {tool_name}",
+                )
+                if recovered is not None:
+                    if _is_structured_auth_error(recovered) and not _has_later_candidate(target_name):
+                        return recovered, ""
+                    error_text = _result_error_text(recovered)
+                    if error_text:
+                        return None, _sanitize_error(error_text)
+                    _reset_server_error(target_name)
+                    return recovered, ""
+
+                recovered = _handle_session_expired_and_retry(
+                    target_name, exc, _call_once,
+                    f"tools/call {tool_name}",
+                )
+                if recovered is not None:
+                    error_text = _result_error_text(recovered)
+                    if error_text:
+                        return None, _sanitize_error(error_text)
+                    _reset_server_error(target_name)
+                    return recovered, ""
+
+                _bump_server_error(target_name)
+                logger.error(
+                    "MCP tool %s/%s call failed: %s",
+                    target_name, tool_name, exc,
+                )
+                return None, _sanitize_error(
+                    f"MCP call failed: {type(exc).__name__}: {_exc_str(exc)}"
+                )
+
+        try:
+            for target_name, candidate in candidates:
+                result, error_text = _call_server(target_name, candidate)
+                if result is not None:
+                    if target_name != server_name:
+                        return _annotate_fallback_success(
+                            result, server_name, target_name, errors
+                        )
+                    return result
+                errors.append({"server": target_name, "error": error_text})
+        except InterruptedError:
+            return _interrupted_call_result()
+
+        if len(errors) == 1:
+            return json.dumps({"error": errors[0]["error"]}, ensure_ascii=False)
+        return json.dumps({
+            "error": _sanitize_error(
+                "MCP tool failed on all candidate servers: "
+                + "; ".join(f"{item['server']}: {item['error']}" for item in errors)
+            ),
+            "mcp_errors": errors,
+        }, ensure_ascii=False)
+
         # Circuit breaker: if this server has failed too many times
         # consecutively, short-circuit with a clear message so the model
         # stops retrying and uses alternative approaches (#10447).

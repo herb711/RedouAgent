@@ -9,6 +9,12 @@ echo "[Task4 Phase 2] Checking final report and comparison analysis..."
 docker compose exec "$SERVICE" bash -lc "
   test -f '$REPORT'
   test -s '$REPORT'
+
+  bytes=\$(wc -c < '$REPORT')
+  if [ \"\$bytes\" -lt 6000 ]; then
+    echo \"Final report is too short for a complete comparison: \$bytes bytes\"
+    exit 1
+  fi
 "
 
 echo "[Task4 Phase 2] Checking required research sections..."
@@ -39,6 +45,12 @@ docker compose exec "$SERVICE" bash -lc "
   table_lines=\$(grep -n '^|' '$REPORT' | wc -l)
   if [ \"\$table_lines\" -lt 10 ]; then
     echo \"Expected a Markdown comparison table with at least 10 pipe-lines, got \$table_lines\"
+    exit 1
+  fi
+
+  data_rows=\$(grep '^|' '$REPORT' | grep -E 'Claude|Codex|Cursor|Cline|Continue|OpenHands|OpenClaw|Qoder|DeepSeek|Qwen|MiniMax' | wc -l)
+  if [ \"\$data_rows\" -lt 8 ]; then
+    echo \"Comparison table should cover at least 8 concrete tools, got \$data_rows\"
     exit 1
   fi
 "

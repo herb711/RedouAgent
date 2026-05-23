@@ -3,14 +3,14 @@ const fs = require("fs");
 const path = require("path");
 
 // LogService owns two related surfaces:
-// - UI log text reads from Hermes log files such as agent.log.
+// - UI log text reads from Redou/Hermes log files such as agent.log.
 // - Task JSONL journals, including messages.jsonl and events.jsonl persistence.
 // It must not change message/event JSON shape, event types, or metadata semantics.
 
 const LOG_FILES = {
-  agent: "agent.log",
-  errors: "errors.log",
-  gateway: "gateway.log",
+  redou: { kind: "redou", name: "desktop-main.log" },
+  agent: { kind: "hermes", name: "agent.log" },
+  errors: { kind: "hermes", name: "errors.log" },
 };
 
 const LOG_LEVEL_ORDER = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, CRITICAL: 4 };
@@ -136,6 +136,10 @@ class LogService {
     return typeof this.paths.hermesHome === "function" ? this.paths.hermesHome() : this.paths.hermesHome || "";
   }
 
+  redouLogPath() {
+    return typeof this.paths.redouLogPath === "function" ? this.paths.redouLogPath() : this.paths.redouLogPath || "";
+  }
+
   isoNow() {
     const isoNow = this.helper("isoNow");
     return isoNow ? isoNow() : new Date().toISOString();
@@ -163,8 +167,8 @@ class LogService {
 
   getLogs(params = {}) {
     const fileKey = String(params?.file || "agent").toLowerCase();
-    const logName = LOG_FILES[fileKey];
-    if (!logName) {
+    const logFile = LOG_FILES[fileKey];
+    if (!logFile) {
       throw new Error(`Unknown log file: ${fileKey}`);
     }
 
@@ -187,7 +191,12 @@ class LogService {
     const search = String(params?.search || "").toLowerCase();
     const hasFilters = Boolean(minLevel || componentPrefixes || search);
     const rawLimit = hasFilters ? Math.max(lineCount * 20, 2000) : lineCount;
-    const logPath = path.join(this.hermesHome(), "logs", logName);
+    const logPath = logFile.kind === "redou"
+      ? this.redouLogPath()
+      : path.join(this.hermesHome(), "logs", logFile.name);
+    if (!logPath) {
+      return { file: fileKey, lines: [] };
+    }
     if (!fs.existsSync(logPath)) {
       return { file: fileKey, lines: [] };
     }

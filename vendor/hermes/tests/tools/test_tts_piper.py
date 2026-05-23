@@ -268,6 +268,7 @@ class TestTextToSpeechToolWithPiper:
             raise ImportError("No module named 'piper'")
 
         monkeypatch.setattr(tts_tool, "_import_piper", raise_import)
+        monkeypatch.setattr(tts_tool, "_try_mcp_text_to_audio_fallback", lambda text, output_path: None)
 
         cfg = {"provider": "piper"}
         monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: cfg)
@@ -277,6 +278,30 @@ class TestTextToSpeechToolWithPiper:
 
         assert data["success"] is False
         assert "piper-tts" in data["error"]
+
+    def test_missing_package_can_fall_back_to_mcp_text_to_audio(self, tmp_path, monkeypatch):
+        def raise_import():
+            raise ImportError("No module named 'piper'")
+
+        out = tmp_path / "clip.mp3"
+        monkeypatch.setattr(tts_tool, "_import_piper", raise_import)
+        monkeypatch.setattr(
+            tts_tool,
+            "_try_mcp_text_to_audio_fallback",
+            lambda text, output_path: json.dumps({
+                "success": True,
+                "file_path": output_path,
+                "media_tag": f"MEDIA:{output_path}",
+                "provider": "mcp_backup_text_to_audio",
+            }),
+        )
+        monkeypatch.setattr(tts_tool, "_load_tts_config", lambda: {"provider": "piper"})
+
+        result = text_to_speech_tool(text="hi", output_path=str(out))
+        data = json.loads(result)
+
+        assert data["success"] is True
+        assert data["provider"] == "mcp_backup_text_to_audio"
 
 
 # ---------------------------------------------------------------------------

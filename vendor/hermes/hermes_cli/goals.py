@@ -60,7 +60,8 @@ logger = logging.getLogger(__name__)
 # Constants & defaults
 # ──────────────────────────────────────────────────────────────────────
 
-DEFAULT_MAX_TURNS = 20
+DEFAULT_MAX_TURNS = 50
+HARD_MAX_TURNS = 500
 DEFAULT_JUDGE_TIMEOUT = 60.0
 # Cap how much of the last response we send to the judge inline. The judge
 # can read the dumped conversation file via read_file if it needs more.
@@ -80,6 +81,20 @@ DEFAULT_MAX_JUDGE_TOOL_CALLS = 5
 # doesn't blow up its own context. Judge can paginate if needed.
 _JUDGE_READ_FILE_MAX_LINES = 400
 _JUDGE_READ_FILE_MAX_CHARS = 32_000
+
+
+def normalize_goal_max_turns(value: Any, fallback: int = DEFAULT_MAX_TURNS) -> int:
+    if value is None:
+        return fallback
+    if isinstance(value, str) and not value.strip():
+        return fallback
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return fallback
+    return max(1, min(int(parsed // 1), HARD_MAX_TURNS))
 
 
 # Status constants ────────────────────────────────────────────────────
@@ -314,7 +329,7 @@ class GoalState:
             goal=data.get("goal", ""),
             status=data.get("status", "active"),
             turns_used=int(data.get("turns_used", 0) or 0),
-            max_turns=int(data.get("max_turns", DEFAULT_MAX_TURNS) or DEFAULT_MAX_TURNS),
+            max_turns=normalize_goal_max_turns(data.get("max_turns"), DEFAULT_MAX_TURNS),
             created_at=float(data.get("created_at", 0.0) or 0.0),
             last_turn_at=float(data.get("last_turn_at", 0.0) or 0.0),
             last_verdict=data.get("last_verdict"),
@@ -1374,7 +1389,7 @@ class GoalManager:
 
     def __init__(self, session_id: str, *, default_max_turns: int = DEFAULT_MAX_TURNS):
         self.session_id = session_id
-        self.default_max_turns = int(default_max_turns or DEFAULT_MAX_TURNS)
+        self.default_max_turns = normalize_goal_max_turns(default_max_turns, DEFAULT_MAX_TURNS)
         self._state: Optional[GoalState] = load_goal(session_id)
 
     # --- introspection ------------------------------------------------
@@ -1425,7 +1440,7 @@ class GoalManager:
             goal=goal,
             status="active",
             turns_used=0,
-            max_turns=int(max_turns) if max_turns else self.default_max_turns,
+            max_turns=normalize_goal_max_turns(max_turns, self.default_max_turns),
             created_at=time.time(),
             last_turn_at=0.0,
             checklist=[],
@@ -1853,6 +1868,8 @@ __all__ = [
     "CONTINUATION_PROMPT_WITH_CHECKLIST_TEMPLATE",
     "DEFAULT_MAX_TURNS",
     "DEFAULT_MAX_JUDGE_TOOL_CALLS",
+    "HARD_MAX_TURNS",
+    "normalize_goal_max_turns",
     "ITEM_PENDING",
     "ITEM_COMPLETED",
     "ITEM_IMPOSSIBLE",

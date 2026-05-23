@@ -19,9 +19,6 @@ import {
   Package,
   Lock,
   Globe,
-  Mic,
-  Volume2,
-  Ear,
   ClipboardList,
   MessageCircle,
   Wrench,
@@ -72,9 +69,6 @@ const CATEGORY_ICONS: Record<
   compression: Package,
   security: Lock,
   browser: Globe,
-  voice: Mic,
-  tts: Volume2,
-  stt: Ear,
   logging: ClipboardList,
   discord: MessageCircle,
   auxiliary: Wrench,
@@ -88,6 +82,20 @@ const CATEGORY_ICONS: Record<
   tool_output: FileOutput,
   updates: RefreshCw,
 };
+
+const REDOU_HIDDEN_CONFIG_CATEGORIES = new Set(["voice", "tts", "stt"]);
+
+function isRedouHiddenConfigField(
+  key: string,
+  field: Record<string, unknown>,
+): boolean {
+  const category = String(field.category ?? "general");
+  const root = key.split(".")[0];
+  return (
+    REDOU_HIDDEN_CONFIG_CATEGORIES.has(category) ||
+    REDOU_HIDDEN_CONFIG_CATEGORIES.has(root)
+  );
+}
 
 function CategoryIcon({
   category,
@@ -107,12 +115,37 @@ function categoriesFromSchema(
   if (!schema) return [];
   const allCats = [
     ...new Set(
-      Object.values(schema).map((s) => String(s.category ?? "general")),
+      Object.entries(schema)
+        .filter(([key, s]) => !isRedouHiddenConfigField(key, s))
+        .map(([, s]) => String(s.category ?? "general")),
     ),
   ];
-  const ordered = categoryOrder.filter((c) => allCats.includes(c));
-  const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
+  const visibleOrder = categoryOrder.filter(
+    (c) => !REDOU_HIDDEN_CONFIG_CATEGORIES.has(c),
+  );
+  const ordered = visibleOrder.filter((c) => allCats.includes(c));
+  const extra = allCats.filter((c) => !visibleOrder.includes(c)).sort();
   return [...ordered, ...extra];
+}
+
+function orderConfigFields(
+  fields: [string, Record<string, unknown>][],
+  category: string,
+): [string, Record<string, unknown>][] {
+  if (category !== "agent") return fields;
+  const priority: Record<string, number> = {
+    "agent.max_turns": 0,
+    "goals.max_turns": 1,
+  };
+  return fields
+    .map((field, index) => ({ field, index }))
+    .sort((left, right) => {
+      const leftPriority = priority[left.field[0]] ?? Number.POSITIVE_INFINITY;
+      const rightPriority = priority[right.field[0]] ?? Number.POSITIVE_INFINITY;
+      if (leftPriority !== rightPriority) return leftPriority - rightPriority;
+      return left.index - right.index;
+    })
+    .map((item) => item.field);
 }
 
 function PermissionsPolicySummary() {
@@ -225,13 +258,22 @@ export default function ConfigPage() {
       .catch(() => {});
   }, []);
 
+  /* ---- Categories ---- */
+  const categories = useMemo(
+    () => categoriesFromSchema(schema, categoryOrder),
+    [schema, categoryOrder],
+  );
+
   // Set active category when categories load
   useEffect(() => {
-    if (categoryOrder.length > 0 && !activeCategory) {
-      const timer = window.setTimeout(() => setActiveCategory(categoryOrder[0]), 0);
+    if (
+      categories.length > 0 &&
+      (!activeCategory || !categories.includes(activeCategory))
+    ) {
+      const timer = window.setTimeout(() => setActiveCategory(categories[0]), 0);
       return () => window.clearTimeout(timer);
     }
-  }, [categoryOrder, activeCategory]);
+  }, [categories, activeCategory]);
 
   // Load YAML when switching to YAML mode
   useEffect(() => {
@@ -259,14 +301,12 @@ export default function ConfigPage() {
     };
   }, [showToast, t.config.failedToLoadRaw, yamlMode]);
 
-  /* ---- Categories ---- */
-  const categories = categoriesFromSchema(schema, categoryOrder);
-
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {
     if (!schema) return {};
     const counts: Record<string, number> = {};
-    for (const s of Object.values(schema)) {
+    for (const [key, s] of Object.entries(schema)) {
+      if (isRedouHiddenConfigField(key, s)) continue;
       const cat = String(s.category ?? "general");
       counts[cat] = (counts[cat] || 0) + 1;
     }
@@ -280,6 +320,7 @@ export default function ConfigPage() {
   const searchMatchedFields = useMemo(() => {
     if (!isSearching || !schema) return [];
     return Object.entries(schema).filter(([key, s]) => {
+      if (isRedouHiddenConfigField(key, s)) return false;
       const label = key.split(".").pop() ?? key;
       const humanLabel = label.replace(/_/g, " ");
       return (
@@ -290,6 +331,15 @@ export default function ConfigPage() {
           .includes(lowerSearch) ||
         String(s.description ?? "")
           .toLowerCase()
+          .includes(lowerSearch) ||
+        String(s.description_zh ?? "")
+          .toLowerCase()
+          .includes(lowerSearch) ||
+        String(s.label ?? "")
+          .toLowerCase()
+          .includes(lowerSearch) ||
+        String(s.label_zh ?? "")
+          .toLowerCase()
           .includes(lowerSearch)
       );
     });
@@ -298,9 +348,12 @@ export default function ConfigPage() {
   /* ---- Active tab fields ---- */
   const activeFields = useMemo(() => {
     if (!schema || isSearching) return [];
-    return Object.entries(schema).filter(
-      ([, s]) => String(s.category ?? "general") === activeCategory,
+    const fields = Object.entries(schema).filter(
+      ([key, s]) =>
+        !isRedouHiddenConfigField(key, s) &&
+        String(s.category ?? "general") === activeCategory,
     );
+    return orderConfigFields(fields, activeCategory);
   }, [schema, activeCategory, isSearching]);
 
   /* ---- Handlers ---- */

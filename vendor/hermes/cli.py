@@ -325,7 +325,7 @@ def load_cli_config() -> Dict[str, Any]:
             "threshold": 0.50,    # Compress at 50% of model's context limit
         },
         "agent": {
-            "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
+            "max_turns": 200,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
@@ -2262,7 +2262,7 @@ class HermesCLI:
             provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
-            max_turns: Maximum tool-calling iterations shared with subagents (default: 90)
+            max_turns: Maximum tool-calling iterations shared with subagents (default: 200)
             verbose: Enable verbose logging
             compact: Use compact display mode
             resume: Session ID to resume (restores conversation history from SQLite)
@@ -2397,9 +2397,9 @@ class HermesCLI:
             try:
                 self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS", ""))
             except (TypeError, ValueError):
-                self.max_turns = 90
+                self.max_turns = 200
         else:
-            self.max_turns = 90
+            self.max_turns = 200
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets
@@ -7757,7 +7757,7 @@ class HermesCLI:
         """
         try:
             from hermes_cli.goals import GoalManager
-            from hermes_cli.config import load_config
+            from hermes_cli.config import DEFAULT_GOAL_MAX_TURNS, load_config, normalize_goal_max_turns
         except Exception as exc:
             logging.debug("goal manager unavailable: %s", exc)
             return None
@@ -7773,9 +7773,12 @@ class HermesCLI:
         try:
             cfg = load_config() or {}
             goals_cfg = cfg.get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            max_turns = normalize_goal_max_turns(
+                goals_cfg.get("max_turns"),
+                DEFAULT_GOAL_MAX_TURNS,
+            )
         except Exception:
-            max_turns = 20
+            max_turns = DEFAULT_GOAL_MAX_TURNS
 
         mgr = GoalManager(session_id=sid, default_max_turns=max_turns)
         self._goal_manager = mgr

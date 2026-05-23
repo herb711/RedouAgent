@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -u
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVICE="${DOCKER_SERVICE:-agent-lab}"
@@ -40,6 +40,10 @@ phase_files() {
 phase_compose_service() {
   cd "$SCRIPT_DIR" || return 1
   docker compose config -q
+  docker compose config > /tmp/task1_compose_config.yml
+  grep -Eq "^[[:space:]]+$SERVICE:" /tmp/task1_compose_config.yml
+  grep -Eq "container_name:[[:space:]]+$SERVICE" /tmp/task1_compose_config.yml
+  grep -Eq "target:[[:space:]]*$DOCKER_WORKSPACE|:[[:space:]]*$DOCKER_WORKSPACE" /tmp/task1_compose_config.yml
   docker compose ps "$SERVICE" >/dev/null
 }
 
@@ -70,6 +74,8 @@ phase_docs() {
   cd "$SCRIPT_DIR" || return 1
   test -s README.md
   test -s ENV_REPORT.md
+  test "$(wc -c < README.md)" -ge 400
+  test "$(wc -c < ENV_REPORT.md)" -ge 600
   grep -q "docker compose up -d --build" README.md
   grep -qi "workspace" ENV_REPORT.md
   grep -qi "env_check" ENV_REPORT.md

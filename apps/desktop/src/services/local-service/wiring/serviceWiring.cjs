@@ -104,6 +104,7 @@ function wireLocalService({ app, projectRoot, hermesRoot, hermesHome, log }) {
       repos: this.db.repositories,
       paths: {
         hermesHome: () => this.hermesHome,
+        redouLogPath: () => path.join(this.app.getPath("userData"), "logs", "desktop-main.log"),
       },
       helpers: {
         findProjectAndTask: (projectId, taskId) => this.findProjectAndTask(projectId, taskId),

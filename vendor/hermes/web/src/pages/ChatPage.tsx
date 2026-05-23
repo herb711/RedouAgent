@@ -19,6 +19,7 @@ import {
   Play,
   Send,
   Square,
+  Target,
   Upload,
   X,
 } from "lucide-react";
@@ -143,6 +144,11 @@ const CHAT_COPY = {
       guideTitle: "插入到当前运行中的后续步骤",
       queued: (count: number) => `${count} 条排队中`,
     },
+    goalMode: {
+      label: "持续目标模式",
+      title: "使用 Hermes goal 模式：每轮结束检查目标，未完成则继续，直到完成或达到最大续跑轮数",
+      disabledTitle: "先计划模式不会激活持续目标模式",
+    },
     queuedInput: {
       title: "已排队",
       detail: "当前运行完成后发送",
@@ -266,6 +272,11 @@ const CHAT_COPY = {
       queueTitle: "Run after the current task turn finishes",
       guideTitle: "Steer the active run on its next step",
       queued: (count: number) => `${count} queued`,
+    },
+    goalMode: {
+      label: "Goal mode",
+      title: "Use Hermes goal mode: after each turn Hermes checks the objective and continues until done or the turn budget is exhausted",
+      disabledTitle: "Plan-first turns do not activate persistent goal mode",
     },
     queuedInput: {
       title: "Queued",
@@ -1253,6 +1264,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [runState, setRunState] = useState<RunState>("idle");
   const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>("queue");
   const [runMode, setRunMode] = useState<RunMode>("execute");
+  const [goalMode, setGoalMode] = useState(false);
   const [dismissedPlanReviewIds, setDismissedPlanReviewIds] = useState<Set<string>>(() => new Set());
   const [queuedCount, setQueuedCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -1600,6 +1612,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   }, [deliveryMode, runMode]);
 
   useEffect(() => {
+    if (runMode === "plan" && goalMode) {
+      const timer = window.setTimeout(() => setGoalMode(false), 0);
+      return () => window.clearTimeout(timer);
+    }
+  }, [goalMode, runMode]);
+
+  useEffect(() => {
     const unsubscribe = redouApi.onAgentEvent((payload) => {
       if (!isCurrentSelection(payload.projectId, payload.taskId)) return;
       const { event } = payload;
@@ -1825,6 +1844,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       return;
     }
     const requestedRunMode = runMode;
+    const requestedGoalMode = requestedRunMode === "execute" && goalMode;
     const effectiveDeliveryMode: DeliveryMode = requestedRunMode === "plan"
       ? "queue"
       : busy
@@ -1864,6 +1884,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         userInput,
         deliveryMode: effectiveDeliveryMode,
         runMode: requestedRunMode,
+        goalMode: requestedGoalMode,
         attachments,
         riskConfirmed: options.riskConfirmed === true,
         runtimeApprovalEnabled: permissions.runtime_approval_enabled !== false,
@@ -1896,7 +1917,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setRunState("error");
       setMessages((current) => appendAgentEvent(current, event));
     }
-  }, [appendQueuedInput, copy.selectProjectTaskBeforeSending, deliveryMode, draft, pendingAttachments, permissions, runMode, runState, selectedProjectId, selectedTaskId]);
+  }, [appendQueuedInput, copy.selectProjectTaskBeforeSending, deliveryMode, draft, goalMode, pendingAttachments, permissions, runMode, runState, selectedProjectId, selectedTaskId]);
 
   const executePlan = useCallback(async (plan: PlanReview) => {
     if (!selectedProjectId || !selectedTaskId) {
@@ -2202,6 +2223,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : null;
   const modeCopy = copy.mode;
   const runModeCopy = copy.runMode;
+  const goalModeCopy = copy.goalMode;
+  const goalModeDisabled = runMode === "plan";
   const sendDisabled = (!draft.trim() && pendingAttachments.length === 0) || inputDisabled;
   const sendTitle = draft.trim() ? copy.send.message : attachmentSendText(pendingAttachments, copy);
 
@@ -2455,6 +2478,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                       );
                     })}
                   </div>
+                  <button
+                    type="button"
+                    title={goalModeDisabled ? goalModeCopy.disabledTitle : goalModeCopy.title}
+                    aria-pressed={goalMode}
+                    disabled={goalModeDisabled}
+                    onClick={() => setGoalMode((value) => !value)}
+                    className={cn(
+                      "inline-flex h-8 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+                      goalMode
+                        ? "bg-midground text-background-base"
+                        : "bg-background/35 text-muted-foreground hover:bg-card/60 hover:text-midground",
+                    )}
+                  >
+                    <Target className="h-3.5 w-3.5 shrink-0" />
+                    <span>{goalModeCopy.label}</span>
+                  </button>
                 </div>
                 {queuedCount > 0 && (
                   <span className="inline-flex h-7 items-center rounded-md border border-warning/35 bg-warning/5 px-2 text-xs text-warning">

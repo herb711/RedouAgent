@@ -450,6 +450,27 @@ test("desktop log viewer reads local Hermes logs with filters", () => {
   assert.throws(() => service.getLogs({ file: "not-a-log" }), /Unknown log file/);
 });
 
+test("desktop log viewer reads Redou desktop log", () => {
+  const { service, root } = makeService();
+  const redouLogsDir = path.join(root, "userData", "logs");
+  fs.mkdirSync(redouLogsDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(redouLogsDir, "desktop-main.log"),
+    [
+      "2026-05-17T10:00:00.000Z Redou Agent boot",
+      "2026-05-17T10:00:01.000Z Opening local Renderer UI",
+      "2026-05-17T10:00:02.000Z Renderer ready",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const redou = service.getLogs({ file: "redou", lines: 2 });
+  assert.deepEqual(redou.lines, [
+    "2026-05-17T10:00:01.000Z Opening local Renderer UI",
+    "2026-05-17T10:00:02.000Z Renderer ready",
+  ]);
+});
+
 test("run_stage events persist as events without entering prompt history", () => {
   const { service, project, task } = makeService();
 

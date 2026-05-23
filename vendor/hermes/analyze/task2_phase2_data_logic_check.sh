@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SERVICE="agent-lab"
-PROJECT="/workspace/projects/agent-task-board"
+SERVICE="${DOCKER_SERVICE:-agent-lab}"
 
 echo "[Phase 2] Checking taskStore.js exported functions and behavior..."
 
@@ -12,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 
 const modulePath = pathToFileURL('/workspace/projects/agent-task-board/src/taskStore.js').href;
 const store = await import(modulePath);
+const doneStatus = '\u5df2\u5b8c\u6210';
 
 const requiredFunctions = [
   'createMainTask',
@@ -50,7 +50,15 @@ if (progress !== 0) {
   throw new Error(\`Initial progress should be 0, got \${progress}\`);
 }
 
-board = store.updateSubTaskStatus(board, main.id, sub1.id, '已完成');
+if (store.calculateMainTaskProgress(undefined) !== 0) {
+  throw new Error('calculateMainTaskProgress(undefined) should return 0');
+}
+
+if (store.calculateMainTaskProgress({ title: 'No subtasks' }) !== 0) {
+  throw new Error('calculateMainTaskProgress should return 0 when subtasks is missing');
+}
+
+board = store.updateSubTaskStatus(board, main.id, sub1.id, doneStatus);
 progress = store.calculateMainTaskProgress(board[0]);
 if (progress !== 50) {
   throw new Error(\`Progress after one completed subtask should be 50, got \${progress}\`);
@@ -71,6 +79,11 @@ const text = store.serializeBoard(board);
 const restored = store.deserializeBoard(text);
 if (!Array.isArray(restored) || restored.length !== 1 || restored[0].title !== 'Build Agent Board') {
   throw new Error('serializeBoard or deserializeBoard failed');
+}
+
+const invalidRestored = store.deserializeBoard('{not json');
+if (!Array.isArray(invalidRestored)) {
+  throw new Error('deserializeBoard should return an array for invalid JSON');
 }
 
 board = store.deleteMainTask(restored, main.id);

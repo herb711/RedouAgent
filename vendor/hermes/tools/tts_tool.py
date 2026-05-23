@@ -160,6 +160,73 @@ def _get_default_output_dir() -> str:
 
 DEFAULT_OUTPUT_DIR = _get_default_output_dir()
 
+def _try_mcp_text_to_audio_fallback(text: str, output_path: str) -> Optional[str]:
+    """Try registered MCP text_to_audio tools after the built-in TTS path fails."""
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+        from tools.registry import registry
+
+        discover_mcp_tools()
+        tool_names = [
+            name
+            for name in registry.get_all_tool_names()
+            if name.startswith("mcp_") and name.endswith("_text_to_audio")
+        ]
+    except Exception as exc:
+        logger.debug("MCP TTS fallback discovery failed: %s", exc)
+        return None
+
+    if not tool_names:
+        return None
+
+    errors = []
+    for tool_name in tool_names:
+        entry = registry.get_entry(tool_name)
+        if entry is None:
+            continue
+        try:
+            result_text = entry.handler({
+                "text": text,
+                "outputFile": output_path,
+                "format": Path(output_path).suffix.lstrip(".") or "mp3",
+            })
+            try:
+                parsed = json.loads(result_text)
+            except Exception:
+                parsed = {"result": result_text}
+            if isinstance(parsed, dict) and parsed.get("error"):
+                errors.append({"tool": tool_name, "error": str(parsed.get("error"))})
+                continue
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+                file_str = str(output_path)
+                return json.dumps({
+                    "success": True,
+                    "file_path": file_str,
+                    "media_tag": f"MEDIA:{file_str}",
+                    "provider": tool_name,
+                    "voice_compatible": False,
+                    "mcp_fallback": {
+                        "tool": tool_name,
+                        "prior_errors": errors,
+                    },
+                }, ensure_ascii=False)
+            errors.append({
+                "tool": tool_name,
+                "error": str(parsed.get("result") if isinstance(parsed, dict) else parsed),
+            })
+        except Exception as exc:
+            errors.append({"tool": tool_name, "error": f"{type(exc).__name__}: {exc}"})
+
+    if errors:
+        logger.warning("MCP TTS fallback failed: %s", errors)
+        return json.dumps({
+            "success": False,
+            "error": "MCP TTS fallback failed: "
+                     + "; ".join(f"{item['tool']}: {item['error']}" for item in errors),
+            "mcp_errors": errors,
+        }, ensure_ascii=False)
+    return None
+
 # ---------------------------------------------------------------------------
 # Per-provider input-character limits (from official provider docs).
 # A single global cap was wrong: OpenAI is 4096, xAI is 15k, MiniMax is 10k,
@@ -1705,6 +1772,9 @@ def text_to_speech_tool(
             try:
                 _import_piper()
             except ImportError:
+                mcp_fallback = _try_mcp_text_to_audio_fallback(text, file_str)
+                if mcp_fallback:
+                    return mcp_fallback
                 return json.dumps({
                     "success": False,
                     "error": "Piper provider selected but 'piper-tts' package not installed. "
@@ -1745,6 +1815,9 @@ def text_to_speech_tool(
 
         # Check the file was actually created
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
+            mcp_fallback = _try_mcp_text_to_audio_fallback(text, file_str)
+            if mcp_fallback:
+                return mcp_fallback
             return json.dumps({
                 "success": False,
                 "error": f"TTS generation produced no output (provider: {provider})"
@@ -1791,16 +1864,25 @@ def text_to_speech_tool(
         # Configuration errors (missing API keys, etc.)
         error_msg = f"TTS configuration error ({provider}): {e}"
         logger.error("%s", error_msg)
+        mcp_fallback = _try_mcp_text_to_audio_fallback(text, file_str)
+        if mcp_fallback:
+            return mcp_fallback
         return tool_error(error_msg, success=False)
     except FileNotFoundError as e:
         # Missing dependencies or files
         error_msg = f"TTS dependency missing ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
+        mcp_fallback = _try_mcp_text_to_audio_fallback(text, file_str)
+        if mcp_fallback:
+            return mcp_fallback
         return tool_error(error_msg, success=False)
     except Exception as e:
         # Unexpected errors
         error_msg = f"TTS generation failed ({provider}): {e}"
         logger.error("%s", error_msg, exc_info=True)
+        mcp_fallback = _try_mcp_text_to_audio_fallback(text, file_str)
+        if mcp_fallback:
+            return mcp_fallback
         return tool_error(error_msg, success=False)
 
 

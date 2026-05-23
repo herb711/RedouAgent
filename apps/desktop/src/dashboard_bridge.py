@@ -35,6 +35,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from hermes_cli.config import (  # noqa: E402
     DEFAULT_CONFIG,
     get_config_path,
+    get_env_value,
     load_config,
     load_env,
     save_config,
@@ -102,6 +103,26 @@ SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "options": ["zh", "en"],
         "description": "CLI and gateway UI language.",
         "category": "display",
+    },
+    "agent.max_turns": {
+        "type": "number",
+        "min": 1,
+        "max": 10000,
+        "label": "Per-turn max iterations",
+        "label_zh": "单轮最大迭代次数",
+        "description": "Controls how many model-tool loops the Agent may run in one request or one Goal continuation round. Very high values may make tasks run for a long time and consume more tokens.",
+        "description_zh": "控制 Agent 在一次请求或一次 Goal 续跑轮中，最多进行多少次模型-工具循环。数值过大可能导致任务长时间运行和较高 token 消耗。",
+        "category": "agent",
+    },
+    "goals.max_turns": {
+        "type": "number",
+        "min": 1,
+        "max": 500,
+        "label": "Goal max continuation rounds",
+        "label_zh": "Goal 最大续跑轮数",
+        "description": "Goal is the continuous objective mode. When enabled, the Agent checks after each round whether the goal is complete; if not, it continues until completion, pause, or this continuation-round limit. Each round is still bounded by the per-turn max iterations.",
+        "description_zh": "Goal 即持续目标模式。开启后，Agent 会在每轮结束后检查目标是否完成；未完成则自动继续，直到完成、暂停或达到最大续跑轮数。每一轮内部仍受“单轮最大迭代次数”限制。",
+        "category": "agent",
     },
     "permissions.mode": {
         "category": "security",
@@ -2378,6 +2399,217 @@ def _rescan_dashboard_plugins() -> Dict[str, Any]:
     return {"ok": True, "count": 0}
 
 
+MINIMAX_MCP_NAME = "minimax"
+MINIMAX_MCP_PACKAGE_JS = "minimax-mcp-js"
+MINIMAX_MCP_DEFAULT_API_HOST = "https://api.minimaxi.com"
+MINIMAX_MCP_ENV_KEY = "MINIMAX_API_KEY"
+MINIMAX_MCP_CN_ENV_KEY = "MINIMAX_CN_API_KEY"
+
+
+def _mcp_base_output_dir(name: str = MINIMAX_MCP_NAME) -> Path:
+    path = get_hermes_home() / "mcp-outputs" / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _present_env_values(keys: Iterable[str]) -> Dict[str, str]:
+    env: Dict[str, str] = {}
+    for key in keys:
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    return env
+
+
+def _minimax_mcp_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+    api_host = _clean_setup_string(
+        payload.get("apiHost") or payload.get("api_host") or MINIMAX_MCP_DEFAULT_API_HOST
+    ).rstrip("/") or MINIMAX_MCP_DEFAULT_API_HOST
+    resource_mode = _clean_setup_string(
+        payload.get("resourceMode") or payload.get("resource_mode") or "local"
+    ).lower()
+    if resource_mode not in {"local", "url"}:
+        resource_mode = "local"
+    base_path = _clean_setup_string(payload.get("basePath") or payload.get("base_path"))
+    output_dir = Path(base_path).expanduser() if base_path else _mcp_base_output_dir(MINIMAX_MCP_NAME)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    api_key_ref = f"${{{MINIMAX_MCP_ENV_KEY}}}"
+    if not get_env_value(MINIMAX_MCP_ENV_KEY) and get_env_value(MINIMAX_MCP_CN_ENV_KEY):
+        api_key_ref = f"${{{MINIMAX_MCP_CN_ENV_KEY}}}"
+    env = {
+        **_present_env_values(
+            [
+                "APPDATA",
+                "LOCALAPPDATA",
+                "TEMP",
+                "TMP",
+                "SystemRoot",
+                "ComSpec",
+            ]
+        ),
+        MINIMAX_MCP_ENV_KEY: api_key_ref,
+        "MINIMAX_MCP_BASE_PATH": str(output_dir),
+        "MINIMAX_API_HOST": api_host,
+        "MINIMAX_RESOURCE_MODE": resource_mode,
+        "MINIMAX_API_RESOURCE_MODE": resource_mode,
+    }
+    return {
+        "command": "npx",
+        "args": ["-y", MINIMAX_MCP_PACKAGE_JS],
+        "env": env,
+        "timeout": 180,
+        "connect_timeout": 120,
+        "enabled": bool(payload.get("enable", True)),
+        "redou": {
+            "preset": "minimax",
+            "package": MINIMAX_MCP_PACKAGE_JS,
+            "docs": "https://platform.minimaxi.com/docs/guides/mcp-guide",
+            "installed_by": "redou",
+        },
+    }
+
+
+def _mask_secret(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    if text.startswith("${") and text.endswith("}"):
+        return text
+    if len(text) <= 8:
+        return "***"
+    return f"{text[:4]}***{text[-4:]}"
+
+
+def _mcp_row(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
+    env = cfg.get("env") if isinstance(cfg.get("env"), dict) else {}
+    if "url" in cfg:
+        transport = str(cfg.get("transport") or "http")
+    else:
+        transport = "stdio"
+    redou = cfg.get("redou") if isinstance(cfg.get("redou"), dict) else {}
+    env_keys = sorted(str(key) for key in env.keys())
+    missing_env: List[str] = []
+    for key, value in env.items():
+        if isinstance(value, str):
+            refs = re.findall(r"\$\{([^}]+)\}", value)
+            missing_env.extend(ref for ref in refs if not get_env_value(ref))
+    missing_env = list(dict.fromkeys(missing_env))
+    return {
+        "name": name,
+        "enabled": cfg.get("enabled", True) is not False,
+        "transport": transport,
+        "command": str(cfg.get("command") or ""),
+        "args": [str(item) for item in (cfg.get("args") or [])],
+        "url": str(cfg.get("url") or ""),
+        "env_keys": env_keys,
+        "env": {str(key): _mask_secret(value) for key, value in env.items()},
+        "missing_env": missing_env,
+        "preset": str(redou.get("preset") or ""),
+        "package": str(redou.get("package") or ""),
+        "docs": str(redou.get("docs") or ""),
+    }
+
+
+def _mcp_hub() -> Dict[str, Any]:
+    config = load_config()
+    servers = config.get("mcp_servers") if isinstance(config.get("mcp_servers"), dict) else {}
+    rows = [_mcp_row(str(name), cfg) for name, cfg in servers.items() if isinstance(cfg, dict)]
+    has_minimax_key = bool(get_env_value(MINIMAX_MCP_ENV_KEY) or get_env_value(MINIMAX_MCP_CN_ENV_KEY))
+    return {
+        "servers": rows,
+        "presets": {
+            "minimax": {
+                "name": MINIMAX_MCP_NAME,
+                "label": "MiniMax MCP",
+                "description": "Text-to-speech, video, image and voice tools from MiniMax.",
+                "docs": "https://platform.minimaxi.com/docs/guides/mcp-guide",
+                "package": MINIMAX_MCP_PACKAGE_JS,
+                "api_key_env": MINIMAX_MCP_ENV_KEY,
+                "has_api_key": has_minimax_key,
+                "default_api_host": MINIMAX_MCP_DEFAULT_API_HOST,
+                "default_resource_mode": "local",
+                "default_output_dir": str(_mcp_base_output_dir(MINIMAX_MCP_NAME)),
+            }
+        },
+    }
+
+
+def _save_mcp_config(name: str, server_config: Dict[str, Any], *, force: bool = False) -> None:
+    config = load_config()
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        servers = {}
+        config["mcp_servers"] = servers
+    if name in servers and not force:
+        raise ValueError(f"MCP server '{name}' already exists. Enable force reinstall to overwrite it.")
+    servers[name] = server_config
+    save_config(config)
+
+
+def _install_mcp_server(payload: Dict[str, Any]) -> Dict[str, Any]:
+    preset = _clean_setup_string(payload.get("preset") or "minimax").lower()
+    if preset != "minimax":
+        raise ValueError(f"Unsupported MCP preset: {preset}")
+    name = _clean_setup_string(payload.get("name") or MINIMAX_MCP_NAME) or MINIMAX_MCP_NAME
+    if not re.match(r"^[A-Za-z0-9._-]+$", name):
+        raise ValueError("MCP server name may only contain letters, numbers, '.', '_' and '-'.")
+
+    api_key = _clean_setup_string(payload.get("apiKey") or payload.get("api_key"))
+    if api_key:
+        save_env_value(MINIMAX_MCP_ENV_KEY, api_key)
+
+    server_config = _minimax_mcp_config(payload)
+    _save_mcp_config(name, server_config, force=bool(payload.get("force")))
+    row = _mcp_row(name, server_config)
+    return {
+        "ok": True,
+        "name": name,
+        "enabled": row["enabled"],
+        "server": row,
+        "missing_env": row["missing_env"],
+    }
+
+
+def _remove_mcp_server(payload: Dict[str, Any]) -> Dict[str, Any]:
+    name = _clean_setup_string(payload.get("name") or "")
+    if not name:
+        raise ValueError("MCP server name required")
+    config = load_config()
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict) or name not in servers:
+        raise ValueError(f"MCP server '{name}' is not configured")
+    del servers[name]
+    if not servers:
+        config.pop("mcp_servers", None)
+    save_config(config)
+    return {"ok": True, "name": name}
+
+
+def _test_mcp_server(payload: Dict[str, Any]) -> Dict[str, Any]:
+    name = _clean_setup_string(payload.get("name") or MINIMAX_MCP_NAME) or MINIMAX_MCP_NAME
+    config = load_config()
+    servers = config.get("mcp_servers") if isinstance(config.get("mcp_servers"), dict) else {}
+    cfg = servers.get(name)
+    if not isinstance(cfg, dict):
+        raise ValueError(f"MCP server '{name}' is not configured")
+    try:
+        from hermes_cli.mcp_config import _probe_single_server
+        from tools.mcp_tool import _interpolate_env_vars
+
+        tools = _probe_single_server(
+            name,
+            _interpolate_env_vars(copy.deepcopy(cfg)),
+            connect_timeout=float(cfg.get("connect_timeout") or 120),
+        )
+    except Exception as exc:
+        return {"ok": False, "name": name, "error": str(exc), "tools": []}
+    return {
+        "ok": True,
+        "name": name,
+        "tools": [{"name": tool_name, "description": desc} for tool_name, desc in tools],
+    }
+
+
 def _validate_plugin_name(name: Any) -> str:
     text = str(name or "").strip()
     if not text or "/" in text or "\\" in text or ".." in text:
@@ -2636,6 +2868,14 @@ def handle(action: str, payload: Dict[str, Any]) -> Any:
         return _rescan_dashboard_plugins()
     if action == "get_plugins_hub":
         return _plugins_hub()
+    if action == "get_mcp_hub":
+        return _mcp_hub()
+    if action == "install_mcp_server":
+        return _install_mcp_server(payload)
+    if action == "remove_mcp_server":
+        return _remove_mcp_server(payload)
+    if action == "test_mcp_server":
+        return _test_mcp_server(payload)
     if action == "install_agent_plugin":
         return _install_agent_plugin(payload)
     if action == "set_agent_plugin_enabled":

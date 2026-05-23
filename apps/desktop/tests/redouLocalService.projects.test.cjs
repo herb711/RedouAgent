@@ -136,6 +136,54 @@ test("project artifacts and packaged skills stay under the project .redou direct
   assert.equal(fs.existsSync(path.join(service.appDataRoot(), "projects", project.id, "tasks")), false);
 });
 
+test("managed project profile carries root agent and goal turn budgets", () => {
+  const { root, service } = makeService();
+  fs.mkdirSync(service.hermesHome, { recursive: true });
+  fs.writeFileSync(
+    path.join(service.hermesHome, "config.yaml"),
+    [
+      "model:",
+      "  provider: auto",
+      "  model: ''",
+      "agent:",
+      "  max_turns: 333",
+      "goals:",
+      "  max_turns: 44",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspace = path.join(root, "workspace-budgets");
+  fs.mkdirSync(workspace, { recursive: true });
+  const { project } = service.createChatProject({ name: "Budget Project", path: workspace });
+
+  const text = fs.readFileSync(path.join(project.hermesHomePath, "config.yaml"), "utf8");
+  assert.match(text, /^agent:\n  max_turns: 333/m);
+  assert.match(text, /^goals:\n  max_turns: 44/m);
+});
+
+test("project workspace path is fixed after project creation", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  const otherWorkspace = path.join(root, "other-workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  fs.mkdirSync(otherWorkspace, { recursive: true });
+  const { project } = service.createChatProject({ name: "Fixed Path Project", path: workspace });
+
+  const renamed = service.updateChatProject(project.id, { name: "Renamed Path Project" }).project;
+  assert.equal(renamed.name, "Renamed Path Project");
+  assert.equal(renamed.path, workspace);
+
+  assert.throws(
+    () => service.updateChatProject(project.id, { workspace_path: otherWorkspace }),
+    /workspace path is fixed/i,
+  );
+
+  const persisted = service.readProject(project.id);
+  assert.equal(persisted.path, workspace);
+  assert.equal(persisted.workspace_path, workspace);
+});
+
 test("new tasks inherit the current task model selection", () => {
   const { service } = makeService();
   const { project } = service.createChatProject({ name: "Model Project" });

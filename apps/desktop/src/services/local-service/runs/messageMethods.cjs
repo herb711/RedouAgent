@@ -22,6 +22,7 @@ class MessageMethods {
     const activeRun = this.activeRunForTask(projectId, taskId);
     const deliveryMode = normalizeDeliveryMode(input.deliveryMode, activeRun ? "queue" : "new_turn");
     const runMode = normalizeRunMode(input.runMode, "execute");
+    const goalMode = input.goalMode === true && runMode === "execute";
     const riskConfirmed = input.riskConfirmed === true;
 
     if (activeRun && deliveryMode === "interrupt_replace") {
@@ -83,6 +84,7 @@ class MessageMethods {
       this.appendTaskMessage(projectId, taskId, "event", `Guidance for active run: ${redact(userInput)}`, {
         riskConfirmed,
         runMode,
+        goalMode,
         eventType: "control_event",
         controlEvent: true,
         controlEventType: "guide",
@@ -97,6 +99,7 @@ class MessageMethods {
           text: userInput,
           guideId,
           riskConfirmed,
+          goalMode,
         });
         this.updateUserInputEnvelopeStatus(projectId, taskId, envelope.id, {
           ...envelope,
@@ -163,6 +166,7 @@ class MessageMethods {
         deliveryMode: "queue",
         requestedDeliveryMode: deliveryMode,
         runMode,
+        goalMode,
         queueId,
         queuedAt,
         inputEnvelope: envelope,

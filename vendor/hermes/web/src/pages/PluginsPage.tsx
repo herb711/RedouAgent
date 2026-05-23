@@ -3,7 +3,7 @@ import { ExternalLink, RefreshCw, Puzzle, Trash2, Eye, EyeOff } from "lucide-rea
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router-dom";
 import { redouApi } from "@/lib/api";
-import type { HubAgentPluginRow, PluginsHubResponse } from "@/lib/api";
+import type { HubAgentPluginRow, McpHubResponse, McpTestResponse, PluginsHubResponse } from "@/lib/api";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -25,11 +25,19 @@ const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
 
 export default function PluginsPage() {
   const [hub, setHub] = useState<PluginsHubResponse | null>(null);
+  const [mcpHub, setMcpHub] = useState<McpHubResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [installId, setInstallId] = useState("");
   const [installForce, setInstallForce] = useState(false);
   const [installEnable, setInstallEnable] = useState(true);
   const [installBusy, setInstallBusy] = useState(false);
+  const [mcpApiKey, setMcpApiKey] = useState("");
+  const [mcpApiHost, setMcpApiHost] = useState("");
+  const [mcpResourceMode, setMcpResourceMode] = useState<"local" | "url">("local");
+  const [mcpForce, setMcpForce] = useState(false);
+  const [mcpEnable, setMcpEnable] = useState(true);
+  const [mcpBusy, setMcpBusy] = useState<"install" | "test" | "remove" | null>(null);
+  const [mcpTest, setMcpTest] = useState<McpTestResponse | null>(null);
   const [rescanBusy, setRescanBusy] = useState(false);
   const [memorySel, setMemorySel] = useState(MEMORY_PROVIDER_BUILTIN);
   const [contextSel, setContextSel] = useState("compressor");
@@ -41,10 +49,15 @@ export default function PluginsPage() {
   const { setEnd } = usePageHeader();
 
   const loadHub = useCallback(() => {
-    return redouApi
-      .getPluginsHub()
-      .then((h) => {
+    return Promise.all([redouApi.getPluginsHub(), redouApi.getMcpHub()])
+      .then(([h, mcp]) => {
         setHub(h);
+        setMcpHub(mcp);
+        const preset = mcp.presets.minimax;
+        if (preset) {
+          setMcpApiHost((current) => current || preset.default_api_host);
+          setMcpResourceMode((current) => current || "local");
+        }
         const p = h.providers;
         setMemorySel(p.memory_provider ? p.memory_provider : MEMORY_PROVIDER_BUILTIN);
         setContextSel(p.context_engine || "compressor");
@@ -155,6 +168,68 @@ export default function PluginsPage() {
 
   const rows = hub?.plugins ?? [];
   const providers = hub?.providers;
+  const minimaxPreset = mcpHub?.presets.minimax;
+  const minimaxServer = mcpHub?.servers.find((server) => server.name === "minimax");
+
+  const onInstallMinimaxMcp = async () => {
+    setMcpBusy("install");
+    setMcpTest(null);
+    try {
+      const result = await redouApi.installMcpServer({
+        preset: "minimax",
+        name: "minimax",
+        apiKey: mcpApiKey.trim(),
+        apiHost: mcpApiHost.trim() || minimaxPreset?.default_api_host,
+        resourceMode: mcpResourceMode,
+        force: mcpForce,
+        enable: mcpEnable,
+      });
+      showToast(`${result.name} MCP installed`, "success");
+      if ((result.missing_env?.length ?? 0) > 0) {
+        showToast(`Missing env: ${result.missing_env!.join(", ")}`, "error");
+      }
+      setMcpApiKey("");
+      await loadHub();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "MCP install failed", "error");
+    } finally {
+      setMcpBusy(null);
+    }
+  };
+
+  const onTestMinimaxMcp = async () => {
+    setMcpBusy("test");
+    setMcpTest(null);
+    try {
+      const result = await redouApi.testMcpServer("minimax");
+      setMcpTest(result);
+      showToast(
+        result.ok ? `MCP tools discovered: ${result.tools.length}` : result.error || "MCP test failed",
+        result.ok ? "success" : "error",
+      );
+      await loadHub();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "MCP test failed", "error");
+    } finally {
+      setMcpBusy(null);
+    }
+  };
+
+  const onRemoveMinimaxMcp = async () => {
+    const ok = typeof window !== "undefined" ? window.confirm("Remove MiniMax MCP?") : false;
+    if (!ok) return;
+    setMcpBusy("remove");
+    setMcpTest(null);
+    try {
+      await redouApi.removeMcpServer("minimax");
+      showToast("MiniMax MCP removed", "success");
+      await loadHub();
+    } catch (e) {
+      showToast(e instanceof Error ? e.message : "MCP remove failed", "error");
+    } finally {
+      setMcpBusy(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -294,6 +369,151 @@ export default function PluginsPage() {
             <p className="text-[0.65rem] tracking-[0.06em] text-midforeground/55 normal-case">
               {t.pluginsPage.removeHint}
             </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>MiniMax MCP</CardTitle>
+            <p className="text-[0.7rem] tracking-[0.08em] text-midground/55 normal-case">
+              Install the MiniMax MCP server so Redou tasks can use audio, image, and video tools through Hermes.
+            </p>
+          </CardHeader>
+
+          <CardContent className="flex flex-col gap-4">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid gap-2 min-w-0">
+                <Label htmlFor="minimax-key">MINIMAX_API_KEY</Label>
+                <Input
+                  id="minimax-key"
+                  type="password"
+                  spellCheck={false}
+                  placeholder={minimaxPreset?.has_api_key ? "Already saved" : "sk-..."}
+                  value={mcpApiKey}
+                  onChange={(e) => setMcpApiKey(e.target.value)}
+                />
+              </div>
+
+              <div className="grid gap-2 min-w-0">
+                <Label htmlFor="minimax-host">API host</Label>
+                <Input
+                  id="minimax-host"
+                  spellCheck={false}
+                  value={mcpApiHost}
+                  onChange={(e) => setMcpApiHost(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="grid gap-2 min-w-0">
+                <Label htmlFor="minimax-resource-mode">Resource mode</Label>
+                <Select
+                  id="minimax-resource-mode"
+                  value={mcpResourceMode}
+                  onValueChange={(value) => setMcpResourceMode(value === "url" ? "url" : "local")}
+                >
+                  <SelectOption value="local">local</SelectOption>
+                  <SelectOption value="url">url</SelectOption>
+                </Select>
+              </div>
+
+              <div className="flex items-center gap-3 pt-6">
+                <Switch checked={mcpForce} onCheckedChange={setMcpForce} />
+                <span className="text-[0.7rem] tracking-[0.06em] text-midforeground/85 normal-case">
+                  Force overwrite
+                </span>
+              </div>
+
+              <div className="flex items-center gap-3 pt-6">
+                <Switch checked={mcpEnable} onCheckedChange={setMcpEnable} />
+                <span className="text-[0.7rem] tracking-[0.06em] text-midforeground/85 normal-case">
+                  Enable after install
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                className="gap-2"
+                size="sm"
+                disabled={mcpBusy !== null}
+                onClick={() => void onInstallMinimaxMcp()}
+              >
+                {mcpBusy === "install" ? <Spinner /> : <Puzzle className="h-3.5 w-3.5" />}
+                Install MiniMax MCP
+              </Button>
+
+              <Button
+                ghost
+                className="gap-2"
+                size="sm"
+                disabled={mcpBusy !== null || !minimaxServer}
+                onClick={() => void onTestMinimaxMcp()}
+              >
+                {mcpBusy === "test" ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
+                Test
+              </Button>
+
+              {minimaxServer ? (
+                <Button
+                  destructive
+                  ghost
+                  size="sm"
+                  disabled={mcpBusy !== null}
+                  onClick={() => void onRemoveMinimaxMcp()}
+                >
+                  {mcpBusy === "remove" ? <Spinner /> : <Trash2 className="h-3.5 w-3.5" />}
+                </Button>
+              ) : null}
+
+              {minimaxPreset?.docs ? (
+                <a
+                  className="inline-flex items-center gap-1 text-[0.7rem] text-midforeground/70 underline"
+                  href={minimaxPreset.docs}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  docs
+                </a>
+              ) : null}
+            </div>
+
+            {minimaxServer ? (
+              <div className="flex flex-col gap-2 rounded border border-current/15 p-3 text-[0.68rem] text-midforeground/70 normal-case">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge tone={minimaxServer.enabled ? "success" : "destructive"}>
+                    {minimaxServer.enabled ? "enabled" : "disabled"}
+                  </Badge>
+                  <Badge tone="outline">{minimaxServer.transport}</Badge>
+                  <Badge tone="outline">{minimaxServer.package || "minimax-mcp-js"}</Badge>
+                </div>
+                <p className="break-all">
+                  {minimaxServer.command} {minimaxServer.args.join(" ")}
+                </p>
+                {(minimaxServer.missing_env?.length ?? 0) > 0 ? (
+                  <p className="text-danger">
+                    Missing env: {minimaxServer.missing_env.join(", ")}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
+
+            {mcpTest ? (
+              <div className="flex flex-col gap-2 text-[0.68rem] text-midforeground/70 normal-case">
+                <p>
+                  {mcpTest.ok
+                    ? `Discovered ${mcpTest.tools.length} tools.`
+                    : `Test failed: ${mcpTest.error || "unknown error"}`}
+                </p>
+                {mcpTest.tools.length ? (
+                  <p className="break-words">
+                    {mcpTest.tools.slice(0, 12).map((tool) => tool.name).join(", ")}
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 

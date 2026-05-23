@@ -236,8 +236,12 @@ function optionLabel(value: string, locale: Locale): string {
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
   const { locale } = useI18n();
   const keyPath = schemaKey.includes(".") ? schemaKey : "";
-  const description = schema.description
-    ? fieldDescription(schemaKey, String(schema.description), locale)
+  const rawDescription =
+    locale === "zh" && schema.description_zh
+      ? schema.description_zh
+      : schema.description;
+  const description = rawDescription
+    ? fieldDescription(schemaKey, String(rawDescription), locale)
     : "";
 
   if (!keyPath && !description) return null;
@@ -258,7 +262,13 @@ export function AutoField({
 }: AutoFieldProps) {
   const { locale } = useI18n();
   const rawLabel = schemaKey.split(".").pop() ?? schemaKey;
-  const label = fieldLabel(schemaKey, locale, rawLabel);
+  const configuredLabel =
+    locale === "zh" && schema.label_zh
+      ? String(schema.label_zh)
+      : schema.label
+        ? String(schema.label)
+        : "";
+  const label = configuredLabel || fieldLabel(schemaKey, locale, rawLabel);
   const readonly = schema.readonly === true;
   const listPlaceholder = locale === "zh" ? "逗号分隔的值" : "comma-separated values";
 

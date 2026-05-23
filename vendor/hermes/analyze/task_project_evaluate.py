@@ -143,30 +143,37 @@ def main() -> int:
     log_path.write_text(combined, encoding="utf-8")
 
     metric = float(judge_result.get("metric") or 0.0)
-    test_score = max(0.0, min(metric, 1.0)) * 100.0
+    test_ratio = max(0.0, min(metric, 1.0))
+    test_score = test_ratio * 100.0
+    test_points = test_ratio * 75.0
     report_text = report_path.read_text(encoding="utf-8", errors="replace") if report_path.exists() else ""
+    report_bytes = len(report_text.encode("utf-8")) if report_text else 0
     report_score = 0.0
-    if len(report_text) > 1000:
+    if report_bytes > 1000:
         report_score = 15.0
-    elif len(report_text) > 300:
+    elif report_bytes > 300:
         report_score = 8.0
 
-    print_check(
+    print_phase(
         f"Task{task_num} Working Copy",
+        10,
+        working_copy_score,
         f"run_dir={run_dir}; original_source_unchanged={source_unchanged}",
     )
     print_phase(
         f"Task{task_num} Automated Tests",
-        100,
-        test_score,
+        75,
+        test_points,
         judge_result.get("detail", "tests did not run"),
     )
-    print_check(
+    print_phase(
         f"Task{task_num} Report",
-        f"report={report_path}; bytes={len(report_text.encode('utf-8')) if report_text else 0}",
+        15,
+        report_score,
+        f"report={report_path}; bytes={report_bytes}",
     )
 
-    total = round(test_score, 2)
+    total = round(min(100.0, working_copy_score + test_points + report_score), 2)
     summary = {
         "task_number": task_num,
         "task_id": cfg["id"],
@@ -179,6 +186,10 @@ def main() -> int:
         "original_source_unchanged": source_unchanged,
         "current_passed": bool(judge_result.get("passed")),
         "current_metric": metric,
+        "working_copy_score": round(working_copy_score, 2),
+        "test_score": round(test_score, 2),
+        "test_points": round(test_points, 2),
+        "report_score": round(report_score, 2),
         "current_score": total,
         "max_score": 100,
         "judge_result": {k: v for k, v in judge_result.items() if k != "output"},

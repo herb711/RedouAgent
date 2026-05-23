@@ -124,6 +124,14 @@ class RuntimeDelegateMethods {
 
   getPluginsHub() { return this.pluginService.getPluginsHub(); }
 
+  getMcpHub() { return this.pluginService.getMcpHub(); }
+
+  installMcpServer(body) { return this.pluginService.installMcpServer(body); }
+
+  removeMcpServer(name) { return this.pluginService.removeMcpServer(name); }
+
+  testMcpServer(name) { return this.pluginService.testMcpServer(name); }
+
   installAgentPlugin(body) { return this.pluginService.installAgentPlugin(body); }
 
   enableAgentPlugin(name) { return this.pluginService.enableAgentPlugin(name); }

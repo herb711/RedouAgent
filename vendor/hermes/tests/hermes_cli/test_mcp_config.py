@@ -462,6 +462,26 @@ class TestEnvVarInterpolation:
         result = _interpolate_env_vars("Bearer ${MISSING_VAR}")
         assert result == "Bearer ${MISSING_VAR}"
 
+    def test_interpolate_from_credential_pool(self, monkeypatch):
+        monkeypatch.delenv("POOL_KEY", raising=False)
+        monkeypatch.setattr("hermes_cli.config.get_env_value", lambda key: None)
+        monkeypatch.setattr(
+            "hermes_cli.auth.read_credential_pool",
+            lambda provider_id=None: {
+                "custom": [
+                    {
+                        "label": "POOL_KEY",
+                        "source": "env:POOL_KEY",
+                        "access_token": "pool-secret",
+                    }
+                ]
+            },
+        )
+        from tools.mcp_tool import _interpolate_env_vars
+
+        result = _interpolate_env_vars("Bearer ${POOL_KEY}")
+        assert result == "Bearer pool-secret"
+
     def test_interpolate_nested_dict(self, monkeypatch):
         monkeypatch.setenv("API_KEY", "abc")
         from tools.mcp_tool import _interpolate_env_vars

@@ -122,6 +122,7 @@ class QueueMethods {
         text: userInput,
         guideId,
         riskConfirmed: queuedInput.riskConfirmed === true,
+        goalMode: queuedInput.goalMode === true && runMode === "execute",
       });
     } catch (error) {
       return {
@@ -136,6 +137,7 @@ class QueueMethods {
     this.appendTaskMessage(projectId, taskId, "event", `Guidance for active run: ${redact(userInput)}`, {
       riskConfirmed: queuedInput.riskConfirmed === true,
       runMode,
+      goalMode: queuedInput.goalMode === true && runMode === "execute",
       eventType: "control_event",
       controlEvent: true,
       controlEventType: "guide",

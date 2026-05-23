@@ -647,6 +647,16 @@ ipcMain.handle("redou:language:set", (_event, language) =>
 ipcMain.handle("redou:plugins:manifests", () => getLocalService().getDashboardPlugins());
 ipcMain.handle("redou:plugins:rescan", () => getLocalService().rescanDashboardPlugins());
 ipcMain.handle("redou:plugins:hub", () => getLocalService().getPluginsHub());
+ipcMain.handle("redou:mcp:hub", () => getLocalService().getMcpHub());
+ipcMain.handle("redou:mcp:install", (_event, body) =>
+  getLocalService().installMcpServer(body),
+);
+ipcMain.handle("redou:mcp:remove", (_event, name) =>
+  getLocalService().removeMcpServer(name),
+);
+ipcMain.handle("redou:mcp:test", (_event, name) =>
+  getLocalService().testMcpServer(name),
+);
 ipcMain.handle("redou:plugins:install", (_event, body) =>
   getLocalService().installAgentPlugin(body),
 );

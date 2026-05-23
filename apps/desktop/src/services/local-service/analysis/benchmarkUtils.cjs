@@ -79,6 +79,9 @@ const ANALYSIS_TASKS = [
     capability: "framework",
   },
 ];
+const ANALYSIS_MIGRATED_WORKING_COPY_POINTS = 10;
+const ANALYSIS_MIGRATED_TEST_POINTS = 75;
+const ANALYSIS_MIGRATED_REPORT_POINTS = 15;
 
 function clampScore(value) {
   const n = Number(value || 0);
@@ -229,18 +232,43 @@ function analysisTestPassRatio(summary) {
   return Number.isFinite(metric) ? Math.max(0, Math.min(1, metric)) : 0;
 }
 
+function analysisMigratedTaskNumber(taskId) {
+  const migratedMatch = /^task([5-9])$/.exec(String(taskId || ""));
+  return migratedMatch ? migratedMatch[1] : "";
+}
+
+function analysisMigratedReportPoints(reportText) {
+  const byteLength = Buffer.byteLength(String(reportText || ""), "utf8");
+  if (byteLength > 1000) return ANALYSIS_MIGRATED_REPORT_POINTS;
+  if (byteLength > 300) return 8;
+  return 0;
+}
+
+function analysisMigratedReportScore(reportText) {
+  return (analysisMigratedReportPoints(reportText) / ANALYSIS_MIGRATED_REPORT_POINTS) * 100;
+}
+
+function analysisMigratedWorkingCopyPoints(runDir, runFiles, summary) {
+  if (!runDir || !fs.existsSync(runDir)) return 0;
+  let score = 6;
+  if (Array.isArray(runFiles) && runFiles.length > 0) score += 2;
+  if (summary?.original_source_unchanged === true) score += 2;
+  return Math.min(ANALYSIS_MIGRATED_WORKING_COPY_POINTS, score);
+}
+
 function analysisTaskProcessStatus({
   stopped = false,
   childError = null,
   exitCode = 0,
   modelCallFailed = false,
   postProcessFailed = false,
-  finalAssistantText = "",
+  hasEvaluation = false,
+  evaluationRequired = false,
 } = {}) {
   if (stopped) return "interrupted";
   if (childError || modelCallFailed || postProcessFailed) return "failed";
-  const hasFinalAssistantText = String(finalAssistantText || "").trim().length > 0;
-  if (exitCode != null && exitCode !== 0 && !hasFinalAssistantText) return "failed";
+  if (exitCode != null && exitCode !== 0 && !hasEvaluation) return "failed";
+  if (evaluationRequired && !hasEvaluation) return "failed";
   return "completed";
 }
 
@@ -249,10 +277,13 @@ function normalizeAnalysisTaskStatus(task, { score = 0, sections = [], gradeLogT
   if (status !== "failed") return status;
   const summaryText = `${task?.summary || ""}\n${task?.error || ""}`;
   if (isAnalysisModelCallFailure(summaryText)) return status;
+  const realSections = Array.isArray(sections)
+    ? sections.filter((section) => String(section?.id || "") !== "fixed_evaluator")
+    : [];
   const hasEvaluation =
     Boolean(migratedSummary) ||
     analysisFinalScoreFromLog(gradeLogText) != null ||
-    (Array.isArray(sections) && sections.length > 0) ||
+    realSections.length > 0 ||
     Number(score || 0) > 0;
   return hasEvaluation ? "completed" : status;
 }
@@ -362,23 +393,53 @@ function analysisTaskSectionsFromGradeLog(taskId, logText) {
 }
 
 function analysisLatestMigratedTaskSummary(workspacePath, modelRunName, taskId) {
-  const migratedMatch = /^task([5-9])$/.exec(String(taskId || ""));
-  if (!workspacePath || !modelRunName || !migratedMatch) return null;
-  const taskNumber = migratedMatch[1];
-  const resultsRel = `model_runs/${modelRunName}/results`;
-  for (const index of [3, 2, 1]) {
-    const summary = readRelativeJson(workspacePath, `${resultsRel}/task${taskNumber}_submit_${index}_summary.json`);
-    if (summary) return summary;
+  const taskNumber = analysisMigratedTaskNumber(taskId);
+  if (!workspacePath || !modelRunName || !taskNumber) return null;
+  const resultsDir = joinRelativePath(workspacePath, `model_runs/${modelRunName}/results`);
+  let entries = [];
+  try {
+    entries = fs.readdirSync(resultsDir, { withFileTypes: true });
+  } catch {
+    return null;
   }
-  return null;
+  const candidates = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    const match = entry.name.match(new RegExp(`^task${taskNumber}_submit_(\\d+)_summary\\.json$`));
+    if (!match) continue;
+    const fullPath = path.join(resultsDir, entry.name);
+    const summary = readJson(fullPath);
+    if (!summary) continue;
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(fullPath).mtimeMs;
+    } catch {
+      mtimeMs = 0;
+    }
+    candidates.push({ summary, submitIndex: Number(match[1]), mtimeMs });
+  }
+  candidates.sort((a, b) => (b.mtimeMs - a.mtimeMs) || (b.submitIndex - a.submitIndex));
+  return candidates[0]?.summary || null;
+}
+
+function analysisMigratedTaskScore(taskId, workspacePath, modelRunName, summary) {
+  const taskNumber = analysisMigratedTaskNumber(taskId);
+  if (!workspacePath || !modelRunName || !taskNumber || !summary) return null;
+  const runDir = path.join(workspacePath, "model_runs", modelRunName, `task${taskNumber}`);
+  const runFiles = listFilesRecursive(runDir, 220);
+  const report = readRelativeText(workspacePath, `model_runs/${modelRunName}/results/task${taskNumber}_report.md`);
+  const workingCopyPoints = analysisMigratedWorkingCopyPoints(runDir, runFiles, summary);
+  const testPoints = analysisTestPassRatio(summary) * ANALYSIS_MIGRATED_TEST_POINTS;
+  const reportPoints = analysisMigratedReportPoints(report);
+  return clampScore(workingCopyPoints + testPoints + reportPoints);
 }
 
 function analysisMigratedTaskSectionsFromSummary(taskId, workspacePath, modelRunName, summary) {
-  const migratedMatch = /^task([5-9])$/.exec(String(taskId || ""));
-  if (!workspacePath || !modelRunName || !migratedMatch || !summary) return [];
-  const taskNumber = migratedMatch[1];
+  const taskNumber = analysisMigratedTaskNumber(taskId);
+  if (!workspacePath || !modelRunName || !taskNumber || !summary) return [];
   const runRel = `model_runs/${modelRunName}/task${taskNumber}`;
   const resultsRel = `model_runs/${modelRunName}/results`;
+  const runDir = path.join(workspacePath, "model_runs", modelRunName, `task${taskNumber}`);
   const testRatio = analysisTestPassRatio(summary);
   const testScore = testRatio * 100;
   const testCounts = analysisTestCounts(summary);
@@ -386,14 +447,15 @@ function analysisMigratedTaskSectionsFromSummary(taskId, workspacePath, modelRun
     ? `${testCounts.passedCount}/${testCounts.adjustedTotal} passed`
     : `metric=${testRatio}`;
   const report = readRelativeText(workspacePath, `${resultsRel}/task${taskNumber}_report.md`);
-  const runFiles = listFilesRecursive(path.join(workspacePath, "model_runs", modelRunName, `task${taskNumber}`), 220);
+  const runFiles = listFilesRecursive(runDir, 220);
+  const workingCopyScore = (analysisMigratedWorkingCopyPoints(runDir, runFiles, summary) / ANALYSIS_MIGRATED_WORKING_COPY_POINTS) * 100;
   return [
-    sectionScore("working_copy", "Isolated working copy", runFiles.length > 0 ? 100 : 0, `${runFiles.length} files in ${runRel}`),
+    sectionScore("working_copy", "Isolated working copy", workingCopyScore, `${runFiles.length} files in ${runRel}`),
     sectionScore("automated_tests", "Automated hidden tests", testScore, testEvidence),
     sectionScore("official_submission", "Official evaluator run", 100, "task_project_evaluate.py summary"),
     sectionScore("source_integrity", "Original source untouched", summary?.original_source_unchanged === true ? 100 : 20, "original source checksum"),
     sectionScore("container_execution", "Container-only commands", 100, "task_project_evaluate.py summary"),
-    sectionScore("report", "Delivery report", report.length > 1000 ? 100 : report ? 55 : 0, `task${taskNumber}_report.md`),
+    sectionScore("report", "Delivery report", analysisMigratedReportScore(report), `task${taskNumber}_report.md`),
   ];
 }
 
@@ -632,6 +694,7 @@ module.exports = {
   analysisPhaseScoresFromLog,
   analysisTaskSectionsFromGradeLog,
   analysisLatestMigratedTaskSummary,
+  analysisMigratedTaskScore,
   analysisMigratedTaskSectionsFromSummary,
   countHttpLinks,
   analysisContainerExecPatterns,

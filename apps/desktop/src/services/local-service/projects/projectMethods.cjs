@@ -1,5 +1,6 @@
 const path = require("path");
 const { DEFAULT_CHAT_PROJECT_NAME, DEFAULT_CHAT_TASK_TITLE } = require("../constants.cjs");
+const { ANALYSIS_WORKSPACE_PROJECT_ID, ANALYSIS_WORKSPACE_TASK_KIND } = require("../analysis/benchmarkUtils.cjs");
 const { appendDedupeRules, projectWorkspaceOutputRule, redact } = require("../context/contextUtils.cjs");
 const { compact, safeSegment } = require("../shared/textUtils.cjs");
 const { isoNow } = require("../shared/timeUtils.cjs");
@@ -67,12 +68,19 @@ class ProjectMethods {
   updateChatProject(projectId, body = {}) {
     const project = this.readProject(projectId);
     if (!project) throw new Error("Project not found");
+    const hasWorkspaceUpdate =
+      Object.prototype.hasOwnProperty.call(body, "workspace_path") ||
+      Object.prototype.hasOwnProperty.call(body, "path");
+    const requestedWorkspacePath = hasWorkspaceUpdate
+      ? compact(body.workspace_path ?? body.path, 1000)
+      : project.path;
+    if (hasWorkspaceUpdate && requestedWorkspacePath !== project.path) {
+      throw new Error("Project workspace path is fixed after project creation.");
+    }
     const next = {
       ...project,
       name: body.name == null ? project.name : compact(body.name, 120) || project.name,
-      path: body.workspace_path == null && body.path == null
-        ? project.path
-        : compact(body.workspace_path ?? body.path, 1000),
+      path: project.path,
       updatedAt: isoNow(),
     };
     const saved = this.ensureProject(next);
@@ -88,6 +96,9 @@ class ProjectMethods {
     }
 
     const deletedTaskIds = project.tasks.map((task) => task.id);
+    const analysisCleanup = project.id === ANALYSIS_WORKSPACE_PROJECT_ID
+      ? this.deleteAnalysisWorkspaceProjectData()
+      : { deletedPaths: [] };
     this.removeAppDataDir(this.projectsDir(), this.projectDir(project.id), "project");
 
     const projects = this.readAllProjects();
@@ -102,6 +113,7 @@ class ProjectMethods {
       ok: true,
       deleted_project_id: project.id,
       deleted_task_ids: deletedTaskIds,
+      deleted_analysis_paths: analysisCleanup.deletedPaths || [],
       current_project_id: nextProject?.id || "",
       current_task_id: nextTask?.id || "",
       projects,
@@ -173,6 +185,10 @@ class ProjectMethods {
     }
 
     const task = project.tasks[taskIndex];
+    const analysisCleanup =
+      project.id === ANALYSIS_WORKSPACE_PROJECT_ID || task.kind === ANALYSIS_WORKSPACE_TASK_KIND
+        ? this.deleteAnalysisWorkspaceTaskData(task)
+        : { deletedPaths: [], removedResults: 0 };
     const remainingTasks = project.tasks.filter((item) => item.id !== taskId);
     const saved = this.writeProject({
       ...project,
@@ -183,6 +199,11 @@ class ProjectMethods {
       path.join(this.projectDir(project.id), "tasks"),
       this.taskDir(project.id, task.id),
       "task",
+    );
+    this.removeAppDataDir(
+      path.join(this.projectContextDir(project), "tasks"),
+      this.taskContextDir(project, task.id),
+      "task context",
     );
 
     const nextTask =
@@ -205,6 +226,8 @@ class ProjectMethods {
       ok: true,
       project: saved,
       deleted_task_id: task.id,
+      deleted_analysis_paths: analysisCleanup.deletedPaths || [],
+      deleted_analysis_results: analysisCleanup.removedResults || 0,
       next_task: nextTask,
       current_project_id: stateProjectId,
       current_task_id: currentTaskId,

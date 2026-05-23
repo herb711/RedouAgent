@@ -378,6 +378,7 @@ class RuntimeCoreMethods {
       throw new Error("Hermes Python runtime is unavailable.");
     }
     const bridgePath = desktopSourcePath("dashboard_bridge.py");
+    const timeout = String(action || "").includes("mcp") ? 180000 : 60000;
     const result = this.processManager.spawnSync(this.pythonPath, [bridgePath, action], {
       cwd: this.projectRoot,
       env: this.childEnv({
@@ -389,7 +390,7 @@ class RuntimeCoreMethods {
       input: JSON.stringify(payload || {}),
       encoding: "utf8",
       shell: false,
-      timeout: 60000,
+      timeout,
       windowsHide: true,
       maxBuffer: 16 * 1024 * 1024,
     });

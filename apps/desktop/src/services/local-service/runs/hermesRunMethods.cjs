@@ -1,9 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const { RISK_AUDIT_EVENT_TYPES } = require("../permissions/permissionPolicy.cjs");
-const { mkdirp } = require("../shared/fileUtils.cjs");
+const { mkdirp, readText } = require("../shared/fileUtils.cjs");
 const { isoNow } = require("../shared/timeUtils.cjs");
 const { desktopSourcePath } = require("../shared/desktopPaths.cjs");
+const { topLevelYamlBlock, yamlScalar } = require("../shared/yamlUtils.cjs");
 const {
   collectTurnArtifactFromEvent,
   createUserInputEnvelope,
@@ -18,6 +19,34 @@ const {
   seedAttachmentArtifacts,
   toInt,
 } = require("../context/contextUtils.cjs");
+
+const DEFAULT_AGENT_MAX_TURNS = 200;
+const HARD_MAX_AGENT_MAX_TURNS = 10000;
+
+function normalizeMaxTurns(value, fallback = DEFAULT_AGENT_MAX_TURNS) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return fallback;
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(1, Math.min(Math.floor(n), HARD_MAX_AGENT_MAX_TURNS));
+}
+
+function readRootAgentMaxTurnsValue(hermesHome) {
+  const text = readText(path.join(hermesHome, "config.yaml"));
+  const agentBlock = topLevelYamlBlock(text, "agent");
+  for (const line of agentBlock.split(/\r?\n/).slice(1)) {
+    const match = line.match(/^\s+max_turns:\s*(.*)$/);
+    if (match) return yamlScalar(match[1]);
+  }
+
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(/^max_turns:\s*(.*)$/);
+    if (match) return yamlScalar(match[1]);
+  }
+
+  return undefined;
+}
 
 function truthyFailureText(value) {
   if (value == null || value === false) return "";
@@ -66,6 +95,7 @@ class HermesRunMethods {
 
     const { project, task } = this.findProjectAndTask(projectId, taskId);
     if (!project || !task) throw new Error("Project or task not found");
+    this.ensureProjectHermesProfile(project);
     const attachments = Array.isArray(input.attachments)
       ? input.attachments
           .map((item) => this.normalizeAttachmentRecord(item, task.uploadsPath))
@@ -79,6 +109,7 @@ class HermesRunMethods {
         : null;
     const runId = options.runId || crypto.randomUUID();
     const deliveryMode = normalizeDeliveryMode(options.deliveryMode || input.deliveryMode, "new_turn");
+    const goalMode = input.goalMode === true && runMode === "execute";
     const currentEnvelope = createUserInputEnvelope({
       ...(input.userInputEnvelope && typeof input.userInputEnvelope === "object" ? input.userInputEnvelope : {}),
       ...(options.envelope && typeof options.envelope === "object" ? options.envelope : {}),
@@ -135,6 +166,7 @@ class HermesRunMethods {
         runtimeApprovalEnabled,
         deliveryMode,
         runMode,
+        goalMode,
         inputEnvelope: currentEnvelope,
         ...(contextDirective ? { contextDirective } : {}),
         ...(options.queueId ? { queueId: options.queueId } : {}),
@@ -143,13 +175,20 @@ class HermesRunMethods {
     }
     const sessionId = task.hermesSessionId || `redou-${taskId}-${Date.now().toString(36)}`;
     this.updateChatTask(projectId, taskId, { hermesSessionId: sessionId });
+    const configuredMaxIterations = normalizeMaxTurns(
+      readRootAgentMaxTurnsValue(this.hermesHome),
+      DEFAULT_AGENT_MAX_TURNS,
+    );
+    const maxIterations = normalizeMaxTurns(input.maxIterations, configuredMaxIterations);
     const runMetadata = {
       ...built.metadata,
       modelProvider: effectiveProvider,
       model: effectiveModel,
       modelSource,
+      maxIterations,
       deliveryMode,
       runMode,
+      goalMode,
       currentRequestId: currentEnvelope.id,
       currentTurnId: currentEnvelope.turnId,
       permissionMode: permissions.mode,
@@ -385,6 +424,7 @@ class HermesRunMethods {
         runId,
         hermesProfile: project.hermesProfile,
         hermesSessionId: sessionId,
+        userInput,
         systemContext: built.systemContext,
         userContext: built.userContext,
         contextMessages: built.contextMessages,
@@ -398,7 +438,9 @@ class HermesRunMethods {
         provider: effectiveProvider,
         workspacePath: project.path || this.projectRoot,
         runMode,
-        maxIterations: Number(input.maxIterations || 40),
+        goalMode,
+        goalText: userInput,
+        maxIterations,
       },
       onStarted: (child) => {
         runRecord = {

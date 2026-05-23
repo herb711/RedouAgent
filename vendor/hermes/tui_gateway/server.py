@@ -675,6 +675,19 @@ def _load_cfg() -> dict:
     return {}
 
 
+def _goal_max_turns_from_cfg() -> int:
+    try:
+        from hermes_cli.config import DEFAULT_GOAL_MAX_TURNS, normalize_goal_max_turns
+
+        goals_cfg = _load_cfg().get("goals") or {}
+        return normalize_goal_max_turns(
+            goals_cfg.get("max_turns"),
+            DEFAULT_GOAL_MAX_TURNS,
+        )
+    except Exception:
+        return 50
+
+
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime, _cfg_path
     import yaml
@@ -1865,13 +1878,24 @@ def _apply_personality_to_session(
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
     try:
+        from hermes_cli.config import normalize_agent_max_turns
+    except Exception:
+        normalize_agent_max_turns = None
+    try:
         env_max = int(os.environ.get("HERMES_TUI_MAX_TURNS", "") or 0)
         if env_max > 0:
-            return env_max
+            return normalize_agent_max_turns(env_max, default) if normalize_agent_max_turns else env_max
     except (TypeError, ValueError):
         pass
     agent_cfg = cfg.get("agent") or {}
-    return int(agent_cfg.get("max_turns") or cfg.get("max_turns") or default)
+    value = agent_cfg.get("max_turns") or cfg.get("max_turns")
+    if normalize_agent_max_turns:
+        return normalize_agent_max_turns(value, default)
+    try:
+        parsed = int(value or default)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(1, min(parsed, 10000))
 
 
 def _parse_tui_skills_env() -> list[str]:
@@ -1984,7 +2008,7 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     redou_runtime = _is_redou_runtime()
     return AIAgent(
         model=model,
-        max_iterations=_cfg_max_turns(cfg, 90),
+        max_iterations=_cfg_max_turns(cfg, 200),
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
@@ -3392,11 +3416,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
                     sid_key = session.get("session_key") or ""
                     if sid_key:
-                        try:
-                            goals_cfg = _load_cfg().get("goals") or {}
-                            goal_max_turns = int(goals_cfg.get("max_turns", 20) or 20)
-                        except Exception:
-                            goal_max_turns = 20
+                        goal_max_turns = _goal_max_turns_from_cfg()
                         goal_mgr = GoalManager(
                             session_id=sid_key,
                             default_max_turns=goal_max_turns,
@@ -4773,11 +4793,7 @@ def _(rid, params: dict) -> dict:
         if not sid_key:
             return _err(rid, 4001, "no session key")
 
-        try:
-            goals_cfg = _load_cfg().get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
-        except Exception:
-            max_turns = 20
+        max_turns = _goal_max_turns_from_cfg()
         mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
 
         lower = arg.strip().lower()
@@ -6380,7 +6396,7 @@ def _(rid, params: dict) -> dict:
             {
                 "title": "Agent",
                 "rows": [
-                    ["Max Turns", str(_cfg_max_turns(cfg, 90))],
+                    ["Max Turns", str(_cfg_max_turns(cfg, 200))],
                     ["Toolsets", ", ".join(cfg.get("enabled_toolsets", [])) or "all"],
                     ["Verbose", str(cfg.get("verbose", False))],
                 ],

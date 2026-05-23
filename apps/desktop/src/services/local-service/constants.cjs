@@ -11,7 +11,15 @@ const REDOU_CONTEXT_DIR = ".redou";
 const REDOU_TASKS_DIR = "tasks";
 const REDOU_SKILLS_DIR = "skills";
 const REDOU_ANALYSIS_DIR = "analysis";
-const PROFILE_RUNTIME_CONFIG_KEYS = ["model", "providers", "custom_providers", "model_aliases", "agent"];
+const PROFILE_RUNTIME_CONFIG_KEYS = [
+  "model",
+  "providers",
+  "custom_providers",
+  "model_aliases",
+  "agent",
+  "goals",
+  "mcp_servers",
+];
 const DEFAULT_CHAT_PROJECT_NAME = "\u9ed8\u8ba4\u9879\u76ee";
 const DEFAULT_CHAT_TASK_TITLE = "\u5f00\u59cb\u5bf9\u8bdd";
 

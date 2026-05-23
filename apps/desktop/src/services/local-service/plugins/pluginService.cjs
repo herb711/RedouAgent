@@ -22,6 +22,25 @@ class PluginService {
     return this.runDashboardBridge("get_plugins_hub");
   }
 
+  getMcpHub() {
+    return this.runDashboardBridge("get_mcp_hub");
+  }
+
+  installMcpServer(body) {
+    return this.runDashboardBridge(
+      "install_mcp_server",
+      body && typeof body === "object" ? body : {},
+    );
+  }
+
+  removeMcpServer(name) {
+    return this.runDashboardBridge("remove_mcp_server", { name });
+  }
+
+  testMcpServer(name) {
+    return this.runDashboardBridge("test_mcp_server", { name });
+  }
+
   installAgentPlugin(body) {
     return this.runDashboardBridge(
       "install_agent_plugin",

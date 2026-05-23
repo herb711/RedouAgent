@@ -72,6 +72,12 @@ declare global {
       getPlugins?: () => Promise<PluginManifestResponse[]>;
       rescanPlugins?: () => Promise<{ ok: boolean; count: number }>;
       getPluginsHub?: () => Promise<PluginsHubResponse>;
+      getMcpHub?: () => Promise<McpHubResponse>;
+      installMcpServer?: (
+        body: McpInstallRequest,
+      ) => Promise<McpInstallResponse>;
+      removeMcpServer?: (name: string) => Promise<{ ok: boolean; name: string }>;
+      testMcpServer?: (name: string) => Promise<McpTestResponse>;
       installAgentPlugin?: (
         body: AgentPluginInstallRequest,
       ) => Promise<AgentPluginInstallResponse>;
@@ -342,6 +348,11 @@ const redouApiCore = {
     getPlugins: () => requireRedouMethod("getPlugins")(),
     rescanPlugins: () => requireRedouMethod("rescanPlugins")(),
     getPluginsHub: () => requireRedouMethod("getPluginsHub")(),
+    getMcpHub: () => requireRedouMethod("getMcpHub")(),
+    installMcpServer: (body: McpInstallRequest) =>
+      requireRedouMethod("installMcpServer")(body),
+    removeMcpServer: (name: string) => requireRedouMethod("removeMcpServer")(name),
+    testMcpServer: (name: string) => requireRedouMethod("testMcpServer")(name),
     installAgentPlugin: (body: AgentPluginInstallRequest) =>
       requireRedouMethod("installAgentPlugin")(body),
     enableAgentPlugin: (name: string) => requireRedouMethod("enableAgentPlugin")(name),
@@ -485,6 +496,10 @@ export const redouApi = {
   getPlugins: redouApiCore.plugins.getPlugins,
   rescanPlugins: redouApiCore.plugins.rescanPlugins,
   getPluginsHub: redouApiCore.plugins.getPluginsHub,
+  getMcpHub: redouApiCore.plugins.getMcpHub,
+  installMcpServer: redouApiCore.plugins.installMcpServer,
+  removeMcpServer: redouApiCore.plugins.removeMcpServer,
+  testMcpServer: redouApiCore.plugins.testMcpServer,
   installAgentPlugin: redouApiCore.plugins.installAgentPlugin,
   enableAgentPlugin: redouApiCore.plugins.enableAgentPlugin,
   disableAgentPlugin: redouApiCore.plugins.disableAgentPlugin,
@@ -917,6 +932,7 @@ export interface SendMessageInput {
   userInput: string;
   deliveryMode?: "queue" | "guide" | "interrupt_replace";
   runMode?: "execute" | "plan";
+  goalMode?: boolean;
   attachments?: ChatAttachment[];
   maxRecentMessages?: number;
   maxIterations?: number;
@@ -1553,6 +1569,70 @@ export interface PluginsHubResponse {
   plugins: HubAgentPluginRow[];
   orphan_dashboard_plugins: PluginManifestResponse[];
   providers: PluginsHubProviders;
+}
+
+export interface McpServerRow {
+  name: string;
+  enabled: boolean;
+  transport: string;
+  command: string;
+  args: string[];
+  url: string;
+  env_keys: string[];
+  env: Record<string, string>;
+  missing_env: string[];
+  preset: string;
+  package: string;
+  docs: string;
+}
+
+export interface McpPresetInfo {
+  name: string;
+  label: string;
+  description: string;
+  docs: string;
+  package: string;
+  api_key_env: string;
+  has_api_key: boolean;
+  default_api_host: string;
+  default_resource_mode: string;
+  default_output_dir: string;
+}
+
+export interface McpHubResponse {
+  servers: McpServerRow[];
+  presets: Record<string, McpPresetInfo>;
+}
+
+export interface McpInstallRequest {
+  preset?: string;
+  name?: string;
+  apiKey?: string;
+  apiHost?: string;
+  resourceMode?: "local" | "url";
+  basePath?: string;
+  force?: boolean;
+  enable?: boolean;
+}
+
+export interface McpInstallResponse {
+  ok: boolean;
+  name: string;
+  enabled: boolean;
+  server: McpServerRow;
+  missing_env?: string[];
+}
+
+export interface McpToolSummary {
+  name: string;
+  description: string;
+}
+
+export interface McpTestResponse {
+  ok: boolean;
+  name: string;
+  tools: McpToolSummary[];
+  error?: string;
 }
 
 export interface AgentPluginInstallRequest {

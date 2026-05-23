@@ -18,6 +18,22 @@ docker compose exec "$SERVICE" bash -lc "
   test -s '$SOURCES'
   test -s '$NOTES'
   test -s '$COMMANDS'
+
+  report_bytes=\$(wc -c < '$REPORT')
+  sources_bytes=\$(wc -c < '$SOURCES')
+  notes_bytes=\$(wc -c < '$NOTES')
+  if [ \"\$report_bytes\" -lt 6000 ]; then
+    echo \"Final report is too short: \$report_bytes bytes\"
+    exit 1
+  fi
+  if [ \"\$sources_bytes\" -lt 1200 ]; then
+    echo \"Sources file is too short: \$sources_bytes bytes\"
+    exit 1
+  fi
+  if [ \"\$notes_bytes\" -lt 1200 ]; then
+    echo \"Notes file is too short: \$notes_bytes bytes\"
+    exit 1
+  fi
 "
 
 echo "[Task4 Phase 5] Checking command log contains container verification..."

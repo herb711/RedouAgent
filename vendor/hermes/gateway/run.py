@@ -3230,10 +3230,10 @@ class GatewayRunner:
         # config.yaml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
         try:
-            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", "200"))
             logger.info(
                 "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
-                "or HERMES_MAX_ITERATIONS from .env, or default 90)",
+                "or HERMES_MAX_ITERATIONS from .env, or default 200)",
                 _effective_max_iter,
             )
         except Exception:
@@ -9272,13 +9272,16 @@ class GatewayRunner:
                 if isinstance(self.config, dict)
                 else getattr(self.config, "goals", {}) or {}
             )
-            if not goals_cfg:
-                from hermes_cli.config import load_config
+            from hermes_cli.config import DEFAULT_GOAL_MAX_TURNS, load_config, normalize_goal_max_turns
 
+            if not goals_cfg:
                 goals_cfg = (load_config() or {}).get("goals") or {}
-            return int(goals_cfg.get("max_turns", 20) or 20)
+            return normalize_goal_max_turns(
+                goals_cfg.get("max_turns"),
+                DEFAULT_GOAL_MAX_TURNS,
+            )
         except Exception:
-            return 20
+            return 50
 
     def _get_goal_manager_for_event(self, event: "MessageEvent"):
         """Return a GoalManager bound to the session for this gateway event.
@@ -10286,7 +10289,7 @@ class GatewayRunner:
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
             pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "200"))
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -14730,7 +14733,7 @@ class GatewayRunner:
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
             # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "200"))
             
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.

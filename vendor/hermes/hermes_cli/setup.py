@@ -1659,7 +1659,8 @@ def setup_terminal_backend(config: dict):
 
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
-    config.setdefault("agent", {})["max_turns"] = 90
+    config.setdefault("agent", {})["max_turns"] = 200
+    config.setdefault("goals", {})["max_turns"] = 50
     # config.yaml is the authoritative source for max_turns; the gateway
     # bridges it into HERMES_MAX_ITERATIONS at startup. We no longer write
     # to .env to avoid the dual-source inconsistency that caused the
@@ -1679,7 +1680,8 @@ def _apply_default_agent_settings(config: dict):
 
     save_config(config)
     print_success("Applied recommended defaults:")
-    print_info("  Max iterations: 90")
+    print_info("  Max iterations: 200")
+    print_info("  Goal continuation rounds: 50")
     print_info("  Tool progress: all")
     print_info("  Compression threshold: 0.50")
     print_info("  Session reset: inactivity (1440 min) + daily (4:00)")
@@ -1697,11 +1699,11 @@ def setup_agent_settings(config: dict):
     # config.yaml is authoritative; read from there. If a legacy .env
     # entry is still around (from pre-PR#18413 setups), prefer the
     # config value so we don't surface a stale number to the user.
-    current_max = str(cfg_get(config, "agent", "max_turns", default=90))
+    current_max = str(cfg_get(config, "agent", "max_turns", default=200))
     print_info("Maximum tool-calling iterations per conversation.")
     print_info("Higher = more complex tasks, but costs more tokens.")
     print_info(
-        f"Press Enter to keep {current_max}. Use 90 for most tasks or 150+ for open exploration."
+        f"Press Enter to keep {current_max}. Use 200 for most tasks or 500+ for open exploration."
     )
 
     max_iter_str = prompt("Max iterations", current_max)
@@ -2711,7 +2713,7 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
         return f"backend: {backend}"
 
     elif section_key == "agent":
-        max_turns = cfg_get(config, "agent", "max_turns", default=90)
+        max_turns = cfg_get(config, "agent", "max_turns", default=200)
         return f"max turns: {max_turns}"
 
     elif section_key == "gateway":

@@ -125,7 +125,7 @@ test("analysis scheduler creates a fallback docker environment when task1 did no
     calls.some(
       (call) =>
         call.args.includes("exec") &&
-        call.args.join(" ").includes("python3 -m pip install -r task_project_requirements.txt"),
+        call.args.join(" ").includes("python3 -m pip install --break-system-packages --prefer-binary --retries 5 --timeout 30 -r task_project_requirements.txt"),
     ),
   );
 });
@@ -171,6 +171,76 @@ test("analysis docker preflight starts Docker Desktop on Windows and waits for d
   assert.equal(result.startedDocker, true);
   assert.equal(dockerInfoCalls, 2);
   assert.ok(calls.some((call) => call.command === "powershell.exe"));
+});
+
+test("analysis benchmark interrupts instead of zero-scoring model tasks when Docker setup fails", async () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  const webContents = {
+    isDestroyed: () => false,
+    send: () => {},
+  };
+  service.startAnalysisQueue = () => {};
+  service.startAnalysisBenchmarks(webContents, {
+    models: [{ provider: "openai", model: "gpt-test" }],
+  });
+  const item = service.analysisQueue[0];
+  service.prepareAnalysisWorkspace = () => workspace;
+  service.ensureAnalysisHostDockerAvailable = async () => ({ status: "completed" });
+  service.removeAnalysisDockerContainer = async () => ({ status: "skipped" });
+  service.analysisPromptForTask = () => "Prompt";
+  service.ensureAnalysisDockerEnvironment = async () => ({
+    status: "failed",
+    error: "Could not fetch URL https://pypi.org/simple/pytest/: SSLZeroReturnError",
+  });
+  service.runAnalysisTaskProcess = async ({ task }) => ({
+    id: task.id,
+    title: task.title,
+    capability: task.capability,
+    status: "completed",
+    startedAt: new Date(Date.now() - 1000).toISOString(),
+    completedAt: new Date().toISOString(),
+    durationMs: 1000,
+    inputTokens: 10,
+    outputTokens: 2,
+    cacheReadTokens: 0,
+    reasoningTokens: 0,
+    apiCalls: 1,
+    estimatedCostUsd: 0,
+    score: 100,
+    sections: [{ id: "environment_verification", label: "Environment verification", score: 100, evidence: "ok" }],
+    summary: "Task completed",
+    error: null,
+  });
+  service.runAnalysisTaskBatchPostprocess = async ({ task }) => {
+    fs.mkdirSync(path.join(workspace, "logs"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, "logs", `${task.id}_grade_all.log`),
+      [
+        `Task: ${task.id}`,
+        "==============================",
+        "Running Task1 Phase 1: Files (20 pts)",
+        "==============================",
+        "Task1 Phase 1: Files PASS: +20",
+        "==============================",
+        "Final Score: 20 / 100",
+      ].join("\n"),
+      "utf8",
+    );
+    return { status: "completed", summary: `Batch post-processing completed: logs/${task.id}_grade_all.log` };
+  };
+
+  await service.runAnalysisModelBenchmark(item);
+
+  const result = service.readAnalysisStore().results[0];
+  assert.equal(result.status, "interrupted");
+  assert.match(result.summary, /Docker test environment/);
+  assert.equal(result.tasks.find((task) => task.id === "task1").status, "completed");
+  const task2 = result.tasks.find((task) => task.id === "task2");
+  assert.equal(task2.status, "interrupted");
+  assert.match(task2.error, /Docker test environment/);
+  assert.equal(task2.apiCalls, 0);
 });
 
 test("analysis batch postprocess writes display logs with docker environment variables", async () => {
@@ -283,7 +353,7 @@ test("analysis workspace falls back when the previous workspace is locked", () =
   }
 });
 
-test("analysis evaluation expects the model-specific docker environment", () => {
+test("analysis task1 does not score model command text without the batch grade log", () => {
   const { root, service } = makeService();
   const workspace = path.join(root, "workspace");
   fs.mkdirSync(path.join(workspace, "projects"), { recursive: true });
@@ -322,13 +392,12 @@ test("analysis evaluation expects the model-specific docker environment", () => 
     { analysisEnvName: "agent-lab-openai-gpt-test" },
   );
 
-  const composeContract = evaluation.sections.find((section) => section.id === "compose_contract");
-  const environmentVerification = evaluation.sections.find((section) => section.id === "environment_verification");
-  assert.equal(composeContract.score, 100);
-  assert.equal(environmentVerification.score, 100);
+  assert.equal(evaluation.score, 0);
+  assert.equal(evaluation.evaluatorStatus, "missing");
+  assert.equal(evaluation.sections.find((section) => section.id === "fixed_evaluator").score, 0);
 });
 
-test("analysis evaluation accepts direct docker exec for model containers", () => {
+test("analysis task2-3 do not score direct docker exec text without batch grade logs", () => {
   const { root, service } = makeService();
   const workspace = path.join(root, "workspace");
   const envName = "agent-lab-openai-gpt-test";
@@ -360,7 +429,8 @@ test("analysis evaluation accepts direct docker exec for model containers", () =
     "",
     { analysisEnvName: envName },
   );
-  assert.equal(task2.sections.find((section) => section.id === "container_execution").score, 100);
+  assert.equal(task2.score, 0);
+  assert.equal(task2.evaluatorStatus, "missing");
 
   const labDir = path.join(workspace, "projects", "bug-fix-lab");
   fs.mkdirSync(path.join(labDir, "src"), { recursive: true });
@@ -390,7 +460,8 @@ test("analysis evaluation accepts direct docker exec for model containers", () =
     "",
     { analysisEnvName: envName },
   );
-  assert.equal(task3.sections.find((section) => section.id === "container_execution").score, 100);
+  assert.equal(task3.score, 0);
+  assert.equal(task3.evaluatorStatus, "missing");
 });
 
 test("analysis evaluation treats model API failures as invalid zero-score tasks", () => {
@@ -433,7 +504,22 @@ test("analysis task process status separates completion from evaluator quality",
       exitCode: 1,
       finalAssistantText: "Completed the task; hidden tests passed 421/429.",
     }),
+    "failed",
+  );
+  assert.equal(
+    analysisTaskProcessStatus({
+      exitCode: 1,
+      hasEvaluation: true,
+    }),
     "completed",
+  );
+  assert.equal(
+    analysisTaskProcessStatus({
+      exitCode: 0,
+      evaluationRequired: true,
+      hasEvaluation: false,
+    }),
+    "failed",
   );
   assert.equal(analysisTaskProcessStatus({ exitCode: 1, finalAssistantText: "" }), "failed");
   assert.equal(
@@ -484,6 +570,144 @@ test("analysis task process launches through the desktop Hermes adapter", async 
   assert.equal(fs.existsSync(captured.args[0]), true);
 });
 
+test("analysis task summary comes from the fixed evaluator, not model self-report", async () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(path.join(workspace, "logs"), { recursive: true });
+  service.pythonPath = process.execPath;
+  service.processManager.startJsonLineProcess = (input) => {
+    const child = {};
+    input.onStarted(child);
+    setImmediate(() => {
+      input.onStdoutEvent({ type: "assistant_message", content: "I completed every requirement and all checks pass." });
+      input.onExit({ code: 0, child });
+    });
+  };
+
+  const result = await service.runAnalysisTaskProcess({
+    runId: "run-summary",
+    key: "openai--gpt-test",
+    provider: "openai",
+    model: "gpt-test",
+    workspacePath: workspace,
+    task: { id: "task2", title: "Small project build", capability: "implementation" },
+    prompt: "Prompt",
+    postProcessBeforeEvaluation: async () => {
+      fs.writeFileSync(
+        path.join(workspace, "logs", "task2_grade_all.log"),
+        [
+          "Task: task2",
+          "==============================",
+          "Running Phase 0: Environment (10 pts)",
+          "==============================",
+          "Phase 0: Environment PASS: +10",
+          "==============================",
+          "Running Phase 1: Scaffold (15 pts)",
+          "==============================",
+          "Phase 1: Scaffold FAIL: +0",
+          "==============================",
+          "Running Phase 2: Data Logic (20 pts)",
+          "==============================",
+          "Phase 2: Data Logic FAIL: +0",
+          "==============================",
+          "Running Phase 3: UI and Build (20 pts)",
+          "==============================",
+          "Phase 3: UI and Build PASS: +20",
+          "==============================",
+          "Running Phase 4: Runtime Curl (20 pts)",
+          "==============================",
+          "Phase 4: Runtime Curl PASS: +20",
+          "==============================",
+          "Running Phase 5: Report (15 pts)",
+          "==============================",
+          "Phase 5: Report FAIL: +0",
+          "==============================",
+          "Final Score: 50 / 100",
+        ].join("\n"),
+        "utf8",
+      );
+      return { status: "completed", summary: "Batch post-processing completed: logs/task2_grade_all.log" };
+    },
+  });
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.score, 50);
+  assert.match(result.summary, /Fixed evaluator score for task2: 50\/100/);
+  assert.doesNotMatch(result.summary, /I completed every requirement/);
+  assert.match(result.modelSummary, /I completed every requirement/);
+});
+
+test("analysis task process streams live usage from Hermes API logs", async () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  fs.mkdirSync(workspace, { recursive: true });
+  const key = "openai--gpt-test";
+  const runId = "run-live-usage";
+  const startedAt = new Date().toISOString();
+  service.writeAnalysisStore({
+    version: 1,
+    results: [
+      {
+        key,
+        runId,
+        provider: "openai",
+        model: "gpt-test",
+        status: "running",
+        startedAt,
+        updatedAt: startedAt,
+        tasks: [
+          {
+            id: "task9",
+            title: "Jinja2 custom extension development",
+            capability: "framework",
+            status: "running",
+            startedAt,
+            score: 0,
+            sections: [],
+          },
+        ],
+      },
+    ],
+  });
+  service.pythonPath = process.execPath;
+  let emitted = 0;
+  const webContents = {
+    isDestroyed: () => false,
+    send: () => {
+      emitted += 1;
+    },
+  };
+  service.processManager.startJsonLineProcess = (input) => {
+    const child = {};
+    input.onStarted(child);
+    setImmediate(() => {
+      input.onStderrLine("2026-05-22 API call #1: model=gpt-test in=123 out=45 total=168 latency=1.2s");
+      input.onExit({ code: 0, child });
+    });
+  };
+
+  const result = await service.runAnalysisTaskProcess({
+    runId,
+    key,
+    provider: "openai",
+    model: "gpt-test",
+    workspacePath: workspace,
+    task: { id: "task9", title: "Jinja2 custom extension development", capability: "framework" },
+    prompt: "Prompt",
+    skipInlineEvaluation: true,
+    webContents,
+  });
+
+  assert.equal(result.inputTokens, 123);
+  assert.equal(result.outputTokens, 45);
+  assert.equal(result.apiCalls, 1);
+  const stored = service.readAnalysisStore().results[0].tasks[0];
+  assert.equal(stored.inputTokens, 123);
+  assert.equal(stored.outputTokens, 45);
+  assert.equal(stored.apiCalls, 1);
+  assert.ok(emitted > 0);
+});
+
 test("analysis task3 does not award test or pass-loop credit without artifacts", () => {
   const { root, service } = makeService();
   const workspace = path.join(root, "workspace");
@@ -498,11 +722,11 @@ test("analysis task3 does not award test or pass-loop credit without artifacts",
   );
 
   assert.equal(task3.score, 0);
-  assert.equal(task3.sections.find((section) => section.id === "tests_created").score, 0);
-  assert.equal(task3.sections.find((section) => section.id === "bug_loop").score, 0);
+  assert.equal(task3.evaluatorStatus, "missing");
+  assert.equal(task3.sections.find((section) => section.id === "fixed_evaluator").score, 0);
 });
 
-test("analysis task4 container check requires the delivered report and an in-container file check", () => {
+test("analysis task4 does not use artifact heuristics without the batch grade log", () => {
   const { root, service } = makeService();
   const workspace = path.join(root, "workspace");
   const envName = "agent-lab-openai-gpt-test";
@@ -521,7 +745,8 @@ test("analysis task4 container check requires the delivered report and an in-con
   const missingReport = service.evaluateAnalysisTask("task4", workspace, events, "", {
     analysisEnvName: envName,
   });
-  assert.equal(missingReport.sections.find((section) => section.id === "container_check").score, 0);
+  assert.equal(missingReport.score, 0);
+  assert.equal(missingReport.evaluatorStatus, "missing");
 
   fs.writeFileSync(
     path.join(reportsDir, "chinese-agent-product-research.md"),
@@ -541,8 +766,8 @@ test("analysis task4 container check requires the delivered report and an in-con
   const deliveredReport = service.evaluateAnalysisTask("task4", workspace, events, "", {
     analysisEnvName: envName,
   });
-  assert.equal(deliveredReport.sections.find((section) => section.id === "report_saved").score, 100);
-  assert.equal(deliveredReport.sections.find((section) => section.id === "container_check").score, 100);
+  assert.equal(deliveredReport.score, 0);
+  assert.equal(deliveredReport.sections.find((section) => section.id === "fixed_evaluator").score, 0);
 });
 
 test("analysis task4 preserves partial score from the batch grade log", () => {
@@ -733,9 +958,106 @@ test("analysis migrated project tasks score by pass ratio instead of threshold",
   );
 
   const automated = evaluation.sections.find((section) => section.id === "automated_tests");
-  assert.equal(evaluation.score, 98);
+  assert.equal(evaluation.score, 99);
   assert.equal(automated.score, 98);
   assert.match(automated.evidence, /421\/429 passed/);
+});
+
+test("analysis migrated project score requires the delivery report", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  const modelRun = "mimo-v2-pro";
+  const runDir = path.join(workspace, "model_runs", modelRun, "task6");
+  const resultsDir = path.join(workspace, "model_runs", modelRun, "results");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(resultsDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, "bottle_plugins.py"), "# plugins\n", "utf8");
+  fs.writeFileSync(
+    path.join(resultsDir, "task6_submit_1_summary.json"),
+    JSON.stringify(
+      {
+        current_metric: 1,
+        original_source_unchanged: true,
+        judge_result: {
+          passed: true,
+          passed_count: 421,
+          total: 429,
+          metric: 1,
+          detail: "passed 421/429",
+        },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+
+  const evaluation = service.evaluateAnalysisTask(
+    "task6",
+    workspace,
+    [],
+    "",
+    { analysisEnvName: "agent-lab-xiaomi-mimo-v2-pro", modelRunName: modelRun },
+  );
+
+  assert.equal(evaluation.score, 84);
+  assert.equal(evaluation.sections.find((section) => section.id === "automated_tests").score, 98);
+  assert.equal(evaluation.sections.find((section) => section.id === "report").score, 0);
+});
+
+test("analysis migrated project summary selection uses newest evaluator output", () => {
+  const { root, service } = makeService();
+  const workspace = path.join(root, "workspace");
+  const modelRun = "qwen3-6-27b";
+  const runDir = path.join(workspace, "model_runs", modelRun, "task7");
+  const resultsDir = path.join(workspace, "model_runs", modelRun, "results");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(resultsDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, "markdown_parser.py"), "# parser\n", "utf8");
+  fs.writeFileSync(path.join(resultsDir, "task7_report.md"), `${"report ".repeat(220)}\n`, "utf8");
+  const oldSummaryPath = path.join(resultsDir, "task7_submit_3_summary.json");
+  const newSummaryPath = path.join(resultsDir, "task7_submit_1_summary.json");
+  fs.writeFileSync(
+    oldSummaryPath,
+    JSON.stringify(
+      {
+        current_metric: 0.1,
+        original_source_unchanged: true,
+        judge_result: { passed: false, passed_count: 100, total: 1000, metric: 0.1 },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  fs.writeFileSync(
+    newSummaryPath,
+    JSON.stringify(
+      {
+        current_metric: 0.9,
+        original_source_unchanged: true,
+        judge_result: { passed: false, passed_count: 900, total: 1000, metric: 0.9 },
+      },
+      null,
+      2,
+    ),
+    "utf8",
+  );
+  fs.utimesSync(oldSummaryPath, new Date("2026-01-01T00:00:00Z"), new Date("2026-01-01T00:00:00Z"));
+  fs.utimesSync(newSummaryPath, new Date("2026-01-02T00:00:00Z"), new Date("2026-01-02T00:00:00Z"));
+
+  const evaluation = service.evaluateAnalysisTask(
+    "task7",
+    workspace,
+    [],
+    "",
+    { analysisEnvName: "agent-lab-qwen", modelRunName: modelRun },
+  );
+
+  const automated = evaluation.sections.find((section) => section.id === "automated_tests");
+  assert.equal(evaluation.score, 93);
+  assert.equal(automated.score, 90);
+  assert.match(automated.evidence, /900\/1000 passed/);
 });
 
 test("analysis migrated project scoring uses actual failed test totals", () => {
@@ -779,7 +1101,7 @@ test("analysis migrated project scoring uses actual failed test totals", () => {
   );
 
   const automated = evaluation.sections.find((section) => section.id === "automated_tests");
-  assert.equal(evaluation.score, 98);
+  assert.equal(evaluation.score, 99);
   assert.equal(automated.score, 98);
   assert.match(automated.evidence, /1469\/1494 passed/);
 
@@ -804,7 +1126,7 @@ test("analysis migrated project scoring uses actual failed test totals", () => {
     ],
   });
   const storedTask = service.getAnalysisBenchmarks().results[0].tasks[0];
-  assert.equal(storedTask.score, 98);
+  assert.equal(storedTask.score, 99);
   const storedAutomated = storedTask.sections.find((section) => section.id === "automated_tests");
   assert.equal(storedAutomated.score, 98);
   assert.match(storedAutomated.evidence, /1469\/1494 passed/);
@@ -977,6 +1299,9 @@ test("analysis benchmark scheduling creates a workspace task for each run", () =
   const project = service.getChatProjects().projects.find((item) => item.id === "model-benchmarks");
   assert.ok(project);
   assert.equal(project.name, "Model Benchmarks");
+  assert.equal(project.path, service.analysisWorkspaceRoot());
+  assert.equal(project.workspace_path, service.analysisWorkspaceRoot());
+  assert.equal(project.contextPath, path.join(service.analysisWorkspaceRoot(), ".redou"));
   assert.equal(project.tasks.length, 1);
 
   const task = project.tasks[0];
@@ -1001,6 +1326,109 @@ test("analysis benchmark scheduling creates a workspace task for each run", () =
   assert.equal(plannedStages[0].metadata.event.stage, "task1");
   assert.equal(plannedStages.at(-1).metadata.event.stage, "task9");
   assert.equal(messages.at(-1).metadata.eventType, "queue_update");
+});
+
+test("analysis workspace project migrates to the benchmark data path", () => {
+  const { service } = makeService();
+  const createdAt = new Date().toISOString();
+  service.ensureProject({
+    id: "model-benchmarks",
+    name: "Model Benchmarks",
+    path: "",
+    workspace_path: "",
+    createdAt,
+    updatedAt: createdAt,
+    tasks: [],
+  });
+
+  const project = service.ensureAnalysisWorkspaceProject();
+
+  assert.equal(project.path, service.analysisWorkspaceRoot());
+  assert.equal(project.workspace_path, service.analysisWorkspaceRoot());
+  assert.equal(project.contextPath, path.join(service.analysisWorkspaceRoot(), ".redou"));
+  assert.equal(fs.existsSync(project.rulesPath), true);
+});
+
+test("deleting the analysis workspace project removes benchmark data", () => {
+  const { service } = makeService();
+  const webContents = {
+    isDestroyed: () => false,
+    send: () => {},
+  };
+  service.startAnalysisQueue = () => {};
+
+  const response = service.startAnalysisBenchmarks(webContents, {
+    models: [{ provider: "openai", model: "gpt-delete" }],
+  });
+  const project = service.readProject("model-benchmarks");
+  const workspaceRoot = service.analysisWorkspaceRoot();
+  const modelWorkspace = path.join(workspaceRoot, "openai--gpt-delete");
+  fs.mkdirSync(path.join(modelWorkspace, "logs"), { recursive: true });
+  fs.writeFileSync(path.join(modelWorkspace, "logs", "task1_grade_all.log"), "data\n", "utf8");
+  service.writeAnalysisStore({
+    version: 1,
+    results: [
+      {
+        key: "openai--gpt-delete",
+        runId: response.runIds[0],
+        provider: "openai",
+        model: "gpt-delete",
+        status: "completed",
+        workspacePath: modelWorkspace,
+        tasks: [],
+      },
+    ],
+  });
+  service.analysisQueue = [];
+
+  const deleted = service.deleteChatProject(project.id);
+
+  assert.equal(deleted.ok, true);
+  assert.equal(fs.existsSync(workspaceRoot), false);
+  assert.equal(fs.existsSync(service.analysisStorePath()), false);
+  assert.deepEqual(service.readAnalysisStore().results, []);
+  assert.equal(service.readProject("model-benchmarks"), null);
+});
+
+test("deleting an analysis workspace task removes its benchmark workspace", () => {
+  const { service } = makeService();
+  const webContents = {
+    isDestroyed: () => false,
+    send: () => {},
+  };
+  service.startAnalysisQueue = () => {};
+
+  const response = service.startAnalysisBenchmarks(webContents, {
+    models: [{ provider: "openai", model: "gpt-task-delete" }],
+  });
+  const project = service.readProject("model-benchmarks");
+  const task = project.tasks[0];
+  const modelWorkspace = path.join(service.analysisWorkspaceRoot(), "openai--gpt-task-delete");
+  fs.mkdirSync(path.join(modelWorkspace, "reports"), { recursive: true });
+  fs.writeFileSync(path.join(modelWorkspace, "reports", "report.md"), "data\n", "utf8");
+  service.writeAnalysisStore({
+    version: 1,
+    results: [
+      {
+        key: "openai--gpt-task-delete",
+        runId: response.runIds[0],
+        provider: "openai",
+        model: "gpt-task-delete",
+        status: "completed",
+        workspacePath: modelWorkspace,
+        tasks: [],
+      },
+    ],
+  });
+  service.analysisQueue = [];
+
+  const deleted = service.deleteChatTask(project.id, task.id);
+
+  assert.equal(deleted.ok, true);
+  assert.equal(deleted.deleted_analysis_results, 1);
+  assert.equal(fs.existsSync(modelWorkspace), false);
+  assert.equal(fs.existsSync(task.messagesPath), false);
+  assert.equal(fs.existsSync(service.analysisStorePath()), false);
 });
 
 test("analysis workspace task records benchmark stages and final status", () => {
