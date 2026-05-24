@@ -12,10 +12,11 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SERVICE_FACADE = ROOT / "apps" / "desktop" / "src" / "services" / "redouLocalService.cjs"
-SERVICE = ROOT / "apps" / "desktop" / "src" / "services" / "local-service" / "index.cjs"
+LEGACY_SRC = ROOT / "apps" / "desktop" / "src_legacy"
+SERVICE_FACADE = LEGACY_SRC / "services" / "redouLocalService.cjs"
+SERVICE = LEGACY_SRC / "services" / "local-service" / "index.cjs"
 SERVICE_DIR = SERVICE.parent
-DASHBOARD = ROOT / "apps" / "desktop" / "src" / "dashboard_bridge.py"
+DASHBOARD = LEGACY_SRC / "dashboard_bridge.py"
 PACKAGER = ROOT / "vendor" / "hermes" / "hermes_cli" / "redou_task_skill_packager.py"
 DOC = ROOT / "docs" / "architecture" / "source-and-generated-paths.md"
 

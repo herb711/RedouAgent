@@ -8,7 +8,7 @@ const {
   isWindowsShellScript,
   runtimePathExtras,
   venvPythonPath,
-} = require("../src/platformRuntime.cjs");
+} = require("../src_legacy/platformRuntime.cjs");
 
 test("platform runtime resolves the managed venv python path for the host OS", () => {
   const venvDir = path.join("runtime", "venv");

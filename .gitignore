@@ -1,4 +1,6 @@
 # Redou workspace
+.redou/
+apps/desktop/renderer/dist/
 node_modules/
 __pycache__/
 *.py[cod]

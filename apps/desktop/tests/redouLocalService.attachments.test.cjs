@@ -5,7 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { RedouLocalService } = require("../src/services/redouLocalService.cjs");
+const { RedouLocalService } = require("../src_legacy/services/redouLocalService.cjs");
 
 function makeService() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "redou-attachments-"));

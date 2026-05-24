@@ -4,7 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
 
-const { RedouLocalService, SecretRedactor } = require("../src/services/redouLocalService.cjs");
+const { RedouLocalService, SecretRedactor } = require("../src_legacy/services/redouLocalService.cjs");
 
 function makeService() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "redou-context-contract-"));

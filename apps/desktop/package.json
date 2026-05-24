@@ -1,7 +1,7 @@
 {
   "name": "redou-agent-desktop",
   "productName": "Redou Agent",
-  "version": "0.3.4",
+  "version": "0.4.0",
   "private": true,
   "description": "Redou Agent desktop shell",
   "homepage": "https://github.com/herb711/RedouAgent",
@@ -11,11 +11,13 @@
   },
   "main": "src/main.cjs",
   "scripts": {
-    "prebuild": "npm --prefix ../../vendor/hermes/web run build",
+    "build:renderer": "npm --prefix renderer run build",
+    "dev:renderer": "npm --prefix renderer run dev",
     "start": "electron .",
-    "build": "electron-builder",
-    "build:win": "electron-builder --win nsis",
-    "build:linux": "electron-builder --linux AppImage deb",
+    "dev": "electron .",
+    "build": "npm run build:renderer && electron-builder",
+    "build:win": "npm run build:renderer && electron-builder --win nsis",
+    "build:linux": "npm run build:renderer && electron-builder --linux AppImage deb",
     "test": "node --test --test-force-exit --test-reporter=dot tests/*.test.cjs"
   },
   "devDependencies": {
@@ -37,6 +39,7 @@
     },
     "files": [
       "src/**/*",
+      "renderer/dist/**/*",
       "package.json",
       "assets/**/*"
     ],
