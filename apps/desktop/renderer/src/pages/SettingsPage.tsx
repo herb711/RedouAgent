@@ -1,19 +1,28 @@
 import {
   ArrowLeft,
+  Bell,
   Bot,
+  Camera,
   Check,
   ChevronDown,
   CircleAlert,
+  FileText,
+  Globe2,
   KeyRound,
   Loader2,
+  Monitor,
+  Moon,
   Plus,
+  Power,
   Server,
   Settings,
   SlidersHorizontal,
   Trash2,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import type { LucideIcon } from 'lucide-react';
+import { type ReactNode, useMemo, useState } from 'react';
 import type {
+  AppSettingsSnapshot,
   ConfiguredModelProvider,
   ModelConfigSelection,
   ModelConfigSnapshot,
@@ -22,12 +31,15 @@ import type {
 } from '../types';
 
 interface SettingsPageProps {
+  appSettings: AppSettingsSnapshot;
   modelConfig: ModelConfigSnapshot;
   onBack: () => void;
   onSelectModel: (selection: ModelConfigSelection) => Promise<void>;
   onProbeModelProvider: (input: unknown) => Promise<ModelProbeResult | null>;
   onSaveModelProvider: (input: unknown) => Promise<void>;
   onRemoveModelProvider: (providerId: string) => Promise<void>;
+  onUpdateAppSettings: (patch: Record<string, unknown>) => Promise<void>;
+  onNotifyDesktop: (title: string, body: string) => Promise<void>;
 }
 
 interface DraftState {
@@ -54,11 +66,13 @@ const customPreset: ModelProviderPreset = {
   apiKeyOptional: true,
 };
 
-const navItems = [
-  { icon: Bot, label: '模型', active: true },
-  { icon: Settings, label: '常规', active: false },
-  { icon: SlidersHorizontal, label: '外观', active: false },
-  { icon: Server, label: '连接', active: false },
+type SettingsSectionId = 'models' | 'general' | 'appearance' | 'connections';
+
+const navItems: Array<{ id: SettingsSectionId; icon: LucideIcon; label: string }> = [
+  { id: 'models', icon: Bot, label: '模型' },
+  { id: 'general', icon: Settings, label: '常规' },
+  { id: 'appearance', icon: SlidersHorizontal, label: '外观' },
+  { id: 'connections', icon: Server, label: '连接' },
 ];
 
 function createDraft(preset: ModelProviderPreset): DraftState {
@@ -81,15 +95,29 @@ function selectedProvider(snapshot: ModelConfigSnapshot) {
     : null;
 }
 
+function cleanApiKeyInput(value: string) {
+  return value
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .trim()
+    .replace(/^Bearer\s+/i, '')
+    .replace(/[\s\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2060\ufeff]+/g, '')
+    .replace(/^["'`]+|["'`]+$/g, '');
+}
+
 export function SettingsPage({
+  appSettings,
   modelConfig,
   onBack,
   onSelectModel,
   onProbeModelProvider,
   onSaveModelProvider,
   onRemoveModelProvider,
+  onUpdateAppSettings,
+  onNotifyDesktop,
 }: SettingsPageProps) {
   const presets = useMemo(() => [customPreset, ...modelConfig.catalog], [modelConfig.catalog]);
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>('models');
   const [activePresetId, setActivePresetId] = useState('custom');
   const activePreset = presets.find((preset) => preset.id === activePresetId) || customPreset;
   const [draft, setDraft] = useState<DraftState>(() => createDraft(activePreset));
@@ -167,14 +195,21 @@ export function SettingsPage({
           <span>返回应用</span>
         </button>
         <span className="redou-settings-group-label">设置</span>
-        {navItems.map(({ icon: Icon, label, active }) => (
-          <button className="redou-settings-nav-row" data-active={active ? 'true' : 'false'} type="button" key={label}>
+        {navItems.map(({ id, icon: Icon, label }) => (
+          <button
+            className="redou-settings-nav-row"
+            data-active={activeSection === id ? 'true' : 'false'}
+            type="button"
+            key={id}
+            onClick={() => setActiveSection(id)}
+          >
             <Icon size={17} />
             <span>{label}</span>
           </button>
         ))}
       </aside>
 
+      {activeSection === 'models' ? (
       <section className="redou-model-settings-content" aria-label="Model settings">
         <header className="redou-model-settings-header">
           <div>
@@ -269,7 +304,7 @@ export function SettingsPage({
                   value={draft.apiKey}
                   type="password"
                   placeholder={activePreset.apiKeyOptional ? '本地或免鉴权服务可留空' : '只在本机保存'}
-                  onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
+                  onChange={(event) => setDraft((current) => ({ ...current, apiKey: cleanApiKeyInput(event.target.value) }))}
                 />
               </label>
               <label>
@@ -344,9 +379,185 @@ export function SettingsPage({
           </section>
         </div>
       </section>
+      ) : (
+        <SettingsCapabilityPage
+          section={activeSection}
+          settings={appSettings}
+          onUpdate={onUpdateAppSettings}
+          onNotifyDesktop={onNotifyDesktop}
+        />
+      )}
     </main>
   );
 }
+
+function SettingsCapabilityPage({
+  section,
+  settings,
+  onUpdate,
+  onNotifyDesktop,
+}: {
+  section: Exclude<SettingsSectionId, 'models'>;
+  settings: AppSettingsSnapshot;
+  onUpdate: (patch: Record<string, unknown>) => Promise<void>;
+  onNotifyDesktop: (title: string, body: string) => Promise<void>;
+}) {
+  if (section === 'appearance') {
+    return (
+      <section className="redou-settings-content" aria-label="Appearance settings">
+        <h2>外观</h2>
+        <SettingsCard title="主题" description="窗口主题和信息密度">
+          <SegmentedSetting
+            label="主题"
+            value={settings.appearance.theme}
+            options={[['light', '浅色'], ['dark', '深色'], ['system', '跟随系统']]}
+            onChange={(theme) => onUpdate({ appearance: { theme } })}
+          />
+          <SegmentedSetting
+            label="密度"
+            value={settings.appearance.density}
+            options={[['comfortable', '舒适'], ['compact', '紧凑']]}
+            onChange={(density) => onUpdate({ appearance: { density } })}
+          />
+          <SettingRow icon={Moon} title="检查器位置" detail="右侧状态栏和活动面板">
+            <select value={settings.appearance.inspectorSide} onChange={(event) => void onUpdate({ appearance: { inspectorSide: event.target.value } })}>
+              <option value="right">右侧</option>
+              <option value="hidden">默认隐藏</option>
+            </select>
+          </SettingRow>
+        </SettingsCard>
+      </section>
+    );
+  }
+
+  if (section === 'connections') {
+    return (
+      <section className="redou-settings-content" aria-label="Connection settings">
+        <h2>连接</h2>
+        <SettingsCard title="浏览器与交付物" description="内置浏览器、预览和截图能力">
+          <ToggleSetting icon={Globe2} title="内置浏览器" detail={settings.browser.homeUrl} enabled={settings.browser.enabled} onToggle={() => onUpdate({ browser: { enabled: !settings.browser.enabled }, connections: { inAppBrowser: !settings.browser.enabled } })} />
+          <SettingRow icon={Globe2} title="浏览器主页" detail="新浏览器视图默认地址">
+            <input value={settings.browser.homeUrl} onChange={(event) => void onUpdate({ browser: { homeUrl: event.target.value } })} />
+          </SettingRow>
+          <ToggleSetting icon={FileIcon} title="Artifact preview" detail="从真实 artifact store 读取预览" enabled={settings.connections.artifactPreview} onToggle={() => onUpdate({ connections: { artifactPreview: !settings.connections.artifactPreview } })} />
+          <ToggleSetting icon={Camera} title="截图评论" detail="将截图和评论保存为 artifact" enabled={settings.connections.screenshotCapture} onToggle={() => onUpdate({ connections: { screenshotCapture: !settings.connections.screenshotCapture } })} />
+        </SettingsCard>
+        <SettingsCard title="媒体" description="语音输入、图片输入和本地图片生成">
+          <ToggleSetting icon={Monitor} title="语音输入" detail="使用系统 Web Speech 能力" enabled={settings.media.voiceInput} onToggle={() => onUpdate({ media: { voiceInput: !settings.media.voiceInput } })} />
+          <ToggleSetting icon={Camera} title="图片输入" detail="文件选择与拖拽图片上下文" enabled={settings.media.imageInput} onToggle={() => onUpdate({ media: { imageInput: !settings.media.imageInput } })} />
+          <ToggleSetting icon={Globe2} title="图片生成" detail="生成图片 artifact 并进入预览" enabled={settings.media.imageGeneration} onToggle={() => onUpdate({ media: { imageGeneration: !settings.media.imageGeneration } })} />
+        </SettingsCard>
+      </section>
+    );
+  }
+
+  return (
+    <section className="redou-settings-content" aria-label="General settings">
+      <h2>常规</h2>
+      <SettingsCard title="桌面行为" description="通知、防睡眠和启动偏好">
+        <ToggleSetting icon={Bell} title="桌面通知" detail="任务结束、失败和测试通知" enabled={settings.desktop.notifications} onToggle={() => onUpdate({ desktop: { notifications: !settings.desktop.notifications } })} />
+        <ToggleSetting icon={Power} title="阻止睡眠" detail="长任务运行时保持显示器唤醒" enabled={settings.desktop.preventSleep} onToggle={() => onUpdate({ desktop: { preventSleep: !settings.desktop.preventSleep } })} />
+        <ToggleSetting icon={Monitor} title="自动更新" detail="保留桌面更新检查入口" enabled={settings.general.autoUpdate} onToggle={() => onUpdate({ general: { autoUpdate: !settings.general.autoUpdate } })} />
+        <SettingRow icon={Settings} title="启动视图" detail="打开 Redou Agent 时进入的页面">
+          <select value={settings.general.startupView} onChange={(event) => void onUpdate({ general: { startupView: event.target.value } })}>
+            <option value="thread">线程</option>
+            <option value="browser">浏览器</option>
+            <option value="artifactPreview">交付物</option>
+          </select>
+        </SettingRow>
+        <SettingRow icon={Bell} title="通知测试" detail="发送一条本机通知">
+          <button className="redou-secondary-button" type="button" onClick={() => void onNotifyDesktop('Redou Agent', '桌面通知已接通。')}>发送测试</button>
+        </SettingRow>
+      </SettingsCard>
+    </section>
+  );
+}
+
+function SettingsCard({ title, description, children }: { title: string; description: string; children: ReactNode }) {
+  return (
+    <section className="redou-settings-card">
+      <div className="redou-settings-card-title">
+        <div>
+          <h3>{title}</h3>
+          <p>{description}</p>
+        </div>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function SettingRow({
+  icon: Icon,
+  title,
+  detail,
+  children,
+}: {
+  icon: LucideIcon;
+  title: string;
+  detail: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="redou-settings-row">
+      <div>
+        <strong><Icon size={16} /> {title}</strong>
+        <span>{detail}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ToggleSetting({
+  icon,
+  title,
+  detail,
+  enabled,
+  onToggle,
+}: {
+  icon: LucideIcon;
+  title: string;
+  detail: string;
+  enabled: boolean;
+  onToggle: () => void | Promise<void>;
+}) {
+  return (
+    <SettingRow icon={icon} title={title} detail={detail}>
+      <button className="redou-toggle" type="button" data-enabled={enabled ? 'true' : 'false'} aria-pressed={enabled} onClick={() => void onToggle()} />
+    </SettingRow>
+  );
+}
+
+function SegmentedSetting({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: Array<[string, string]>;
+  onChange: (value: string) => void | Promise<void>;
+}) {
+  return (
+    <div className="redou-settings-row">
+      <div>
+        <strong>{label}</strong>
+        <span>{value}</span>
+      </div>
+      <div className="redou-segmented-control">
+        {options.map(([id, text]) => (
+          <button type="button" data-active={value === id ? 'true' : 'false'} key={id} onClick={() => void onChange(id)}>
+            {text}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const FileIcon = FileText;
 
 function ConfiguredProvider({
   provider,

@@ -1,10 +1,10 @@
 import { AlertCircle, CheckCircle2, CircleDot, Loader2 } from 'lucide-react';
-import type { CodexPlanProjection, LogEntryData, ProgressStepData, RuntimeStatusData, WorkbenchTask } from '../../types';
+import type { RedouCodexPlanProjection, LogEntryData, ProgressStepData, RuntimeStatusData, WorkbenchTask } from '../../types';
 
 interface RunStatusCardProps {
   task: WorkbenchTask;
   progressSteps: ProgressStepData[];
-  planEntries: CodexPlanProjection[];
+  planEntries: RedouCodexPlanProjection[];
   logs: LogEntryData[];
   runtimeStatus?: RuntimeStatusData | null;
 }
@@ -19,6 +19,9 @@ function statusLabel(status?: string | null) {
   if (status === 'running' || status === 'started' || status === 'active' || status === 'in_progress' || status === 'inProgress') return '正在执行';
   if (status === 'completed') return '已完成';
   if (status === 'failed' || status === 'error') return '执行出错';
+  if (status === 'incomplete') return '未完成';
+  if (status === 'waiting_approval') return '等待审批';
+  if (status === 'degraded') return '兼容模式';
   if (status === 'cancelled' || status === 'canceled') return '已取消';
   return status;
 }
@@ -49,6 +52,7 @@ function activeLabel(progressSteps: ProgressStepData[], runtimeStatus?: RuntimeS
 
 function runIcon(status: string) {
   if (status === 'error' || status === 'failed') return <AlertCircle size={16} />;
+  if (status === 'waiting_approval' || status === 'degraded') return <AlertCircle size={16} />;
   if (status === 'completed') return <CheckCircle2 size={16} />;
   if (status === 'running' || status === 'started' || status === 'active' || status === 'in_progress' || status === 'inProgress') return <Loader2 size={16} />;
   return <CircleDot size={16} />;
@@ -61,7 +65,10 @@ export function RunStatusCard({ task, progressSteps, planEntries, logs, runtimeS
   const activeText = activeLabel(progressSteps, runtimeStatus, logs);
   const usage = usageLabel(runtimeStatus?.usage);
   const visibleSteps = progressSteps.slice(-4);
-  const errorMessage = runtimeStatus?.lastError?.message || (task.status === 'error' ? [...logs].reverse().find((log) => log.level === 'error')?.message : '');
+  const errorMessage = runtimeStatus?.lastError?.message
+    || runtimeStatus?.stopReason?.message
+    || runtimeStatus?.continuation?.message
+    || (task.status === 'error' ? [...logs].reverse().find((log) => log.level === 'error')?.message : '');
 
   return (
     <aside className="redou-run-status-card" data-status={turnStatus || task.status} aria-label="Redou runtime status">

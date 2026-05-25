@@ -12,13 +12,19 @@ function ok(data, warnings = []) {
   return { ok: true, data, error: null, warnings };
 }
 
+function redactSensitiveText(value) {
+  return String(value || '')
+    .replace(/\b(Bearer)\s+[^\s"']+/gi, '$1 [REDACTED_API_KEY]')
+    .replace(/\b(sk-[A-Za-z0-9._~+/=-]{8,})\b/g, '[REDACTED_API_KEY]');
+}
+
 function fail(error) {
   return {
     ok: false,
     data: null,
     error: {
       code: error && error.code ? error.code : 'IPC_ERROR',
-      message: error && error.message ? error.message : String(error),
+      message: redactSensitiveText(error && error.message ? error.message : String(error)),
       details: error && error.details ? error.details : null,
     },
     warnings: [],

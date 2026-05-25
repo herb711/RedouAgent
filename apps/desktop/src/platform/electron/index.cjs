@@ -2,6 +2,7 @@
 
 module.exports = {
   ...require('./mainWindow.cjs'),
+  ...require('./appMenu.cjs'),
   ...require('./preloadBridge.cjs'),
   ...require('./rendererLoader.cjs'),
   ...require('./appLifecycle.cjs'),

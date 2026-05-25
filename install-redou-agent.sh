@@ -149,6 +149,105 @@ install_npm_project() {
   ok "$label dependencies are ready"
 }
 
+electron_expected_executable() {
+  case "$(uname -s)" in
+    Linux)
+      printf 'electron\n'
+      ;;
+    Darwin)
+      printf 'Electron.app/Contents/MacOS/Electron\n'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+electron_cache_arch() {
+  local arch
+  arch="$("$NODE" -p 'process.arch')"
+  case "$arch" in
+    x64|arm64|armv7l)
+      printf '%s\n' "$arch"
+      ;;
+    arm)
+      printf 'armv7l\n'
+      ;;
+    *)
+      printf '%s\n' "$arch"
+      ;;
+  esac
+}
+
+run_with_timeout() {
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 120s "$@"
+  else
+    "$@"
+  fi
+}
+
+restore_electron_from_cache() {
+  local electron_dir="$1"
+  local expected="$2"
+  local version arch cache_root zip_path
+
+  [[ "$(uname -s)" == "Linux" ]] || return 1
+  require_command unzip "unzip"
+
+  version="$(cd "$electron_dir" && "$NODE" -p "require('./package.json').version")"
+  arch="$(electron_cache_arch)"
+
+  for cache_root in "${electron_config_cache:-}" "$HOME/.cache/electron"; do
+    [[ -n "$cache_root" && -d "$cache_root" ]] || continue
+    zip_path="$(find "$cache_root" -name "electron-v${version}-linux-${arch}.zip" -print -quit 2>/dev/null || true)"
+    [[ -n "$zip_path" ]] || continue
+
+    rm -rf "$electron_dir/dist"
+    mkdir -p "$electron_dir/dist"
+    unzip -q "$zip_path" -d "$electron_dir/dist"
+    printf '%s' "$expected" > "$electron_dir/path.txt"
+    chmod +x "$electron_dir/dist/$expected"
+    return 0
+  done
+
+  return 1
+}
+
+repair_electron_binary() {
+  local electron_dir="$DESKTOP_DIR/node_modules/electron"
+  local expected actual
+
+  [[ -d "$electron_dir" ]] || return 0
+  expected="$(electron_expected_executable)" || return 0
+
+  actual=""
+  if [[ -f "$electron_dir/path.txt" ]]; then
+    actual="$(<"$electron_dir/path.txt")"
+  fi
+
+  if [[ "$actual" == "$expected" && -x "$electron_dir/dist/$expected" ]]; then
+    return 0
+  fi
+
+  warn "Electron binary is missing or was installed for another platform"
+  rm -rf "$electron_dir/dist"
+  if ! (cd "$electron_dir" && run_with_timeout "$NODE" install.js); then
+    warn "Electron installer did not complete; checking local cache"
+  fi
+
+  if [[ ! -x "$electron_dir/dist/$expected" ]]; then
+    if ! restore_electron_from_cache "$electron_dir" "$expected"; then
+      echo "Electron binary could not be installed. Delete $DESKTOP_DIR/node_modules and rerun this script." >&2
+      exit 1
+    fi
+  fi
+
+  printf '%s' "$expected" > "$electron_dir/path.txt"
+  chmod +x "$electron_dir/dist/$expected"
+  ok "Electron binary is ready"
+}
+
 update_linux_launchers() {
   local launcher_script="$ROOT/scripts/create-redou-linux-launchers.sh"
   if [[ ! -f "$launcher_script" ]]; then
@@ -194,6 +293,7 @@ if [[ "$CHECK_ONLY" -eq 1 ]]; then
 fi
 
 install_npm_project "$DESKTOP_DIR" "desktop shell"
+repair_electron_binary
 
 if [[ "$SKIP_RENDERER_BUILD" -eq 1 ]]; then
   warn "Renderer dependency install and build skipped"

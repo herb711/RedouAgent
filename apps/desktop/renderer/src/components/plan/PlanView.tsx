@@ -1,7 +1,7 @@
-import type { CodexPlanProjection } from '../../types';
+import type { RedouCodexPlanProjection } from '../../types';
 
 interface PlanViewProps {
-  entries?: CodexPlanProjection[];
+  entries?: RedouCodexPlanProjection[];
 }
 
 export function PlanView({ entries = [] }: PlanViewProps) {

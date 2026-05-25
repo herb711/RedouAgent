@@ -163,6 +163,7 @@ async function enqueueTaskTurn(input = {}, dependencies = {}) {
     permissionPolicy: input.permissionPolicy || null,
     modelSelection: input.modelSelection || null,
     reasoningEffort: input.reasoningEffort || null,
+    contextPackage: input.contextPackage || null,
   };
   const queuedTurns = [...queuedTurnsFrom(task), item];
   const saved = await saveTask(task, dependencies, {
@@ -259,6 +260,7 @@ async function updateQueuedTaskTurn(input = {}, dependencies = {}) {
     permissionPolicy: queued.permissionPolicy,
     modelSelection: queued.modelSelection,
     reasoningEffort: queued.reasoningEffort,
+    contextPackage: queued.contextPackage,
     deliveryMode: 'guide',
   }, dependencies);
   if (isRuntimeFailure(result)) {
@@ -304,6 +306,10 @@ function terminalStatusFromEvent(event = {}) {
 }
 
 function isTerminalTurnEvent(event = {}) {
+  const compatibilityStatus = event.metadata?.redouCodexStopStatus
+    || event.payload?.compatibility?.status
+    || event.payload?.stopReason?.status;
+  if (compatibilityStatus === 'incomplete' || compatibilityStatus === 'waiting_approval') return false;
   const method = event.metadata && event.metadata.redouCodexMethod;
   if (method === 'turn/completed') return true;
   return Boolean(event.type === 'turn_update' && terminalStatusFromEvent(event));
@@ -350,6 +356,7 @@ async function drainNextQueuedTurn(taskId, dependencies = {}, options = {}) {
     permissionPolicy: next.permissionPolicy,
     modelSelection: next.modelSelection,
     reasoningEffort: next.reasoningEffort,
+    contextPackage: next.contextPackage,
     deliveryMode: 'queue',
     queuedTurnId: next.id,
     queuedAt: next.queuedAt,

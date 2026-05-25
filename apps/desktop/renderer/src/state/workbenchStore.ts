@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { hasRealRedouApi, redouApi, type RuntimeSnapshot } from '../api/redouApi';
+import { hasRealRedouApi, redouApi, type ArtifactSnapshot, type ContextSelectionItem, type ContextSelectionKind, type GitDiffSnapshot, type RuntimeSnapshot } from '../api/redouApi';
 import { createPermissionPolicy, getPermissionModeOption } from '../components/composer/composerOptions';
 import { mockWorkbenchData } from './mockWorkbenchData';
 import type {
   AgentThreadMessage,
-  CodexPlanProjection,
+  AppSettingsSnapshot,
+  ArtifactData,
+  ChangeFileData,
+  ContextItemData,
+  RedouCodexPlanProjection,
   ComposerPermissionModeId,
   ComposerSubmitOptions,
   ModelConfigSelection,
@@ -26,7 +30,7 @@ export interface WorkbenchState {
   data: WorkbenchMockData;
   selectedTask: WorkbenchTask | null;
   activeView: WorkbenchView;
-  codexPlan: CodexPlanProjection[];
+  redouCodexPlan: RedouCodexPlanProjection[];
   activeRightPanel: RightPanelId | null;
   rightPanelOpen: boolean;
   expandedProjectIds: string[];
@@ -34,6 +38,7 @@ export interface WorkbenchState {
   runtimeAvailability: unknown;
   runtimeError: string | null;
   modelConfig: ModelConfigSnapshot;
+  appSettings: AppSettingsSnapshot;
 }
 
 export interface WorkbenchActions {
@@ -57,9 +62,31 @@ export interface WorkbenchActions {
   probeModelProvider: (input: unknown) => Promise<ModelProbeResult | null>;
   saveModelProvider: (input: unknown) => Promise<void>;
   removeModelProvider: (providerId: string) => Promise<void>;
+  selectContextItems: (kind: ContextSelectionKind) => Promise<void>;
+  addDroppedContextFiles: (files: FileList | File[]) => Promise<void>;
+  removeContextItem: (path: string) => void;
+  clearContext: () => void;
+  generateImageArtifact: (prompt: string) => Promise<void>;
+  captureScreenshotComment: (comment: string) => Promise<void>;
+  openArtifact: (artifact: ArtifactData) => Promise<void>;
+  revealArtifact: (artifact: ArtifactData) => Promise<void>;
+  popoutArtifact: (artifact: ArtifactData) => Promise<void>;
+  setBrowserUrl: (url: string) => void;
+  openBrowserExternal: (url?: string) => Promise<void>;
+  popoutBrowser: (url?: string) => Promise<void>;
+  notifyDesktop: (title: string, body: string) => Promise<void>;
+  updateAppSettings: (patch: Record<string, unknown>) => Promise<void>;
   submitComposer: (input: string, options: ComposerSubmitOptions) => Promise<void>;
   guideQueuedMessage: (message: AgentThreadMessage) => Promise<void>;
   deleteQueuedMessage: (message: AgentThreadMessage) => Promise<void>;
+  stageGitFile: (file: ChangeFileData) => Promise<void>;
+  unstageGitFile: (file: ChangeFileData) => Promise<void>;
+  revertGitFile: (file: ChangeFileData) => Promise<void>;
+  stageGitHunk: (file: ChangeFileData, hunkIndex: number) => Promise<void>;
+  revertGitHunk: (file: ChangeFileData, hunkIndex: number) => Promise<void>;
+  commitGitChanges: () => Promise<void>;
+  pushGitBranch: () => Promise<void>;
+  createPullRequest: () => Promise<void>;
 }
 
 const emptyModelConfig: ModelConfigSnapshot = {
@@ -68,11 +95,45 @@ const emptyModelConfig: ModelConfigSnapshot = {
   selected: null,
 };
 
+const defaultAppSettings: AppSettingsSnapshot = {
+  general: {
+    language: 'zh-CN',
+    startupView: 'thread',
+    autoUpdate: true,
+  },
+  appearance: {
+    theme: 'light',
+    density: 'comfortable',
+    inspectorSide: 'right',
+  },
+  desktop: {
+    notifications: true,
+    preventSleep: false,
+    screenshotComments: true,
+    popoutBehavior: 'window',
+  },
+  browser: {
+    enabled: true,
+    homeUrl: 'https://github.com/herb711/RedouAgent',
+    allowPopouts: true,
+  },
+  media: {
+    voiceInput: true,
+    imageInput: true,
+    imageGeneration: true,
+  },
+  connections: {
+    artifactPreview: true,
+    inAppBrowser: true,
+    screenshotCapture: true,
+  },
+};
+
 export const initialWorkbenchState: WorkbenchState = {
   data: mockWorkbenchData,
   selectedTask: mockWorkbenchData.activeTask,
   activeView: 'thread',
-  codexPlan: [],
+  redouCodexPlan: [],
   activeRightPanel: 'progress',
   rightPanelOpen: true,
   expandedProjectIds: [mockWorkbenchData.activeProjectId],
@@ -80,12 +141,13 @@ export const initialWorkbenchState: WorkbenchState = {
   runtimeAvailability: null,
   runtimeError: null,
   modelConfig: emptyModelConfig,
+  appSettings: defaultAppSettings,
 };
 
 function mapProgressStatus(status: string): ProgressStepStatus {
   if (status === 'completed') return 'completed';
-  if (status === 'inProgress' || status === 'in_progress' || status === 'active' || status === 'running' || status === 'started' || status === 'updated') return 'active';
-  if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled') return 'error';
+  if (status === 'inProgress' || status === 'in_progress' || status === 'active' || status === 'running' || status === 'started' || status === 'updated' || status === 'waiting_approval') return 'active';
+  if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled' || status === 'degraded') return 'error';
   return 'pending';
 }
 
@@ -95,7 +157,17 @@ function mapLogLevel(level: string): LogEntryData['level'] {
 }
 
 function mapTaskStatus(status?: string): WorkbenchTaskStatus {
-  if (status === 'running' || status === 'blocked' || status === 'error' || status === 'completed') return status;
+  if (
+    status === 'running'
+    || status === 'blocked'
+    || status === 'waiting_approval'
+    || status === 'failed'
+    || status === 'error'
+    || status === 'degraded'
+    || status === 'completed'
+  ) return status;
+  if (status === 'cancelled' || status === 'canceled') return 'failed';
+  if (status === 'idle') return 'completed';
   return 'created';
 }
 
@@ -119,6 +191,7 @@ function normalizeRuntimeStatus(input: unknown): RuntimeStatusData | null {
     runtime: status.runtime ? String(status.runtime) : null,
     threadStatus: status.threadStatus ? String(status.threadStatus) : null,
     turnStatus: status.turnStatus ? String(status.turnStatus) : null,
+    rawTurnStatus: status.rawTurnStatus ? String(status.rawTurnStatus) : null,
     activeTurnId: status.activeTurnId ? String(status.activeTurnId) : null,
     activeItem: status.activeItem
       ? {
@@ -129,6 +202,24 @@ function normalizeRuntimeStatus(input: unknown): RuntimeStatusData | null {
         }
       : null,
     usage: status.usage && typeof status.usage === 'object' ? status.usage : null,
+    needsAttention: Boolean(status.needsAttention),
+    degraded: Boolean(status.degraded),
+    stopReason: status.stopReason && typeof status.stopReason === 'object'
+      ? {
+          status: status.stopReason.status ? String(status.stopReason.status) : null,
+          code: status.stopReason.code ? String(status.stopReason.code) : null,
+          message: status.stopReason.message ? String(status.stopReason.message) : null,
+          details: status.stopReason.details,
+        }
+      : null,
+    continuation: status.continuation && typeof status.continuation === 'object'
+      ? {
+          recommended: Boolean(status.continuation.recommended),
+          automatic: Boolean(status.continuation.automatic),
+          reason: status.continuation.reason ? String(status.continuation.reason) : null,
+          message: status.continuation.message ? String(status.continuation.message) : null,
+        }
+      : null,
     lastError,
   };
 }
@@ -153,6 +244,40 @@ function normalizeModelConfigSnapshot(input: unknown): ModelConfigSnapshot {
           modelId: String(snapshot.selected.modelId),
         }
       : null,
+  };
+}
+
+function normalizeAppSettingsSnapshot(input: unknown): AppSettingsSnapshot {
+  const snapshot = (input || {}) as Partial<AppSettingsSnapshot>;
+  return {
+    ...defaultAppSettings,
+    ...snapshot,
+    general: { ...defaultAppSettings.general, ...(snapshot.general || {}) },
+    appearance: { ...defaultAppSettings.appearance, ...(snapshot.appearance || {}) },
+    desktop: { ...defaultAppSettings.desktop, ...(snapshot.desktop || {}) },
+    browser: { ...defaultAppSettings.browser, ...(snapshot.browser || {}) },
+    media: { ...defaultAppSettings.media, ...(snapshot.media || {}) },
+    connections: { ...defaultAppSettings.connections, ...(snapshot.connections || {}) },
+  };
+}
+
+function normalizeArtifactSnapshot(input: ArtifactSnapshot): ArtifactData {
+  return {
+    id: String(input.id || ''),
+    taskId: input.taskId ?? null,
+    projectId: input.projectId ?? null,
+    name: String(input.name || input.path || 'Untitled artifact'),
+    type: String(input.type || 'file'),
+    status: String(input.status || 'ready'),
+    path: input.path ?? null,
+    mimeType: input.mimeType ?? null,
+    size: Number(input.size || 0),
+    createdAt: input.createdAt,
+    updatedAt: input.updatedAt,
+    content: input.content ?? null,
+    uri: input.uri ?? null,
+    metadata: input.metadata || {},
+    preview: input.preview,
   };
 }
 
@@ -266,6 +391,229 @@ function formatChangeCount(fileCount: number) {
   return fileCount > 0 ? `${fileCount} 个文件` : '无变更';
 }
 
+function gitChangeLabel(diff: GitDiffSnapshot | null) {
+  if (!diff) return 'No Git data';
+  if (!diff.isRepository) return 'No Git repo';
+  if (diff.isClean) return 'No changes';
+  return `${diff.files.length} files`;
+}
+
+function gitSourceLabel(diff: GitDiffSnapshot, fallback: string) {
+  if (!diff.isRepository) return diff.error || fallback;
+  if (diff.lastAction?.type === 'commit') return `Committed ${diff.lastAction.sha || 'HEAD'}`;
+  if (diff.lastAction?.type === 'push') return 'Pushed current branch';
+  return 'Git working tree';
+}
+
+function applyGitDiffToData(data: WorkbenchMockData, diff: GitDiffSnapshot | null): WorkbenchMockData {
+  if (!diff) return data;
+  const files = Array.isArray(diff.files) ? diff.files : [];
+  const diffSummary = diff.isRepository
+    ? (diff.stat || diff.patch || (diff.isClean ? 'Working tree is clean.' : 'Git working tree has changes.'))
+    : (diff.error || 'Current project is not a Git repository.');
+  return {
+    ...data,
+    mockChanges: {
+      ...data.mockChanges,
+      insertions: Number(diff.insertions || 0),
+      deletions: Number(diff.deletions || 0),
+      diffSummary,
+      patch: diff.patch || '',
+      stat: diff.stat || '',
+      files: files.map((file) => ({
+        id: file.id || file.path,
+        path: file.path,
+        status: file.staged && !file.unstaged && !file.untracked ? 'staged' : 'unstaged',
+        insertions: Number(file.insertions || 0),
+        deletions: Number(file.deletions || 0),
+        gitStatus: file.status,
+        indexStatus: file.indexStatus,
+        worktreeStatus: file.worktreeStatus,
+        staged: file.staged,
+        unstaged: file.unstaged,
+        untracked: file.untracked,
+        binary: file.binary,
+        patch: file.patch || '',
+      })),
+    },
+    environment: {
+      ...data.environment,
+      changes: gitChangeLabel(diff),
+      branch: diff.branch || data.environment.branch,
+      source: gitSourceLabel(diff, diffSummary),
+    },
+  };
+}
+
+function gitProjectActionPayload(state: WorkbenchState, extra: Record<string, unknown> = {}) {
+  return {
+    projectId: state.selectedTask?.projectId || state.data.activeProjectId,
+    ...extra,
+  };
+}
+
+function gitFileActionPayload(state: WorkbenchState, file: ChangeFileData, extra: Record<string, unknown> = {}) {
+  return {
+    ...gitProjectActionPayload(state),
+    path: file.path,
+    ...extra,
+  };
+}
+
+function artifactActionPayload(state: WorkbenchState, extra: Record<string, unknown> = {}) {
+  return {
+    projectId: state.selectedTask?.projectId || state.data.activeProjectId,
+    taskId: state.selectedTask?.id || state.data.activeTask.id,
+    ...extra,
+  };
+}
+
+function appendArtifactToData(data: WorkbenchMockData, artifact: ArtifactData): WorkbenchMockData {
+  return {
+    ...data,
+    mockArtifacts: [artifact, ...data.mockArtifacts.filter((item) => item.id !== artifact.id)],
+  };
+}
+
+function uniqueStrings(values: Array<string | undefined | null>) {
+  return Array.from(new Set(values.map((value) => String(value || '').trim()).filter(Boolean)));
+}
+
+function contextKindForPath(path: string, fallback: ContextSelectionKind = 'file'): ContextSelectionKind {
+  if (fallback === 'directory') return 'directory';
+  if (/\.(avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(path)) return 'image';
+  return fallback;
+}
+
+function normalizeContextItem(item: ContextSelectionItem): ContextItemData | null {
+  const itemPath = String(item.path || '').trim();
+  if (!itemPath) return null;
+  return {
+    path: itemPath,
+    name: String(item.name || itemPath.split(/[\\/]/).pop() || itemPath),
+    kind: contextKindForPath(itemPath, item.kind),
+  };
+}
+
+function mergeContextItems(current: ContextItemData[], incoming: ContextSelectionItem[]) {
+  const byPath = new Map(current.map((item) => [item.path, item]));
+  for (const item of incoming) {
+    const normalized = normalizeContextItem(item);
+    if (normalized) byPath.set(normalized.path, normalized);
+  }
+  return Array.from(byPath.values());
+}
+
+function addContextItemsToData(data: WorkbenchMockData, items: ContextSelectionItem[]): WorkbenchMockData {
+  if (!items.length) return data;
+  const selectedFiles = [...data.mockContext.selectedFiles];
+  const selectedDirectories = [...(data.mockContext.selectedDirectories || [])];
+  const attachments = [...data.mockContext.attachments];
+
+  for (const item of items) {
+    const itemPath = String(item.path || '').trim();
+    if (!itemPath) continue;
+    const kind = contextKindForPath(itemPath, item.kind);
+    if (kind === 'image') attachments.push(itemPath);
+    else if (kind === 'directory') selectedDirectories.push(itemPath);
+    else selectedFiles.push(itemPath);
+  }
+
+  const nextFiles = uniqueStrings(selectedFiles);
+  const nextDirectories = uniqueStrings(selectedDirectories);
+  const nextAttachments = uniqueStrings(attachments);
+  const total = nextFiles.length + nextDirectories.length + nextAttachments.length;
+
+  return {
+    ...data,
+    contextItems: mergeContextItems(data.contextItems || [], items),
+    mockContext: {
+      ...data.mockContext,
+      summary: total
+        ? `${total} context item${total === 1 ? '' : 's'} selected for the next turn.`
+        : 'No context selected.',
+      selectedFiles: nextFiles,
+      selectedDirectories: nextDirectories,
+      attachments: nextAttachments,
+    },
+  };
+}
+
+function removeContextItemFromData(data: WorkbenchMockData, itemPath: string): WorkbenchMockData {
+  const nextFiles = data.mockContext.selectedFiles.filter((path) => path !== itemPath);
+  const nextDirectories = (data.mockContext.selectedDirectories || []).filter((path) => path !== itemPath);
+  const nextAttachments = data.mockContext.attachments.filter((path) => path !== itemPath);
+  const total = nextFiles.length + nextDirectories.length + nextAttachments.length;
+  return {
+    ...data,
+    contextItems: (data.contextItems || []).filter((item) => item.path !== itemPath),
+    mockContext: {
+      ...data.mockContext,
+      summary: total
+        ? `${total} context item${total === 1 ? '' : 's'} selected for the next turn.`
+        : 'No context selected.',
+      selectedFiles: nextFiles,
+      selectedDirectories: nextDirectories,
+      attachments: nextAttachments,
+    },
+  };
+}
+
+function clearContextFromData(data: WorkbenchMockData): WorkbenchMockData {
+  return {
+    ...data,
+    contextItems: [],
+    mockContext: {
+      ...data.mockContext,
+      summary: 'No context selected.',
+      selectedFiles: [],
+      selectedDirectories: [],
+      attachments: [],
+    },
+  };
+}
+
+function droppedContextItems(files: FileList | File[]): ContextSelectionItem[] {
+  return Array.from(files || []).map((file) => {
+    const path = redouApi.pathForDroppedFile(file);
+    const kind = contextKindForPath(path, file.type.startsWith('image/') ? 'image' : 'file');
+    return {
+      path,
+      name: file.name,
+      kind,
+    };
+  }).filter((item) => item.path);
+}
+
+async function buildContextPackageForTurn(state: WorkbenchState, userInput: string) {
+  const project = state.data.projects.find((item) => item.id === state.data.activeProjectId);
+  const selectedFiles = uniqueStrings([
+    ...state.data.mockContext.selectedFiles,
+    ...(state.data.mockContext.selectedDirectories || []),
+  ]);
+  const attachments = uniqueStrings(state.data.mockContext.attachments);
+  const recentMessages = state.data.agentMessages.slice(-8).map((message) => `${message.role || 'assistant'}: ${message.body}`);
+  const input = {
+    projectId: state.data.activeProjectId,
+    taskId: state.selectedTask?.id || state.data.activeTask.id,
+    workspaceRoot: project?.rootPath,
+    userInput,
+    recentMessages,
+    selectedFiles,
+    attachments,
+    environment: {
+      cwd: project?.rootPath,
+      runtime: state.data.activeTask.runtime,
+    },
+    metadata: {
+      source: 'renderer-composer',
+      selectedDirectories: state.data.mockContext.selectedDirectories || [],
+    },
+  };
+  const result = await redouApi.previewContext(input);
+  return result.ok && result.data ? result.data : input;
+}
+
 export function applyRuntimeSnapshotToData(data: WorkbenchMockData, snapshot: RuntimeSnapshot | null): WorkbenchMockData {
   if (!snapshot) return data;
   const hasMessages = Array.isArray(snapshot.messages);
@@ -277,8 +625,19 @@ export function applyRuntimeSnapshotToData(data: WorkbenchMockData, snapshot: Ru
   const hasArtifacts = Array.isArray(snapshot.artifacts);
   const hasChangedFiles = Array.isArray(snapshot.changedFiles);
   const snapshotChangedFiles = hasChangedFiles ? snapshot.changedFiles || [] : null;
+  const runtimeStatus = normalizeRuntimeStatus(snapshot.runtimeStatus);
+  const projectedTaskStatus = runtimeStatus?.turnStatus ? mapTaskStatus(runtimeStatus.turnStatus) : null;
   return {
     ...data,
+    activeTask: projectedTaskStatus
+      ? { ...data.activeTask, status: projectedTaskStatus }
+      : data.activeTask,
+    projects: projectedTaskStatus
+      ? data.projects.map((project) => ({
+          ...project,
+          tasks: project.tasks.map((task) => task.id === data.activeTask.id ? { ...task, status: projectedTaskStatus } : task),
+        }))
+      : data.projects,
     agentMessages: hasMessages
       ? snapshot.messages.filter((message) => message.role === 'user' || message.status === 'error' || String(message.body || '').trim()).map((message) => ({
           id: message.id,
@@ -342,10 +701,14 @@ export function applyRuntimeSnapshotToData(data: WorkbenchMockData, snapshot: Ru
           level: mapLogLevel(log.level),
           time: log.time,
           message: log.message,
+          kind: log.kind,
+          lifecycle: log.lifecycle,
+          command: log.command,
+          output: log.output,
         }))
       : data.mockLogs,
-    mockArtifacts: hasArtifacts ? snapshot.artifacts : data.mockArtifacts,
-    runtimeStatus: normalizeRuntimeStatus(snapshot.runtimeStatus) || data.runtimeStatus || null,
+    mockArtifacts: hasArtifacts ? (snapshot.artifacts || []).map(normalizeArtifactSnapshot) : data.mockArtifacts,
+    runtimeStatus: runtimeStatus || data.runtimeStatus || null,
     environment: snapshot.environmentInfo
       ? {
           ...data.environment,
@@ -496,11 +859,12 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
     async function bootstrap() {
       if (!hasRealRedouApi()) return;
       try {
-        const [runtimes, availability, projectsResult, modelConfigResult] = await Promise.all([
+        const [runtimes, availability, projectsResult, modelConfigResult, appSettingsResult] = await Promise.all([
           redouApi.listRuntimes(),
           redouApi.getRuntimeAvailability('redou-codex'),
           redouApi.listProjects(),
           redouApi.listModelConfigs(),
+          redouApi.getAppSettings(),
         ]);
         const projects = (projectsResult.data || []) as Array<Record<string, unknown>>;
         const normalizedProjects = projects.length ? projects : [{ id: 'default-workspace', name: 'Default workspace' }];
@@ -513,13 +877,21 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
         const activeTask = tasks[0] || null;
         if (cancelled) return;
         const runtimeList = Array.isArray(runtimes.data) ? runtimes.data as Array<{ id?: string }> : [];
-        const codexDescriptor = runtimeList.find((runtime) => runtime.id === 'redou-codex') || null;
-        const availabilityData = (availability.data || codexDescriptor) as { available?: boolean; lastError?: { message?: string } } | null;
+        const redouCodexDescriptor = runtimeList.find((runtime) => runtime.id === 'redou-codex') || null;
+        const availabilityData = (availability.data || redouCodexDescriptor) as { available?: boolean; lastError?: { message?: string } } | null;
         const availabilityError = availabilityData?.lastError?.message || (!availability.ok ? availability.error?.message : null) || null;
         const activeProjectId = String(activeProject.id || 'default-workspace');
         const displayTask = activeTask || createEmptyTask(activeProjectId);
         const mappedProjects = normalizedProjects.map((project, index) => mapProject(project, projectTasks[index] || []));
         const modelConfig = normalizeModelConfigSnapshot(modelConfigResult.data);
+        const appSettings = normalizeAppSettingsSnapshot(appSettingsResult.data);
+        const [gitDiffResult, artifactsResult] = await Promise.all([
+          redouApi.getGitDiff({ projectId: activeProjectId }),
+          redouApi.listArtifacts({ projectId: activeProjectId, taskId: activeTask?.id }),
+        ]);
+        const gitDiff = gitDiffResult.ok && gitDiffResult.data ? gitDiffResult.data : null;
+        const artifacts = artifactsResult.ok && artifactsResult.data ? artifactsResult.data.map(normalizeArtifactSnapshot) : [];
+        if (cancelled) return;
         setState((current) => {
           const nextData: WorkbenchMockData = {
             ...current.data,
@@ -532,9 +904,14 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
             todoProjectionEntries: [],
             approvalRequests: [],
             mockLogs: [],
-            mockArtifacts: [],
+            mockArtifacts: artifacts,
             mockChanges: { ...current.data.mockChanges, files: [], insertions: 0, deletions: 0, diffSummary: '' },
             runtimeStatus: null,
+            browser: {
+              ...current.data.browser,
+              homeUrl: appSettings.browser.homeUrl,
+              url: current.data.browser.url || appSettings.browser.homeUrl,
+            },
             environment: {
               ...current.data.environment,
               changes: '无变更',
@@ -543,13 +920,14 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
               source: availabilityError || 'redou-codex app-server',
             },
           };
-          const dataWithModelConfig = applyModelConfigToData(nextData, modelConfig);
+          const dataWithModelConfig = applyGitDiffToData(applyModelConfigToData(nextData, modelConfig), gitDiff);
           return {
             ...current,
             apiMode: 'ipc',
-            runtimeAvailability: availability.data || codexDescriptor,
+            runtimeAvailability: availability.data || redouCodexDescriptor,
             runtimeError: availabilityError,
             modelConfig,
+            appSettings,
             selectedTask: activeTask,
             expandedProjectIds: activeProjectId ? [activeProjectId] : [],
             data: availabilityError ? appendRuntimeErrorLog(dataWithModelConfig, availabilityError) : dataWithModelConfig,
@@ -580,23 +958,32 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
     if (!hasRealRedouApi() || !state.selectedTask?.id) return undefined;
     let cancelled = false;
     const taskId = state.selectedTask.id;
+    const projectId = state.selectedTask.projectId || state.data.activeProjectId;
     const pullSnapshot = async () => {
-      const [result, taskResult] = await Promise.all([
+      const [result, taskResult, gitDiffResult, artifactsResult] = await Promise.all([
         redouApi.getSnapshot(taskId),
         redouApi.getTask(taskId),
+        redouApi.getGitDiff({ projectId }),
+        redouApi.listArtifacts({ projectId, taskId }),
       ]);
       if (cancelled || !result.data) return;
       const runtimeStatus = result.data.runtimeStatus as { lastError?: { message?: string } } | undefined;
       const snapshotError = runtimeStatus?.lastError?.message || null;
       const refreshedTask = taskResult.ok && taskResult.data ? mapTask(taskResult.data as Record<string, unknown>) : null;
+      const gitDiff = gitDiffResult.ok && gitDiffResult.data ? gitDiffResult.data : null;
+      const artifacts = artifactsResult.ok && artifactsResult.data ? artifactsResult.data.map(normalizeArtifactSnapshot) : null;
       setState((current) => ({
         ...current,
         selectedTask: refreshedTask && current.selectedTask?.id === taskId ? refreshedTask : current.selectedTask,
-        data: refreshedTask && current.data.activeTask.id === taskId
-          ? updateTaskProjection(applyRuntimeSnapshotToData(current.data, result.data), refreshedTask)
-          : applyRuntimeSnapshotToData(current.data, result.data),
+        data: (() => {
+          const runtimeData = applyRuntimeSnapshotToData(current.data, result.data);
+          const artifactData = artifacts ? { ...runtimeData, mockArtifacts: artifacts } : runtimeData;
+          return refreshedTask && current.data.activeTask.id === taskId
+            ? applyGitDiffToData(updateTaskProjection(artifactData, refreshedTask), gitDiff)
+            : applyGitDiffToData(artifactData, gitDiff);
+        })(),
         runtimeError: snapshotError,
-        codexPlan: (result.data?.planEntries || []).map((entry) => ({
+        redouCodexPlan: (result.data?.planEntries || []).map((entry) => ({
           id: entry.id,
           title: entry.title || entry.step || '',
           status: entry.status,
@@ -611,7 +998,7 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
       window.clearInterval(timer);
       unsubscribe();
     };
-  }, [state.selectedTask?.id]);
+  }, [state.selectedTask?.id, state.selectedTask?.projectId, state.data.activeProjectId]);
 
   const actions = useMemo<WorkbenchActions>(
     () => ({
@@ -1028,6 +1415,162 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           data: applyModelConfigToData(current.data, modelConfig),
         }));
       },
+      async selectContextItems(kind) {
+        const result = await redouApi.selectContextItems({ kind });
+        if (!result.ok || !result.data) {
+          const error = result.error?.message || 'Failed to add context';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+          return;
+        }
+        if (result.data.canceled || !result.data.items.length) return;
+        setState((current) => ({
+          ...current,
+          runtimeError: null,
+          activeRightPanel: 'context',
+          rightPanelOpen: true,
+          data: addContextItemsToData(current.data, result.data?.items || []),
+        }));
+      },
+      async addDroppedContextFiles(files) {
+        const items = droppedContextItems(files);
+        if (!items.length) return;
+        setState((current) => ({
+          ...current,
+          activeRightPanel: 'context',
+          rightPanelOpen: true,
+          data: addContextItemsToData(current.data, items),
+        }));
+      },
+      removeContextItem(path) {
+        setState((current) => ({
+          ...current,
+          data: removeContextItemFromData(current.data, path),
+        }));
+      },
+      clearContext() {
+        setState((current) => ({
+          ...current,
+          data: clearContextFromData(current.data),
+        }));
+      },
+      async generateImageArtifact(prompt) {
+        const trimmed = prompt.trim();
+        if (!trimmed) return;
+        const result = await redouApi.generateImageArtifact(artifactActionPayload(state, { prompt: trimmed }));
+        if (!result.ok || !result.data) {
+          const error = result.error?.message || 'Failed to generate image artifact';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+          return;
+        }
+        const artifact = normalizeArtifactSnapshot(result.data);
+        setState((current) => ({
+          ...current,
+          activeView: 'artifactPreview',
+          activeRightPanel: 'artifacts',
+          rightPanelOpen: true,
+          data: appendArtifactToData(current.data, artifact),
+        }));
+      },
+      async captureScreenshotComment(comment) {
+        const result = await redouApi.captureScreenshotArtifact(artifactActionPayload(state, {
+          comment,
+          metadata: { view: state.activeView },
+        }));
+        if (!result.ok || !result.data) {
+          const error = result.error?.message || 'Failed to capture screenshot';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+          return;
+        }
+        const artifact = normalizeArtifactSnapshot(result.data);
+        setState((current) => ({
+          ...current,
+          activeRightPanel: 'artifacts',
+          rightPanelOpen: true,
+          data: appendArtifactToData(current.data, artifact),
+        }));
+      },
+      async openArtifact(artifact) {
+        const result = await redouApi.openArtifact({ id: artifact.id, taskId: artifact.taskId || state.selectedTask?.id });
+        if (!result.ok) {
+          const error = result.error?.message || 'Failed to open artifact';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+        }
+      },
+      async revealArtifact(artifact) {
+        const result = await redouApi.revealArtifact({ id: artifact.id, taskId: artifact.taskId || state.selectedTask?.id });
+        if (!result.ok) {
+          const error = result.error?.message || 'Failed to reveal artifact';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+        }
+      },
+      async popoutArtifact(artifact) {
+        const result = await redouApi.popoutWindow(artifact.uri
+          ? { url: artifact.uri, title: artifact.name }
+          : artifact.path
+            ? { filePath: artifact.path, title: artifact.name }
+            : { title: artifact.name, content: artifact.preview?.content || artifact.content || artifact.name });
+        if (!result.ok) {
+          const error = result.error?.message || 'Failed to pop out artifact';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+        }
+      },
+      setBrowserUrl(url) {
+        setState((current) => ({
+          ...current,
+          activeView: 'browser',
+          data: {
+            ...current.data,
+            browser: {
+              ...current.data.browser,
+              url: url || current.appSettings.browser.homeUrl,
+              status: 'loading',
+            },
+          },
+        }));
+      },
+      async openBrowserExternal(url) {
+        const target = url || state.data.browser.url || state.appSettings.browser.homeUrl;
+        const result = await redouApi.openExternalUrl(target);
+        if (!result.ok) {
+          const error = result.error?.message || 'Failed to open external browser';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+        }
+      },
+      async popoutBrowser(url) {
+        const target = url || state.data.browser.url || state.appSettings.browser.homeUrl;
+        const result = await redouApi.popoutWindow({ url: target, title: 'Redou browser' });
+        if (!result.ok) {
+          const error = result.error?.message || 'Failed to pop out browser';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+        }
+      },
+      async notifyDesktop(title, body) {
+        const result = await redouApi.notifyDesktop({ title, body });
+        if (!result.ok) {
+          const error = result.error?.message || 'Failed to show notification';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+        }
+      },
+      async updateAppSettings(patch) {
+        const result = await redouApi.updateAppSettings({ patch });
+        if (!result.ok || !result.data) {
+          const error = result.error?.message || 'Failed to update settings';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+          return;
+        }
+        const appSettings = normalizeAppSettingsSnapshot(result.data);
+        setState((current) => ({
+          ...current,
+          appSettings,
+          data: {
+            ...current.data,
+            browser: {
+              ...current.data.browser,
+              homeUrl: appSettings.browser.homeUrl,
+            },
+          },
+        }));
+      },
       async submitComposer(input, options) {
         const trimmed = input.trim();
         if (!trimmed) return;
@@ -1036,7 +1579,8 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
         const modelSelection = options?.modelSelection || state.data.composer.modelSelection || state.modelConfig.selected || null;
         const reasoningEffort = options?.reasoningEffort || state.data.composer.reasoningEffort;
         const deliveryMode = options?.deliveryMode || 'auto';
-        const turnOptions = { permissionPolicy, modelSelection, reasoningEffort };
+        const contextPackage = await buildContextPackageForTurn(state, trimmed);
+        const turnOptions = { permissionPolicy, modelSelection, reasoningEffort, contextPackage };
         if (!hasRealRedouApi()) {
           setState((current) => ({
             ...current,
@@ -1183,6 +1727,172 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
             }, queueId, () => null), nextActiveTask),
           };
         });
+      },
+      async stageGitFile(file) {
+        if (!file.path) return;
+        const result = await redouApi.stageGitFile(gitFileActionPayload(state, file));
+        const error = actionResultError(result, 'Failed to stage file');
+        if (error || !result.data) {
+          setState((current) => ({
+            ...current,
+            runtimeError: error || 'Failed to stage file',
+            data: appendRuntimeErrorLog(current.data, error || 'Failed to stage file'),
+          }));
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          runtimeError: null,
+          data: applyGitDiffToData(current.data, result.data),
+        }));
+      },
+      async unstageGitFile(file) {
+        if (!file.path) return;
+        const result = await redouApi.unstageGitFile(gitFileActionPayload(state, file));
+        const error = actionResultError(result, 'Failed to unstage file');
+        if (error || !result.data) {
+          setState((current) => ({
+            ...current,
+            runtimeError: error || 'Failed to unstage file',
+            data: appendRuntimeErrorLog(current.data, error || 'Failed to unstage file'),
+          }));
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          runtimeError: null,
+          data: applyGitDiffToData(current.data, result.data),
+        }));
+      },
+      async revertGitFile(file) {
+        if (!file.path) return;
+        const result = await redouApi.revertGitFile(gitFileActionPayload(state, file, { allowUntrackedDelete: Boolean(file.untracked) }));
+        const error = actionResultError(result, 'Failed to revert file');
+        if (error || !result.data) {
+          setState((current) => ({
+            ...current,
+            runtimeError: error || 'Failed to revert file',
+            data: appendRuntimeErrorLog(current.data, error || 'Failed to revert file'),
+          }));
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          runtimeError: null,
+          data: applyGitDiffToData(current.data, result.data),
+        }));
+      },
+      async stageGitHunk(file, hunkIndex) {
+        if (!file.path) return;
+        const result = await redouApi.stageGitHunk(gitFileActionPayload(state, file, { hunkIndex }));
+        const error = actionResultError(result, 'Failed to stage hunk');
+        if (error || !result.data) {
+          setState((current) => ({
+            ...current,
+            runtimeError: error || 'Failed to stage hunk',
+            data: appendRuntimeErrorLog(current.data, error || 'Failed to stage hunk'),
+          }));
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          runtimeError: null,
+          data: applyGitDiffToData(current.data, result.data),
+        }));
+      },
+      async revertGitHunk(file, hunkIndex) {
+        if (!file.path) return;
+        const result = await redouApi.revertGitHunk(gitFileActionPayload(state, file, { hunkIndex, staged: Boolean(file.staged && !file.unstaged) }));
+        const error = actionResultError(result, 'Failed to revert hunk');
+        if (error || !result.data) {
+          setState((current) => ({
+            ...current,
+            runtimeError: error || 'Failed to revert hunk',
+            data: appendRuntimeErrorLog(current.data, error || 'Failed to revert hunk'),
+          }));
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          runtimeError: null,
+          data: applyGitDiffToData(current.data, result.data),
+        }));
+      },
+      async commitGitChanges() {
+        const message = window.prompt('Commit message');
+        const trimmed = message?.trim();
+        if (!trimmed) return;
+        const result = await redouApi.commitGitChanges(gitProjectActionPayload(state, { message: trimmed }));
+        const error = actionResultError(result, 'Failed to commit changes');
+        if (error || !result.data) {
+          setState((current) => ({
+            ...current,
+            runtimeError: error || 'Failed to commit changes',
+            data: appendRuntimeErrorLog(current.data, error || 'Failed to commit changes'),
+          }));
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          runtimeError: null,
+          data: applyGitDiffToData(current.data, result.data),
+        }));
+      },
+      async pushGitBranch() {
+        const confirmed = window.confirm('Push the current branch to its configured upstream?');
+        if (!confirmed) return;
+        const result = await redouApi.pushGitBranch(gitProjectActionPayload(state));
+        const error = actionResultError(result, 'Failed to push branch');
+        if (error || !result.data) {
+          setState((current) => ({
+            ...current,
+            runtimeError: error || 'Failed to push branch',
+            data: appendRuntimeErrorLog(current.data, error || 'Failed to push branch'),
+          }));
+          return;
+        }
+        setState((current) => ({
+          ...current,
+          runtimeError: null,
+          data: applyGitDiffToData(current.data, result.data),
+        }));
+      },
+      async createPullRequest() {
+        const title = window.prompt('Pull request title', state.data.activeTask.title || state.data.environment.branch);
+        const trimmedTitle = title?.trim();
+        if (!trimmedTitle) return;
+        const body = window.prompt('Pull request body', `Created from Redou Agent for ${state.data.activeTask.title}.`) || '';
+        const base = window.prompt('Base branch (leave empty for repository default)', '') || '';
+        const pushFirst = window.confirm('Push this branch before creating the pull request?');
+        const result = await redouApi.createPullRequest(gitProjectActionPayload(state, {
+          title: trimmedTitle,
+          body,
+          base: base.trim() || undefined,
+          pushFirst,
+        }));
+        const error = actionResultError(result, 'Failed to create pull request');
+        if (error || !result.data) {
+          setState((current) => ({
+            ...current,
+            runtimeError: error || 'Failed to create pull request',
+            data: appendRuntimeErrorLog(current.data, error || 'Failed to create pull request'),
+          }));
+          return;
+        }
+        const pullRequestUrl = result.data.pullRequest?.url || 'Pull request created';
+        setState((current) => ({
+          ...current,
+          runtimeError: null,
+          data: {
+            ...applyGitDiffToData(current.data, result.data),
+            environment: {
+              ...applyGitDiffToData(current.data, result.data).environment,
+              pullRequest: pullRequestUrl,
+              source: pullRequestUrl,
+            },
+          },
+        }));
+        if (pullRequestUrl.startsWith('http')) window.open(pullRequestUrl, '_blank', 'noopener,noreferrer');
       },
     }),
     [state],

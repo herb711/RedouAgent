@@ -1,7 +1,7 @@
 {
   "name": "redou-agent-desktop",
   "productName": "Redou Agent",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "private": true,
   "description": "Redou Agent desktop shell",
   "homepage": "https://github.com/herb711/RedouAgent",
@@ -13,6 +13,7 @@
   "scripts": {
     "build:renderer": "npm --prefix renderer run build",
     "dev:renderer": "npm --prefix renderer run dev",
+    "desktop:dev": "node ../../scripts/desktop-dev.cjs",
     "start": "electron .",
     "dev": "electron .",
     "build": "npm run build:renderer && electron-builder",

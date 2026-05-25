@@ -5,6 +5,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react';
@@ -14,9 +15,11 @@ import { MainThreadLayout } from './MainThreadLayout';
 import { RightStatusRail } from './RightStatusRail';
 import { TopTitleBar } from './TopTitleBar';
 import { ArtifactPreviewPage } from '../../pages/ArtifactPreviewPage';
+import { BrowserPage } from '../../pages/BrowserPage';
 import { DiffReviewPage } from '../../pages/DiffReviewPage';
 import { SettingsPage } from '../../pages/SettingsPage';
 import type { WorkbenchActions, WorkbenchState } from '../../state/workbenchStore';
+import { isPendingQueuedUserMessage } from '../../utils/threadMessages';
 
 interface AppShellProps {
   state: WorkbenchState;
@@ -27,6 +30,12 @@ const SIDEBAR_WIDTH_STORAGE_KEY = 'redou.sidebar.width';
 const DEFAULT_SIDEBAR_WIDTH = 260;
 const MIN_SIDEBAR_WIDTH = 220;
 const MAX_SIDEBAR_WIDTH = 420;
+
+interface NavSnapshot {
+  view: WorkbenchState['activeView'];
+  projectId: string;
+  taskId?: string;
+}
 
 function clampSidebarWidth(width: number) {
   return Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, Math.round(width)));
@@ -43,8 +52,12 @@ export function AppShell({ state, actions }: AppShellProps) {
   const [sidebarHidden, setSidebarHidden] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialSidebarWidth);
   const [isResizingSidebar, setIsResizingSidebar] = useState(false);
+  const [navBackStack, setNavBackStack] = useState<NavSnapshot[]>([]);
+  const [navForwardStack, setNavForwardStack] = useState<NavSnapshot[]>([]);
   const { data } = state;
   const activeProject = data.projects.find((project) => project.id === data.activeProjectId);
+  const pendingQueuedMessages = useMemo(() => data.agentMessages.filter(isPendingQueuedUserMessage), [data.agentMessages]);
+  const visibleAgentMessages = useMemo(() => data.agentMessages.filter((message) => !isPendingQueuedUserMessage(message)), [data.agentMessages]);
   const title =
     state.activeView === 'settings'
       ? '设置'
@@ -52,10 +65,17 @@ export function AppShell({ state, actions }: AppShellProps) {
         ? '文件变更预览'
         : state.activeView === 'artifactPreview'
           ? '交付物预览'
+          : state.activeView === 'browser'
+            ? '内置浏览器'
           : data.activeTask.title;
   const shellStyle = {
     '--redou-sidebar-width': `${sidebarWidth}px`,
   } as CSSProperties;
+  const currentNavSnapshot = useMemo<NavSnapshot>(() => ({
+    view: state.activeView,
+    projectId: data.activeProjectId,
+    taskId: data.activeTask.id,
+  }), [data.activeProjectId, data.activeTask.id, state.activeView]);
 
   useEffect(() => {
     window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
@@ -87,16 +107,58 @@ export function AppShell({ state, actions }: AppShellProps) {
     setSidebarWidth((width) => clampSidebarWidth(width + (event.key === 'ArrowRight' ? 16 : -16)));
   }
 
+  function sameSnapshot(left: NavSnapshot, right: NavSnapshot) {
+    return left.view === right.view && left.projectId === right.projectId && left.taskId === right.taskId;
+  }
+
+  function pushCurrentSnapshot() {
+    setNavBackStack((stack) => {
+      const last = stack[stack.length - 1];
+      return last && sameSnapshot(last, currentNavSnapshot) ? stack : [...stack, currentNavSnapshot];
+    });
+    setNavForwardStack([]);
+  }
+
+  const applyNavSnapshot = useCallback((snapshot: NavSnapshot) => {
+    if (snapshot.taskId) actions.selectTask(snapshot.taskId);
+    else if (snapshot.projectId) actions.selectProject(snapshot.projectId);
+    actions.selectView(snapshot.view);
+  }, [actions]);
+
+  function navigateWithHistory(callback: () => void) {
+    pushCurrentSnapshot();
+    callback();
+  }
+
+  function goBack() {
+    const previous = navBackStack[navBackStack.length - 1];
+    if (!previous) return;
+    setNavBackStack((stack) => stack.slice(0, -1));
+    setNavForwardStack((stack) => [currentNavSnapshot, ...stack]);
+    applyNavSnapshot(previous);
+  }
+
+  function goForward() {
+    const next = navForwardStack[0];
+    if (!next) return;
+    setNavForwardStack((stack) => stack.slice(1));
+    setNavBackStack((stack) => [...stack, currentNavSnapshot]);
+    applyNavSnapshot(next);
+  }
+
   if (state.activeView === 'settings') {
     return (
       <div className="redou-app-shell redou-app-shell-settings" ref={shellRef}>
         <SettingsPage
+          appSettings={state.appSettings}
           modelConfig={state.modelConfig}
-          onBack={() => actions.selectView('thread')}
+          onBack={() => navigateWithHistory(() => actions.selectView('thread'))}
           onSelectModel={actions.selectConfiguredModel}
           onProbeModelProvider={actions.probeModelProvider}
           onSaveModelProvider={actions.saveModelProvider}
           onRemoveModelProvider={actions.removeModelProvider}
+          onUpdateAppSettings={actions.updateAppSettings}
+          onNotifyDesktop={actions.notifyDesktop}
         />
       </div>
     );
@@ -123,6 +185,10 @@ export function AppShell({ state, actions }: AppShellProps) {
             activeView={state.activeView}
             expandedProjectIds={state.expandedProjectIds}
             onCollapseSidebar={() => setSidebarHidden(true)}
+            canGoBack={navBackStack.length > 0}
+            canGoForward={navForwardStack.length > 0}
+            onGoBack={goBack}
+            onGoForward={goForward}
             onCollapseAllProjects={actions.collapseAllProjects}
             onCreateBlankProject={actions.createBlankProject}
             onCreateConversationInProject={actions.createConversationInProject}
@@ -132,9 +198,9 @@ export function AppShell({ state, actions }: AppShellProps) {
             onRenameProject={actions.renameProject}
             onArchiveProjectConversation={actions.archiveProjectConversation}
             onRemoveProject={actions.removeProject}
-            onSelectProject={actions.selectProject}
-            onSelectTask={actions.selectTask}
-            onSelectView={actions.selectView}
+            onSelectProject={(projectId) => navigateWithHistory(() => actions.selectProject(projectId))}
+            onSelectTask={(taskId) => navigateWithHistory(() => actions.selectTask(taskId))}
+            onSelectView={(view) => navigateWithHistory(() => actions.selectView(view))}
           />
           <div
             className="redou-sidebar-resizer"
@@ -156,11 +222,11 @@ export function AppShell({ state, actions }: AppShellProps) {
                 <MainThreadLayout
                   activeProjectName={activeProject?.name ?? 'RedouAgent'}
                   task={data.activeTask}
-                  agentMessages={data.agentMessages}
+                  agentMessages={visibleAgentMessages}
                   changes={data.mockChanges}
                   progressSteps={data.progressSteps}
                   runtimeStatus={data.runtimeStatus}
-                  onOpenDiff={() => actions.selectView('diffReview')}
+                  onOpenDiff={() => navigateWithHistory(() => actions.selectView('diffReview'))}
                   onGuideQueuedMessage={actions.guideQueuedMessage}
                   onDeleteQueuedMessage={actions.deleteQueuedMessage}
                 />
@@ -168,15 +234,55 @@ export function AppShell({ state, actions }: AppShellProps) {
                   task={data.activeTask}
                   composer={data.composer}
                   modelConfig={state.modelConfig}
+                  context={data.mockContext}
+                  contextItems={data.contextItems}
+                  pendingQueuedMessages={pendingQueuedMessages}
                   onPermissionModeChange={actions.setComposerPermissionMode}
                   onModelSelect={actions.selectConfiguredModel}
-                  onOpenSettings={() => actions.selectView('settings')}
+                  onOpenSettings={() => navigateWithHistory(() => actions.selectView('settings'))}
+                  onSelectContextItems={actions.selectContextItems}
+                  onAddDroppedContextFiles={actions.addDroppedContextFiles}
+                  onRemoveContextItem={actions.removeContextItem}
+                  onClearContext={actions.clearContext}
                   onSubmit={actions.submitComposer}
+                  onGuideQueuedMessage={actions.guideQueuedMessage}
+                  onDeleteQueuedMessage={actions.deleteQueuedMessage}
                 />
               </>
             ) : null}
-            {state.activeView === 'diffReview' ? <DiffReviewPage changes={data.mockChanges} onBack={() => actions.selectView('thread')} /> : null}
-            {state.activeView === 'artifactPreview' ? <ArtifactPreviewPage artifacts={data.mockArtifacts} onBack={() => actions.selectView('thread')} /> : null}
+            {state.activeView === 'diffReview' ? (
+              <DiffReviewPage
+                changes={data.mockChanges}
+                onBack={() => navigateWithHistory(() => actions.selectView('thread'))}
+                onStageFile={actions.stageGitFile}
+                onUnstageFile={actions.unstageGitFile}
+                onRevertFile={actions.revertGitFile}
+                onStageHunk={actions.stageGitHunk}
+                onRevertHunk={actions.revertGitHunk}
+                onCreatePullRequest={actions.createPullRequest}
+              />
+            ) : null}
+            {state.activeView === 'artifactPreview' ? (
+              <ArtifactPreviewPage
+                artifacts={data.mockArtifacts}
+                onBack={() => navigateWithHistory(() => actions.selectView('thread'))}
+                onOpenArtifact={actions.openArtifact}
+                onRevealArtifact={actions.revealArtifact}
+                onGenerateImage={actions.generateImageArtifact}
+                onCaptureScreenshot={actions.captureScreenshotComment}
+                onPopoutArtifact={actions.popoutArtifact}
+              />
+            ) : null}
+            {state.activeView === 'browser' ? (
+              <BrowserPage
+                browser={data.browser}
+                onBack={() => navigateWithHistory(() => actions.selectView('thread'))}
+                onNavigate={actions.setBrowserUrl}
+                onOpenExternal={actions.openBrowserExternal}
+                onPopout={actions.popoutBrowser}
+                onCaptureScreenshot={actions.captureScreenshotComment}
+              />
+            ) : null}
           </div>
           {state.activeView === 'thread' ? <RightStatusRail state={state} actions={actions} /> : null}
         </div>

@@ -161,4 +161,10 @@ test('isTerminalTurnEvent recognizes redou-codex turn completion events', () => 
     metadata: { redouCodexMethod: 'turn/started' },
     payload: { turn: { status: 'running' } },
   }), false);
+
+  assert.equal(isTerminalTurnEvent({
+    type: 'turn_update',
+    metadata: { redouCodexMethod: 'turn/completed', redouCodexStopStatus: 'incomplete' },
+    payload: { turn: { status: 'completed' } },
+  }), false);
 });

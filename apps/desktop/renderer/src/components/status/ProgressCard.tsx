@@ -1,11 +1,11 @@
 import { AlertCircle, CheckCircle2, CircleDot, Loader2 } from 'lucide-react';
 import { ProgressStep } from './ProgressStep';
-import type { CodexPlanProjection, LogEntryData, ProgressStepData, RuntimeStatusData, WorkbenchTask } from '../../types';
+import type { RedouCodexPlanProjection, LogEntryData, ProgressStepData, RuntimeStatusData, WorkbenchTask } from '../../types';
 
 interface ProgressCardProps {
   task: WorkbenchTask;
   steps: ProgressStepData[];
-  planEntries: CodexPlanProjection[];
+  planEntries: RedouCodexPlanProjection[];
   logs: LogEntryData[];
   runtimeStatus?: RuntimeStatusData | null;
   runtimeAvailability?: unknown;
@@ -23,6 +23,9 @@ function statusLabel(status?: string | null) {
   if (status === 'running' || status === 'started' || status === 'active' || status === 'in_progress' || status === 'inProgress') return '正在执行';
   if (status === 'completed') return '已完成';
   if (status === 'failed' || status === 'error') return '执行出错';
+  if (status === 'incomplete') return '未完成';
+  if (status === 'waiting_approval') return '等待审批';
+  if (status === 'degraded') return '兼容模式';
   if (status === 'cancelled' || status === 'canceled') return '已取消';
   if (status === 'blocked') return '等待处理';
   if (status === 'created') return '未开始';
@@ -55,6 +58,7 @@ function activeLabel(steps: ProgressStepData[], runtimeStatus?: RuntimeStatusDat
 
 function runIcon(status: string) {
   if (status === 'error' || status === 'failed') return <AlertCircle size={16} />;
+  if (status === 'waiting_approval' || status === 'degraded') return <AlertCircle size={16} />;
   if (status === 'completed') return <CheckCircle2 size={16} />;
   if (status === 'running' || status === 'started' || status === 'active' || status === 'in_progress' || status === 'inProgress') return <Loader2 size={16} />;
   return <CircleDot size={16} />;
@@ -91,11 +95,13 @@ export function ProgressCard({
   const stateLabel = statusLabel(turnStatus);
   const activeText = activeLabel(steps, runtimeStatus, logs);
   const usage = usageLabel(runtimeStatus?.usage);
-  const codex = readAvailability(runtimeAvailability);
-  const statusLabelText = apiMode === 'mock' ? 'mock fallback' : codex.available ? 'available' : 'unavailable';
+  const redouCodex = readAvailability(runtimeAvailability);
+  const statusLabelText = apiMode === 'mock' ? 'mock fallback' : redouCodex.available ? 'available' : 'unavailable';
   const runtimeMessage = runtimeError
     || runtimeStatus?.lastError?.message
-    || codex.message
+    || runtimeStatus?.stopReason?.message
+    || runtimeStatus?.continuation?.message
+    || redouCodex.message
     || (apiMode === 'mock' ? 'Electron preload API is not available.' : '');
   const metricText = steps.length ? `${completed}/${steps.length} 步` : `${planEntries.length} 个计划项`;
 
@@ -134,12 +140,18 @@ export function ProgressCard({
         </div>
         <div>
           <span>Availability</span>
-          <strong>{codex.status}</strong>
+          <strong>{redouCodex.status}</strong>
         </div>
         {runtimeStatus?.threadStatus ? (
           <div>
             <span>Thread</span>
             <strong>{runtimeStatus.threadStatus}</strong>
+          </div>
+        ) : null}
+        {runtimeStatus?.stopReason?.code ? (
+          <div>
+            <span>Stop reason</span>
+            <strong>{runtimeStatus.stopReason.code}</strong>
           </div>
         ) : null}
         {runtimeStatus?.activeItem?.source ? (
@@ -148,16 +160,16 @@ export function ProgressCard({
             <strong>{runtimeStatus.activeItem.source}</strong>
           </div>
         ) : null}
-        {codex.code ? (
+        {redouCodex.code ? (
           <div>
             <span>Error</span>
-            <strong>{codex.code}</strong>
+            <strong>{redouCodex.code}</strong>
           </div>
         ) : null}
-        {codex.executablePath ? (
+        {redouCodex.executablePath ? (
           <div>
             <span>Executable</span>
-            <strong>{codex.executablePath}</strong>
+            <strong>{redouCodex.executablePath}</strong>
           </div>
         ) : null}
       </div>

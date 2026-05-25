@@ -37,11 +37,13 @@ function usageLabel(usage?: Record<string, unknown> | null) {
 }
 
 export function RuntimeStatusPanel({ availability, runtimeStatus, error, apiMode = 'mock' }: RuntimeStatusPanelProps) {
-  const codex = readAvailability(availability);
-  const statusLabel = apiMode === 'mock' ? 'mock fallback' : codex.available ? 'available' : 'unavailable';
+  const redouCodex = readAvailability(availability);
+  const statusLabel = apiMode === 'mock' ? 'mock fallback' : redouCodex.available ? 'available' : 'unavailable';
   const runtimeMessage = error
     || runtimeStatus?.lastError?.message
-    || codex.message
+    || runtimeStatus?.stopReason?.message
+    || runtimeStatus?.continuation?.message
+    || redouCodex.message
     || (apiMode === 'mock' ? 'Electron preload API is not available.' : '');
   const usage = usageLabel(runtimeStatus?.usage);
 
@@ -58,7 +60,7 @@ export function RuntimeStatusPanel({ availability, runtimeStatus, error, apiMode
         </div>
         <div>
           <span>Availability</span>
-          <strong>{codex.status}</strong>
+          <strong>{redouCodex.status}</strong>
         </div>
         {runtimeStatus?.threadStatus ? (
           <div>
@@ -70,6 +72,12 @@ export function RuntimeStatusPanel({ availability, runtimeStatus, error, apiMode
           <div>
             <span>Turn</span>
             <strong>{runtimeStatus.turnStatus}</strong>
+          </div>
+        ) : null}
+        {runtimeStatus?.stopReason?.code ? (
+          <div>
+            <span>Stop reason</span>
+            <strong>{runtimeStatus.stopReason.code}</strong>
           </div>
         ) : null}
         {runtimeStatus?.activeTurnId ? (
@@ -90,16 +98,16 @@ export function RuntimeStatusPanel({ availability, runtimeStatus, error, apiMode
             <strong>{usage}</strong>
           </div>
         ) : null}
-        {codex.code ? (
+        {redouCodex.code ? (
           <div>
             <span>Error</span>
-            <strong>{codex.code}</strong>
+            <strong>{redouCodex.code}</strong>
           </div>
         ) : null}
-        {codex.executablePath ? (
+        {redouCodex.executablePath ? (
           <div>
             <span>Executable</span>
-            <strong>{codex.executablePath}</strong>
+            <strong>{redouCodex.executablePath}</strong>
           </div>
         ) : null}
       </div>

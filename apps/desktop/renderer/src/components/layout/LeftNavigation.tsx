@@ -25,6 +25,10 @@ interface LeftNavigationProps {
   activeView: WorkbenchView;
   expandedProjectIds: string[];
   onCollapseSidebar: () => void;
+  canGoBack?: boolean;
+  canGoForward?: boolean;
+  onGoBack?: () => void;
+  onGoForward?: () => void;
   onCollapseAllProjects: () => void;
   onCreateBlankProject: (name?: string) => Promise<void>;
   onCreateConversationInProject: (projectId: string) => Promise<void>;
@@ -39,6 +43,21 @@ interface LeftNavigationProps {
   onSelectView: (view: WorkbenchView) => void;
 }
 
+function filterProjects(projects: WorkbenchProject[], query: string) {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return projects;
+  return projects
+    .map((project) => {
+      const projectMatches = project.name.toLowerCase().includes(normalized)
+        || (project.rootPath || '').toLowerCase().includes(normalized);
+      const tasks = projectMatches
+        ? project.tasks
+        : project.tasks.filter((task) => `${task.title} ${task.userPrompt || ''}`.toLowerCase().includes(normalized));
+      return projectMatches || tasks.length ? { ...project, tasks } : null;
+    })
+    .filter(Boolean) as WorkbenchProject[];
+}
+
 export function LeftNavigation({
   projects,
   activeProjectId,
@@ -46,6 +65,10 @@ export function LeftNavigation({
   activeView,
   expandedProjectIds,
   onCollapseSidebar,
+  canGoBack,
+  canGoForward,
+  onGoBack,
+  onGoForward,
   onCollapseAllProjects,
   onCreateBlankProject,
   onCreateConversationInProject,
@@ -61,9 +84,12 @@ export function LeftNavigation({
 }: LeftNavigationProps) {
   const [projectMenuOpen, setProjectMenuOpen] = useState(false);
   const [projectMenuPosition, setProjectMenuPosition] = useState({ top: 0, left: 0 });
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const createButtonRef = useRef<HTMLButtonElement>(null);
   const projectMenuRef = useRef<HTMLDivElement>(null);
-  const pinnedProjects = projects.filter((project) => project.pinned);
+  const visibleProjects = filterProjects(projects, searchQuery);
+  const pinnedProjects = visibleProjects.filter((project) => project.pinned);
   const projectMenuStyle: CSSProperties = {
     left: projectMenuPosition.left,
     top: projectMenuPosition.top,
@@ -112,30 +138,43 @@ export function LeftNavigation({
   }
 
   return (
-    <aside className="redou-left-navigation" aria-label="Redou navigation">
+    <aside className="redou-left-navigation" aria-label="Redou 导航">
       <div className="redou-left-toolbar">
         <button className="redou-nav-icon" type="button" aria-label="隐藏侧边栏" title="隐藏侧边栏" onClick={onCollapseSidebar}>
           <PanelLeft size={16} />
         </button>
-        <div className="redou-history-controls" aria-label="Navigation history">
-          <button className="redou-nav-icon" type="button" aria-label="Back">
+        <div className="redou-history-controls" aria-label="导航历史">
+          <button className="redou-nav-icon" type="button" aria-label="后退" disabled={!canGoBack} onClick={onGoBack}>
             <ArrowLeft size={15} />
           </button>
-          <button className="redou-nav-icon" type="button" aria-label="Forward">
+          <button className="redou-nav-icon" type="button" aria-label="前进" disabled={!canGoForward} onClick={onGoForward}>
             <ArrowRight size={15} />
           </button>
         </div>
       </div>
 
-      <nav className="redou-primary-nav" aria-label="Main">
-        <NavItem icon={MessageSquare} label="新对话" active={activeView === 'thread'} onClick={() => onSelectView('thread')} />
-        <NavItem icon={Search} label="搜索" />
+      <nav className="redou-primary-nav" aria-label="主导航">
+        <NavItem icon={MessageSquare} label="新建对话" active={activeView === 'thread'} onClick={() => onSelectView('thread')} />
+        <NavItem icon={Search} label="搜索" active={searchOpen} onClick={() => setSearchOpen((open) => !open)} />
+        <NavItem icon={Globe2} label="浏览器" active={activeView === 'browser'} onClick={() => onSelectView('browser')} />
         <NavItem icon={Plug} label="插件" />
         <NavItem icon={CalendarClock} label="自动化" />
       </nav>
 
+      {searchOpen ? (
+        <div className="redou-sidebar-search">
+          <Search size={14} />
+          <input
+            value={searchQuery}
+            placeholder="搜索项目或任务"
+            onChange={(event) => setSearchQuery(event.target.value)}
+            autoFocus
+          />
+        </div>
+      ) : null}
+
       <div className="redou-sidebar-scroll">
-        <ProjectSection title="置顶">
+        <ProjectSection title="已固定">
           <ProjectList
             projects={pinnedProjects}
             activeProjectId={activeProjectId}
@@ -181,7 +220,7 @@ export function LeftNavigation({
           )}
         >
           <ProjectList
-            projects={projects}
+            projects={visibleProjects}
             activeProjectId={activeProjectId}
             activeTaskId={activeTaskId}
             expandedProjectIds={expandedProjectIds}

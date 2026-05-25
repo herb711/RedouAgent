@@ -130,6 +130,28 @@ test('progress projection ignores chat lifecycle items and dedupes real work ite
   assert.deepEqual(snapshot.todoProjectionEntries, []);
 });
 
+test('command updates preserve command output for the terminal panel', () => {
+  const snapshot = buildRuntimeSnapshot([
+    {
+      id: 'event:cmd-output',
+      type: 'command_update',
+      timestamp: '2026-05-24T11:42:04.000Z',
+      message: 'tests passed',
+      payload: {
+        delta: 'tests passed',
+        item: { id: 'cmd-1', type: 'commandExecution', command: 'npm test', status: 'running' },
+      },
+      metadata: { turnId: 'turn-2', itemId: 'cmd-1', itemKind: 'commandExecution' },
+    },
+  ]);
+
+  assert.equal(snapshot.logs.length, 1);
+  assert.equal(snapshot.logs[0].kind, 'command');
+  assert.equal(snapshot.logs[0].command, 'npm test');
+  assert.equal(snapshot.logs[0].output, 'tests passed');
+  assert.equal(snapshot.logs[0].lifecycle, 'running');
+});
+
 test('failed turns surface their model/provider error in the thread snapshot', () => {
   const snapshot = buildRuntimeSnapshot([
     {
@@ -282,4 +304,36 @@ test('deleted queued user messages are hidden from the thread', () => {
 
   assert.deepEqual(snapshot.messages, []);
   assert.equal(snapshot.logs.at(-1).message, 'Queued message deleted.');
+});
+
+test('runtime snapshot marks promised follow-up without tools as incomplete', () => {
+  const snapshot = buildRuntimeSnapshot([
+    {
+      id: 'event:assistant-final',
+      type: 'message_completed',
+      timestamp: '2026-05-24T05:29:47.000Z',
+      message: '服务器安装了 Synology Drive Client 8.0.3，正在同步。我来查看当前的同步配置。',
+      payload: {
+        item: {
+          id: 'msg-1',
+          type: 'agentMessage',
+          text: '服务器安装了 Synology Drive Client 8.0.3，正在同步。我来查看当前的同步配置。',
+        },
+      },
+      metadata: { itemId: 'msg-1', turnId: 'turn-1' },
+    },
+    {
+      id: 'event:turn-completed',
+      type: 'turn_update',
+      timestamp: '2026-05-24T05:29:48.000Z',
+      message: 'completed',
+      payload: { turn: { id: 'turn-1', status: 'completed' } },
+      metadata: { redouCodexMethod: 'turn/completed', turnId: 'turn-1' },
+    },
+  ]);
+
+  assert.equal(snapshot.runtimeStatus.turnStatus, 'incomplete');
+  assert.equal(snapshot.runtimeStatus.needsAttention, true);
+  assert.equal(snapshot.runtimeStatus.stopReason.code, 'assistant_promised_followup_without_tool_call');
+  assert.equal(snapshot.runtimeStatus.continuation.recommended, true);
 });

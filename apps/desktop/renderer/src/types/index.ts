@@ -1,4 +1,6 @@
 import type {
+  AppSettingsSnapshot,
+  ArtifactPreview,
   ConfiguredModelProvider,
   ModelConfigSelection,
   ModelConfigSnapshot,
@@ -6,13 +8,13 @@ import type {
   ModelProviderPreset,
 } from '../api/redouApi';
 
-export type RuntimeId = 'redou-codex' | 'codex' | 'hermes' | 'pi' | 'custom';
+export type RuntimeId = 'redou-codex' | 'hermes' | 'pi' | 'custom';
 
-export type WorkbenchTaskStatus = 'created' | 'running' | 'blocked' | 'error' | 'completed';
+export type WorkbenchTaskStatus = 'created' | 'running' | 'blocked' | 'waiting_approval' | 'failed' | 'error' | 'degraded' | 'completed';
 
 export type ProgressStepStatus = 'completed' | 'active' | 'pending' | 'error';
 
-export type WorkbenchView = 'thread' | 'diffReview' | 'artifactPreview' | 'settings';
+export type WorkbenchView = 'thread' | 'diffReview' | 'artifactPreview' | 'browser' | 'settings';
 
 export type RightPanelId =
   | 'progress'
@@ -22,7 +24,12 @@ export type RightPanelId =
   | 'logs'
   | 'artifacts'
   | 'rules'
-  | 'context';
+  | 'context'
+  | 'terminal'
+  | 'worktrees'
+  | 'automations'
+  | 'skills'
+  | 'mcp';
 
 export interface WorkbenchTask {
   id: string;
@@ -44,7 +51,7 @@ export interface WorkbenchProject {
   tasks: WorkbenchTask[];
 }
 
-export interface CodexPlanProjection {
+export interface RedouCodexPlanProjection {
   id: string;
   title: string;
   status: string;
@@ -104,6 +111,7 @@ export interface RuntimeStatusData {
   runtime?: string | null;
   threadStatus?: string | null;
   turnStatus?: string | null;
+  rawTurnStatus?: string | null;
   activeTurnId?: string | null;
   activeItem?: {
     id?: string | null;
@@ -112,6 +120,20 @@ export interface RuntimeStatusData {
     source?: string | null;
   } | null;
   usage?: Record<string, unknown> | null;
+  needsAttention?: boolean;
+  degraded?: boolean;
+  stopReason?: {
+    status?: string | null;
+    code?: string | null;
+    message?: string | null;
+    details?: unknown;
+  } | null;
+  continuation?: {
+    recommended?: boolean;
+    automatic?: boolean;
+    reason?: string | null;
+    message?: string | null;
+  } | null;
   lastError?: {
     code?: string | null;
     title?: string | null;
@@ -136,6 +158,7 @@ export interface ComposerSubmitOptions {
   deliveryMode?: 'auto' | 'new_turn' | 'queue' | 'guide';
   modelSelection?: ModelConfigSelection | null;
   reasoningEffort?: ComposerReasoningEffortId;
+  contextItems?: ContextItemData[];
 }
 
 export interface ComposerState {
@@ -153,6 +176,8 @@ export interface ComposerState {
 }
 
 export type {
+  AppSettingsSnapshot,
+  ArtifactPreview,
   ConfiguredModelProvider,
   ModelConfigSelection,
   ModelConfigSnapshot,
@@ -196,6 +221,14 @@ export interface ChangeFileData {
   status: 'staged' | 'unstaged';
   insertions: number;
   deletions: number;
+  gitStatus?: string;
+  indexStatus?: string;
+  worktreeStatus?: string;
+  staged?: boolean;
+  unstaged?: boolean;
+  untracked?: boolean;
+  binary?: boolean;
+  patch?: string;
 }
 
 export interface ChangesData {
@@ -203,6 +236,8 @@ export interface ChangesData {
   insertions: number;
   deletions: number;
   diffSummary: string;
+  patch?: string;
+  stat?: string;
 }
 
 export interface LogEntryData {
@@ -210,13 +245,28 @@ export interface LogEntryData {
   level: 'info' | 'warn' | 'debug' | 'error';
   message: string;
   time: string;
+  kind?: string;
+  lifecycle?: string;
+  command?: string;
+  output?: string;
 }
 
 export interface ArtifactData {
   id: string;
+  taskId?: string | null;
+  projectId?: string | null;
   name: string;
   type: string;
   status: string;
+  path?: string | null;
+  mimeType?: string | null;
+  size?: number;
+  createdAt?: string;
+  updatedAt?: string;
+  content?: string | null;
+  uri?: string | null;
+  metadata?: Record<string, unknown>;
+  preview?: ArtifactPreview;
 }
 
 export interface RulesData {
@@ -228,8 +278,24 @@ export interface ContextPackageData {
   summary: string;
   recentMessages: string[];
   selectedFiles: string[];
+  selectedDirectories?: string[];
   attachments: string[];
   environment: string[];
+}
+
+export type ContextItemKind = 'file' | 'image' | 'directory';
+
+export interface ContextItemData {
+  path: string;
+  name: string;
+  kind: ContextItemKind;
+}
+
+export interface BrowserData {
+  url: string;
+  homeUrl: string;
+  title?: string;
+  status?: string;
 }
 
 export interface WorkbenchMockData {
@@ -240,7 +306,7 @@ export interface WorkbenchMockData {
   progressSteps: ProgressStepData[];
   environment: EnvironmentInfo;
   composer: ComposerState;
-  planEntries: CodexPlanProjection[];
+  planEntries: RedouCodexPlanProjection[];
   todoProjectionEntries: TodoProjectionEntry[];
   approvalRequests: ApprovalRequestProjection[];
   rightPanels: RightPanelDefinition[];
@@ -251,5 +317,7 @@ export interface WorkbenchMockData {
   mockArtifacts: ArtifactData[];
   mockRules: RulesData;
   mockContext: ContextPackageData;
+  contextItems: ContextItemData[];
+  browser: BrowserData;
   runtimeStatus?: RuntimeStatusData | null;
 }

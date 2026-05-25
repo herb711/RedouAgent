@@ -1,8 +1,8 @@
 'use strict';
 
 const path = require('node:path');
-const { app, ipcMain, dialog, shell } = require('electron');
-const { createMainWindow, registerAppLifecycle } = require('./platform/electron/index.cjs');
+const { app, ipcMain, dialog, shell, Notification, powerSaveBlocker, BrowserWindow, Menu } = require('electron');
+const { createApplicationMenu, createMainWindow, registerAppLifecycle } = require('./platform/electron/index.cjs');
 const { getRedouDataRoot } = require('./platform/filesystem/index.cjs');
 const { createProjectStore } = require('./core/store/projectStore.cjs');
 const { createTaskStore } = require('./core/store/taskStore.cjs');
@@ -10,6 +10,8 @@ const { createMessageStore } = require('./core/store/messageStore.cjs');
 const { createEventStore } = require('./core/store/eventStore.cjs');
 const { createRuntimeSessionStore } = require('./core/store/runtimeSessionStore.cjs');
 const { createModelConfigStore } = require('./core/store/modelConfigStore.cjs');
+const { createArtifactStore } = require('./core/store/artifactStore.cjs');
+const { createAppSettingsStore } = require('./core/store/appSettingsStore.cjs');
 const { createResponsesChatProxyManager } = require('./core/models/responsesChatProxy.cjs');
 const { createRuntimeRegistry } = require('./runtimes/common/runtimeRegistry.cjs');
 const { createRedouCodexRuntimeAdapter } = require('./runtimes/redou-codex/redouCodexRuntimeAdapter.cjs');
@@ -23,6 +25,7 @@ const { createEventSink } = require('./orchestrator/eventSink.cjs');
 const { createContextAssembler } = require('./orchestrator/contextAssembler.cjs');
 const { buildRuntimeSnapshot } = require('./orchestrator/runtimeSnapshotBuilder.cjs');
 const { registerAllIpc } = require('./ipc/index.cjs');
+const { startAutomationScheduler } = require('./ipc/automationIpc.cjs');
 
 function createDependencies() {
   const desktopRoot = path.resolve(__dirname, '..');
@@ -40,6 +43,8 @@ function createDependencies() {
   const messageStore = createMessageStore({ dataRoot });
   const eventStore = createEventStore({ dataRoot });
   const runtimeSessionStore = createRuntimeSessionStore({ dataRoot });
+  const artifactStore = createArtifactStore({ dataRoot });
+  const appSettingsStore = createAppSettingsStore({ dataRoot });
   const redouCodexHome = defaultRedouCodexHome({ workspaceRoot });
   const responsesChatProxy = createResponsesChatProxyManager();
   const modelConfigStore = createModelConfigStore({ dataRoot, redouCodexHome, responsesChatProxy });
@@ -75,14 +80,9 @@ function createDependencies() {
     settings,
     dependencies: { redouCodexAdapter },
   });
-
-  return {
-    desktopRoot,
-    workspaceRoot,
-    dataRoot,
-    dialog,
-    shell,
+  const automationScheduler = startAutomationScheduler({
     settings,
+    dataRoot,
     projectStore,
     taskStore,
     messageStore,
@@ -93,16 +93,42 @@ function createDependencies() {
     contextAssembler,
     runtimeSnapshotBuilder,
     runtimeRegistry,
+  });
+
+  return {
+    desktopRoot,
+    workspaceRoot,
+    dataRoot,
+    dialog,
+    shell,
+    Notification,
+    powerSaveBlocker,
+    BrowserWindow,
+    settings,
+    projectStore,
+    taskStore,
+    messageStore,
+    eventStore,
+    runtimeSessionStore,
+    artifactStore,
+    appSettingsStore,
+    modelConfigStore,
+    eventSink,
+    contextAssembler,
+    runtimeSnapshotBuilder,
+    runtimeRegistry,
     responsesChatProxy,
     redouCodexAdapter,
+    automationScheduler,
   };
 }
 
 const dependencies = createDependencies();
+createApplicationMenu(Menu);
 registerAllIpc({ ...dependencies, ipcMain });
 
 registerAppLifecycle(app, {
-  disposables: [dependencies.redouCodexAdapter, dependencies.responsesChatProxy],
+  disposables: [dependencies.redouCodexAdapter, dependencies.responsesChatProxy, dependencies.automationScheduler],
   createWindow: () => createMainWindow({
     renderer: {
       rendererRoot: path.join(dependencies.desktopRoot, 'renderer'),

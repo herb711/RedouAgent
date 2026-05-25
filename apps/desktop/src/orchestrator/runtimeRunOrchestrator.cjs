@@ -1,6 +1,7 @@
 'use strict';
 
 const { REDOU_CODEX_RUNTIME_ID } = require('../runtimes/redou-codex/redouCodexRuntimeConfig.cjs');
+const { enrichRedouCodexContextPackage } = require('../redou-codex/app-compat/context/redouCodexContextSerializer.cjs');
 
 function defaultContextPackage(task = {}, input = {}) {
   return {
@@ -128,6 +129,7 @@ async function resolveRuntimeModelOverrides(input, dependencies) {
       ...(input.config || {}),
     },
     modelConfig: resolved,
+    modelCapability: resolved.modelCapability || null,
   };
 }
 
@@ -135,7 +137,6 @@ async function invokeRuntime(method, input = {}, dependencies = {}) {
   const task = await getTask(input, dependencies);
   if (!task) throw new Error('Task is required');
   const project = await getProject(task, input, dependencies);
-  const contextPackage = await assembleContext({ ...input, task, project }, dependencies);
   const runtimeModelOverrides = method === 'startTask' || method === 'resumeTask'
     ? await resolveRuntimeModelOverrides(input, dependencies)
     : {};
@@ -147,6 +148,10 @@ async function invokeRuntime(method, input = {}, dependencies = {}) {
       ...(input.config || {}),
     },
   };
+  const contextPackage = enrichRedouCodexContextPackage(
+    await assembleContext({ ...input, ...runtimeModelOverrides, task, project }, dependencies),
+    { ...runtimeInput, task, project },
+  );
   let resolved;
   try {
     resolved = await resolveRuntimeForTask(task, { ...runtimeInput, project }, dependencies);

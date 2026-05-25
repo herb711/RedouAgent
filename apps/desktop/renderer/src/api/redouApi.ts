@@ -9,6 +9,7 @@ export interface RuntimeStatusSnapshot {
   runtime?: string | null;
   threadStatus?: string | null;
   turnStatus?: string | null;
+  rawTurnStatus?: string | null;
   activeTurnId?: string | null;
   activeItem?: {
     id?: string | null;
@@ -17,6 +18,20 @@ export interface RuntimeStatusSnapshot {
     source?: string | null;
   } | null;
   usage?: Record<string, unknown> | null;
+  needsAttention?: boolean;
+  degraded?: boolean;
+  stopReason?: {
+    status?: string | null;
+    code?: string | null;
+    message?: string | null;
+    details?: unknown;
+  } | null;
+  continuation?: {
+    recommended?: boolean;
+    automatic?: boolean;
+    reason?: string | null;
+    message?: string | null;
+  } | null;
   lastError?: {
     code?: string | null;
     title?: string | null;
@@ -32,8 +47,17 @@ export interface RuntimeSnapshot {
   approvalRequests?: unknown[];
   diffSummary?: string | null;
   changedFiles?: Array<{ id: string; path: string; status?: string; diff?: string }>;
-  logs?: Array<{ id: string; level: string; message: string; time: string }>;
-  artifacts?: Array<{ id: string; name: string; type: string; status: string }>;
+  logs?: Array<{
+    id: string;
+    level: string;
+    message: string;
+    time: string;
+    kind?: string;
+    lifecycle?: string;
+    command?: string;
+    output?: string;
+  }>;
+  artifacts?: ArtifactSnapshot[];
   runtimeStatus?: RuntimeStatusSnapshot;
   environmentInfo?: Record<string, unknown>;
 }
@@ -94,6 +118,137 @@ export interface ModelProbeResult {
   probedUrl?: string;
 }
 
+export interface GitFileChange {
+  id?: string;
+  path: string;
+  originalPath?: string | null;
+  status?: string;
+  indexStatus?: string;
+  worktreeStatus?: string;
+  staged?: boolean;
+  unstaged?: boolean;
+  untracked?: boolean;
+  insertions?: number;
+  deletions?: number;
+  binary?: boolean;
+  patch?: string;
+}
+
+export interface GitStatusSnapshot {
+  cwd: string;
+  rootPath?: string | null;
+  isRepository: boolean;
+  isClean: boolean;
+  branch?: string | null;
+  upstream?: string | null;
+  ahead?: number;
+  behind?: number;
+  files: GitFileChange[];
+  changedFileCount: number;
+  stagedFileCount: number;
+  unstagedFileCount: number;
+  raw?: string;
+  error?: string;
+}
+
+export interface GitDiffSnapshot extends GitStatusSnapshot {
+  patch: string;
+  stat: string;
+  insertions: number;
+  deletions: number;
+  pullRequest?: {
+    url?: string;
+    title?: string;
+    branch?: string;
+    stdout?: string;
+    stderr?: string;
+  };
+  lastAction?: {
+    type?: string;
+    message?: string;
+    sha?: string | null;
+    stdout?: string;
+    stderr?: string;
+  };
+}
+
+export type ContextSelectionKind = 'file' | 'image' | 'directory';
+
+export interface ContextSelectionItem {
+  path: string;
+  name: string;
+  kind: ContextSelectionKind;
+}
+
+export interface ContextSelectionResult {
+  canceled: boolean;
+  items: ContextSelectionItem[];
+}
+
+export type ArtifactPreviewKind = 'text' | 'html' | 'image' | 'directory' | 'diff' | 'binary' | 'empty';
+
+export interface ArtifactPreview {
+  kind: ArtifactPreviewKind;
+  content?: string;
+  dataUrl?: string;
+  entries?: string[];
+  truncated?: boolean;
+  mimeType?: string;
+  message?: string;
+}
+
+export interface ArtifactSnapshot {
+  id: string;
+  taskId?: string | null;
+  projectId?: string | null;
+  type: string;
+  name: string;
+  path?: string | null;
+  mimeType?: string | null;
+  size?: number;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+  content?: string | null;
+  uri?: string | null;
+  metadata?: Record<string, unknown>;
+  preview?: ArtifactPreview;
+}
+
+export interface AppSettingsSnapshot {
+  general: {
+    language: string;
+    startupView: string;
+    autoUpdate: boolean;
+  };
+  appearance: {
+    theme: string;
+    density: string;
+    inspectorSide: string;
+  };
+  desktop: {
+    notifications: boolean;
+    preventSleep: boolean;
+    screenshotComments: boolean;
+    popoutBehavior: string;
+  };
+  browser: {
+    enabled: boolean;
+    homeUrl: string;
+    allowPopouts: boolean;
+  };
+  media: {
+    voiceInput: boolean;
+    imageInput: boolean;
+    imageGeneration: boolean;
+  };
+  connections: {
+    artifactPreview: boolean;
+    inAppBrowser: boolean;
+    screenshotCapture: boolean;
+  };
+}
+
 interface ElectronRedouApi {
   runtimes: {
     list: () => Promise<IpcResult>;
@@ -123,6 +278,45 @@ interface ElectronRedouApi {
     list: (taskId?: string) => Promise<IpcResult>;
     respond: (approvalId: string, decision: unknown) => Promise<IpcResult>;
   };
+  git?: {
+    status: (input?: unknown) => Promise<IpcResult<GitStatusSnapshot>>;
+    diff: (input?: unknown) => Promise<IpcResult<GitDiffSnapshot>>;
+    stage: (input?: unknown) => Promise<IpcResult<GitDiffSnapshot>>;
+    unstage: (input?: unknown) => Promise<IpcResult<GitDiffSnapshot>>;
+    revert: (input?: unknown) => Promise<IpcResult<GitDiffSnapshot>>;
+    stageHunk: (input?: unknown) => Promise<IpcResult<GitDiffSnapshot>>;
+    revertHunk: (input?: unknown) => Promise<IpcResult<GitDiffSnapshot>>;
+    commit: (input?: unknown) => Promise<IpcResult<GitDiffSnapshot>>;
+    push: (input?: unknown) => Promise<IpcResult<GitDiffSnapshot>>;
+    createPullRequest: (input?: unknown) => Promise<IpcResult<GitDiffSnapshot>>;
+  };
+  terminal?: {
+    run: (input?: unknown) => Promise<IpcResult>;
+  };
+  worktrees?: {
+    list: (input?: unknown) => Promise<IpcResult>;
+    create: (input?: unknown) => Promise<IpcResult>;
+    remove: (input?: unknown) => Promise<IpcResult>;
+    open: (input?: unknown) => Promise<IpcResult>;
+  };
+  automations?: {
+    list: (input?: unknown) => Promise<IpcResult>;
+    create: (input?: unknown) => Promise<IpcResult>;
+    update: (input?: unknown) => Promise<IpcResult>;
+    delete: (input?: unknown) => Promise<IpcResult>;
+    run: (input?: unknown) => Promise<IpcResult>;
+  };
+  skills?: {
+    list: (input?: unknown) => Promise<IpcResult>;
+    rescan: (input?: unknown) => Promise<IpcResult>;
+    toggle: (input?: unknown) => Promise<IpcResult>;
+  };
+  mcp?: {
+    list: (input?: unknown) => Promise<IpcResult>;
+    install: (input?: unknown) => Promise<IpcResult>;
+    remove: (input?: unknown) => Promise<IpcResult>;
+    test: (input?: unknown) => Promise<IpcResult>;
+  };
   projects: {
     list: () => Promise<IpcResult>;
     get: (projectId: string) => Promise<IpcResult>;
@@ -139,6 +333,25 @@ interface ElectronRedouApi {
   };
   context: {
     preview: (input: unknown) => Promise<IpcResult>;
+    select: (input: unknown) => Promise<IpcResult<ContextSelectionResult>>;
+    pathForFile?: (file: File) => string;
+  };
+  artifacts?: {
+    list: (input?: unknown) => Promise<IpcResult<ArtifactSnapshot[]>>;
+    get: (input?: unknown) => Promise<IpcResult<ArtifactSnapshot>>;
+    createText: (input?: unknown) => Promise<IpcResult<ArtifactSnapshot>>;
+    generateImage: (input?: unknown) => Promise<IpcResult<ArtifactSnapshot>>;
+    captureScreenshot: (input?: unknown) => Promise<IpcResult<ArtifactSnapshot>>;
+    open: (input?: unknown) => Promise<IpcResult>;
+    reveal: (input?: unknown) => Promise<IpcResult>;
+  };
+  desktop?: {
+    getSettings: () => Promise<IpcResult<AppSettingsSnapshot>>;
+    updateSettings: (input?: unknown) => Promise<IpcResult<AppSettingsSnapshot>>;
+    notify: (input?: unknown) => Promise<IpcResult>;
+    setPreventSleep: (enabled: boolean) => Promise<IpcResult>;
+    popout: (input?: unknown) => Promise<IpcResult>;
+    openExternal: (url: string) => Promise<IpcResult>;
   };
   modelConfigs: {
     list: () => Promise<IpcResult<ModelConfigSnapshot>>;
@@ -203,9 +416,51 @@ export const redouApi = {
   },
   listApprovals: (taskId?: string) => electronApi()?.approvals.list(taskId) ?? fallback([]),
   respondApproval: (approvalId: string, decision: unknown) => electronApi()?.approvals.respond(approvalId, decision) ?? fallback(null),
+  getGitStatus: (input?: unknown) => electronApi()?.git?.status(input) ?? fallback<GitStatusSnapshot>(null),
+  getGitDiff: (input?: unknown) => electronApi()?.git?.diff(input) ?? fallback<GitDiffSnapshot>(null),
+  stageGitFile: (input?: unknown) => electronApi()?.git?.stage(input) ?? fallback<GitDiffSnapshot>(null),
+  unstageGitFile: (input?: unknown) => electronApi()?.git?.unstage(input) ?? fallback<GitDiffSnapshot>(null),
+  revertGitFile: (input?: unknown) => electronApi()?.git?.revert(input) ?? fallback<GitDiffSnapshot>(null),
+  stageGitHunk: (input?: unknown) => electronApi()?.git?.stageHunk(input) ?? fallback<GitDiffSnapshot>(null),
+  revertGitHunk: (input?: unknown) => electronApi()?.git?.revertHunk(input) ?? fallback<GitDiffSnapshot>(null),
+  commitGitChanges: (input?: unknown) => electronApi()?.git?.commit(input) ?? fallback<GitDiffSnapshot>(null),
+  pushGitBranch: (input?: unknown) => electronApi()?.git?.push(input) ?? fallback<GitDiffSnapshot>(null),
+  createPullRequest: (input?: unknown) => electronApi()?.git?.createPullRequest(input) ?? fallback<GitDiffSnapshot>(null),
+  runTerminalCommand: (input?: unknown) => electronApi()?.terminal?.run(input) ?? fallback(null),
+  listWorktrees: (input?: unknown) => electronApi()?.worktrees?.list(input) ?? fallback(null),
+  createWorktree: (input?: unknown) => electronApi()?.worktrees?.create(input) ?? fallback(null),
+  removeWorktree: (input?: unknown) => electronApi()?.worktrees?.remove(input) ?? fallback(null),
+  openWorktree: (input?: unknown) => electronApi()?.worktrees?.open(input) ?? fallback(null),
+  listAutomations: (input?: unknown) => electronApi()?.automations?.list(input) ?? fallback(null),
+  createAutomation: (input?: unknown) => electronApi()?.automations?.create(input) ?? fallback(null),
+  updateAutomation: (input?: unknown) => electronApi()?.automations?.update(input) ?? fallback(null),
+  deleteAutomation: (input?: unknown) => electronApi()?.automations?.delete(input) ?? fallback(null),
+  runAutomation: (input?: unknown) => electronApi()?.automations?.run(input) ?? fallback(null),
+  listSkills: (input?: unknown) => electronApi()?.skills?.list(input) ?? fallback(null),
+  rescanSkills: (input?: unknown) => electronApi()?.skills?.rescan(input) ?? fallback(null),
+  toggleSkill: (input?: unknown) => electronApi()?.skills?.toggle(input) ?? fallback(null),
+  listMcpServers: (input?: unknown) => electronApi()?.mcp?.list(input) ?? fallback(null),
+  installMcpServer: (input?: unknown) => electronApi()?.mcp?.install(input) ?? fallback(null),
+  removeMcpServer: (input?: unknown) => electronApi()?.mcp?.remove(input) ?? fallback(null),
+  testMcpServer: (input?: unknown) => electronApi()?.mcp?.test(input) ?? fallback(null),
   getRules: (projectId?: string, taskId?: string) => electronApi()?.rules.get(projectId, taskId) ?? fallback(null),
   updateRules: (input: unknown) => electronApi()?.rules.update(input) ?? fallback(null),
   previewContext: (input: unknown) => electronApi()?.context.preview(input) ?? fallback(null),
+  selectContextItems: (input: unknown) => electronApi()?.context.select(input) ?? fallback<ContextSelectionResult>({ canceled: true, items: [] }),
+  pathForDroppedFile: (file: File) => electronApi()?.context.pathForFile?.(file) || ((file as File & { path?: string }).path || file.name || ''),
+  listArtifacts: (input?: unknown) => electronApi()?.artifacts?.list(input) ?? fallback<ArtifactSnapshot[]>([]),
+  getArtifact: (input?: unknown) => electronApi()?.artifacts?.get(input) ?? fallback<ArtifactSnapshot>(null),
+  createTextArtifact: (input?: unknown) => electronApi()?.artifacts?.createText(input) ?? fallback<ArtifactSnapshot>(null),
+  generateImageArtifact: (input?: unknown) => electronApi()?.artifacts?.generateImage(input) ?? fallback<ArtifactSnapshot>(null),
+  captureScreenshotArtifact: (input?: unknown) => electronApi()?.artifacts?.captureScreenshot(input) ?? fallback<ArtifactSnapshot>(null),
+  openArtifact: (input?: unknown) => electronApi()?.artifacts?.open(input) ?? fallback(null),
+  revealArtifact: (input?: unknown) => electronApi()?.artifacts?.reveal(input) ?? fallback(null),
+  getAppSettings: () => electronApi()?.desktop?.getSettings() ?? fallback<AppSettingsSnapshot>(null),
+  updateAppSettings: (input?: unknown) => electronApi()?.desktop?.updateSettings(input) ?? fallback<AppSettingsSnapshot>(null),
+  notifyDesktop: (input?: unknown) => electronApi()?.desktop?.notify(input) ?? fallback(null),
+  setPreventSleep: (enabled: boolean) => electronApi()?.desktop?.setPreventSleep(enabled) ?? fallback(null),
+  popoutWindow: (input?: unknown) => electronApi()?.desktop?.popout(input) ?? fallback(null),
+  openExternalUrl: (url: string) => electronApi()?.desktop?.openExternal(url) ?? fallback(null),
   listModelConfigs: () => electronApi()?.modelConfigs.list() ?? fallback<ModelConfigSnapshot>({ catalog: [], providers: [], selected: null }),
   probeModelProvider: (input: unknown) => electronApi()?.modelConfigs.probe(input) ?? fallback<ModelProbeResult>(null),
   saveModelProvider: (input: unknown) => electronApi()?.modelConfigs.saveProvider(input) ?? fallback<ModelConfigSnapshot>({ catalog: [], providers: [], selected: null }),
@@ -216,5 +471,5 @@ export const redouApi = {
 export const redouRendererApiStatus = {
   phase: 'rewrite-phase-4',
   mode: hasRealRedouApi() ? 'ipc-preload' : 'mock-fallback',
-  codexAppServer: 'via-runtime-ipc',
+  redouCodexAppServer: 'via-runtime-ipc',
 } as const;

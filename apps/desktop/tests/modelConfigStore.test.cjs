@@ -7,6 +7,7 @@ const test = require('node:test');
 const {
   MODEL_PROVIDER_PRESETS,
   createModelConfigStore,
+  probeOpenAiCompatibleModels,
 } = require('../src/core/store/modelConfigStore.cjs');
 
 function tempStore() {
@@ -84,6 +85,71 @@ test('preset provider saves API key and selected model into Codex user config', 
     assert.match(toml, /model = "MiniMax-M2\.7"/);
     assert.match(toml, /base_url = "https:\/\/api\.minimaxi\.com\/v1"/);
     assert.match(toml, /experimental_bearer_token = "mm-test-key"/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('preset provider filters API key line breaks before saving', async () => {
+  const { root, store } = tempStore();
+  try {
+    await store.saveProvider({
+      provider: 'minimax',
+      apiKey: '  "Bearer mm-\r\n test\t-key\u200b"  ',
+      selectedModel: 'MiniMax-M2.7',
+      select: true,
+    });
+
+    const toml = fs.readFileSync(path.join(root, 'codex-home', 'config.toml'), 'utf8');
+    assert.match(toml, /experimental_bearer_token = "mm-test-key"/);
+    assert.doesNotMatch(toml, /mm-\r?\n/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('model probe filters API key line breaks before sending authorization', async () => {
+  let authorization = '';
+  const result = await probeOpenAiCompatibleModels(
+    {
+      baseUrl: 'https://example.test/v1',
+      apiKey: ' Bearer sk-\r\n test-token\u2028\ufeff ',
+    },
+    {
+      async fetch(_url, init) {
+        authorization = init.headers.Authorization;
+        return {
+          ok: true,
+          async text() {
+            return JSON.stringify({ data: [{ id: 'model-a' }] });
+          },
+        };
+      },
+    },
+  );
+
+  assert.equal(authorization, 'Bearer sk-test-token');
+  assert.deepEqual(result.models, ['model-a']);
+});
+
+test('model probe warning redacts bearer tokens from provider errors', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'redou-model-config-redaction-'));
+  const store = createModelConfigStore({
+    dataRoot: path.join(root, 'data'),
+    redouCodexHome: path.join(root, 'codex-home'),
+    async fetch() {
+      throw new Error('Headers.append: "Bearer sk-secret123456789" is an invalid header value.');
+    },
+  });
+  try {
+    const result = await store.probeModels({
+      provider: 'minimax',
+      apiKey: 'sk-secret123456789',
+      selectedModel: 'MiniMax-M2.7',
+    });
+
+    assert.match(result.warning, /Bearer \[REDACTED_API_KEY\]/);
+    assert.doesNotMatch(result.warning, /sk-secret123456789/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

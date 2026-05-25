@@ -1,7 +1,22 @@
 'use strict';
 
 // Basic artifact field definition. Keep this file limited to defaults and normalization.
-const ARTIFACT_FIELDS = Object.freeze(['id', 'taskId', 'projectId', 'type', 'name', 'path', 'mimeType', 'size', 'createdAt', 'metadata']);
+const ARTIFACT_FIELDS = Object.freeze([
+  'id',
+  'taskId',
+  'projectId',
+  'type',
+  'name',
+  'path',
+  'mimeType',
+  'size',
+  'status',
+  'createdAt',
+  'updatedAt',
+  'content',
+  'uri',
+  'metadata',
+]);
 
 function nowIso() {
   return new Date().toISOString();
@@ -17,7 +32,11 @@ function createDefaultArtifact(overrides = {}) {
     path: null,
     mimeType: null,
     size: 0,
+    status: 'ready',
     createdAt: nowIso(),
+    updatedAt: nowIso(),
+    content: null,
+    uri: null,
     metadata: {},
   };
   return normalizeArtifact({ ...base, ...overrides });

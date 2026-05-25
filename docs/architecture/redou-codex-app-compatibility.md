@@ -94,12 +94,12 @@ Unknown models must enter degraded mode and surface that fact in diagnostics.
 
 ## Migration Order
 
-1. Rename Redou-owned Codex adapter names to redou-codex while preserving official reference/upstream paths.
-2. Add the app-compat module skeleton and route context/instructions through it.
-3. Expand app-server event mapping and state snapshots.
-4. Add continuation and incomplete-turn detection.
-5. Add model capability registry for domestic providers.
-6. Move renderer assumptions to compatibility snapshot consumption.
+1. Rename Redou-owned Codex adapter names to redou-codex while preserving official reference/upstream paths. Done.
+2. Add the app-compat module skeleton and route context/instructions through it. Done.
+3. Expand app-server event mapping and state snapshots. Done for the desktop projection contract.
+4. Add continuation and incomplete-turn detection. Done with conservative needs-attention behavior.
+5. Add model capability registry for domestic providers. Done with degraded-mode metadata.
+6. Move renderer assumptions to compatibility snapshot consumption. Done for runtime status, stop reason and plan naming.
 
 ## Acceptance Criteria
 

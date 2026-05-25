@@ -34,6 +34,7 @@ interface ProjectListProps {
 
 const PROJECT_MENU_WIDTH = 236;
 const PROJECT_MENU_HEIGHT = 232;
+const MAX_VISIBLE_TASKS = 5;
 
 function clampMenuPosition(left: number, top: number) {
   if (typeof window === 'undefined') return { left, top };
@@ -63,6 +64,7 @@ export function ProjectList({
     left: number;
     top: number;
   } | null>(null);
+  const [expandedTaskProjectIds, setExpandedTaskProjectIds] = useState<string[]>([]);
   const contextMenuRef = useRef<HTMLDivElement>(null);
   const contextMenuStyle: CSSProperties | undefined = contextMenu
     ? { left: contextMenu.left, top: contextMenu.top }
@@ -117,12 +119,25 @@ export function ProjectList({
     await action(projectId);
   }
 
+  function toggleTaskListExpanded(projectId: string) {
+    setExpandedTaskProjectIds((projectIds) => (
+      projectIds.includes(projectId)
+        ? projectIds.filter((id) => id !== projectId)
+        : [...projectIds, projectId]
+    ));
+  }
+
   return (
     <div className="redou-project-list" data-compact={compact ? 'true' : 'false'}>
       {projects.map((project) => {
         const active = project.id === activeProjectId;
         const expanded = expandedProjectIds.includes(project.id);
         const showTasks = !compact && expanded && project.tasks.length > 0;
+        const hasTaskOverflow = project.tasks.length > MAX_VISIBLE_TASKS;
+        const taskListExpanded = expandedTaskProjectIds.includes(project.id);
+        const visibleTasks = hasTaskOverflow && !taskListExpanded
+          ? project.tasks.slice(0, MAX_VISIBLE_TASKS)
+          : project.tasks;
         const projectMenuOpen = contextMenu?.project.id === project.id;
 
         return (
@@ -172,7 +187,7 @@ export function ProjectList({
             </div>
             {showTasks ? (
               <div className="redou-task-list">
-                {project.tasks.map((task) => (
+                {visibleTasks.map((task) => (
                   <button
                     className="redou-task-row"
                     data-active={task.id === activeTaskId ? 'true' : 'false'}
@@ -182,12 +197,23 @@ export function ProjectList({
                     onClick={() => onSelectTask?.(task.id)}
                   >
                     {task.status === 'running' ? <Loader2 className="redou-task-state-icon" size={13} /> : null}
-                    {task.status === 'error' ? <AlertCircle className="redou-task-state-icon" size={13} /> : null}
+                    {task.status === 'error' || task.status === 'failed' || task.status === 'waiting_approval' || task.status === 'degraded' ? (
+                      <AlertCircle className="redou-task-state-icon" size={13} />
+                    ) : null}
                     <span>{task.title}</span>
                     {task.updatedAt ? <em>{task.updatedAt}</em> : null}
                   </button>
                 ))}
-                <button className="redou-show-more" type="button">展开显示</button>
+                {hasTaskOverflow ? (
+                  <button
+                    className="redou-show-more"
+                    type="button"
+                    aria-expanded={taskListExpanded ? 'true' : 'false'}
+                    onClick={() => toggleTaskListExpanded(project.id)}
+                  >
+                    {taskListExpanded ? '折叠显示' : '展开显示'}
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>

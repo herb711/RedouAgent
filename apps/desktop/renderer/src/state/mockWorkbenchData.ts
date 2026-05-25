@@ -151,6 +151,11 @@ export const mockWorkbenchData: WorkbenchMockData = {
     },
   ],
   rightPanels: [
+    { id: 'terminal', label: 'Terminal', description: 'Integrated local command runner' },
+    { id: 'worktrees', label: 'Worktrees', description: 'Create and manage Git worktrees' },
+    { id: 'automations', label: 'Automations', description: 'Saved recurring and manual jobs' },
+    { id: 'skills', label: 'Skills', description: 'Enable or disable local skills' },
+    { id: 'mcp', label: 'MCP', description: 'Manage MCP server entries' },
     { id: 'progress', label: '进度', description: '任务计划、当前状态和环境信息' },
     { id: 'changes', label: '变更', description: '文件变更和 diff 摘要' },
     { id: 'artifacts', label: '交付物', description: '任务生成的可预览产物' },
@@ -237,7 +242,18 @@ export const mockWorkbenchData: WorkbenchMockData = {
     summary: '上下文包来自用户提供的 Codex desktop app 截图分析，以及 RedouAgent 当前 renderer 结构。',
     recentMessages: ['用户要求先做 Codex UI 构成分析。', '用户随后要求直接实现 UI。'],
     selectedFiles: ['apps/desktop/renderer/src/App.tsx', 'apps/desktop/renderer/src/components/layout/AppShell.tsx'],
+    selectedDirectories: [],
     attachments: ['Codex desktop app 界面截图'],
     environment: ['runtime: Codex-compatible', 'mode: 本地', 'branch: refactor/runtime-registry-codex-workbench'],
+  },
+  contextItems: [
+    { path: 'apps/desktop/renderer/src/App.tsx', name: 'App.tsx', kind: 'file' },
+    { path: 'Codex desktop app 界面截图', name: '界面截图', kind: 'image' },
+  ],
+  browser: {
+    url: 'https://github.com/herb711/RedouAgent',
+    homeUrl: 'https://github.com/herb711/RedouAgent',
+    title: 'RedouAgent',
+    status: 'ready',
   },
 };

@@ -121,6 +121,31 @@ function createRedouCodexLifecycle(dependencies = {}) {
     assertRedouModelConfig(dependencies.modelConfig || clientOptions.modelConfig || readRedouModelConfig(clientOptions.env));
   }
 
+  async function emitModelCompatibility(input = {}, task = {}) {
+    const capability = input.modelCapability || input.modelConfig?.modelCapability || null;
+    if (!capability || !capability.degraded) return null;
+    return sinkEvents({
+      taskId: task.id || input.taskId || null,
+      projectId: task.projectId || input.projectId || null,
+      runtime: REDOU_CODEX_RUNTIME_ID,
+      type: 'model_degraded',
+      level: 'warn',
+      timestamp: new Date().toISOString(),
+      title: 'Model compatibility degraded',
+      message: capability.warnings && capability.warnings.length
+        ? capability.warnings[0]
+        : 'Selected model is running with conservative redou-codex compatibility defaults.',
+      payload: {
+        degraded: true,
+        capability,
+      },
+      metadata: {
+        model: capability.model || input.model || null,
+        modelProvider: input.modelProvider || capability.providerId || null,
+      },
+    });
+  }
+
   async function startOrResumeThread(input, task) {
     const threadId = redouCodexThreadIdFrom(task) || redouCodexThreadIdFrom(input);
     const request = threadId
@@ -149,6 +174,7 @@ function createRedouCodexLifecycle(dependencies = {}) {
     const availability = await ensureAvailable(input);
     await ensureInitialized(input);
     assertModelConfigForInput(input);
+    await emitModelCompatibility(input, task);
 
     const thread = await startOrResumeThread(input, task);
     const turnRequest = buildTurnStartRequest({ ...input, task, threadId: thread.threadId });
@@ -189,6 +215,7 @@ function createRedouCodexLifecycle(dependencies = {}) {
     await ensureAvailable(input);
     await ensureInitialized(input);
     assertModelConfigForInput(input);
+    await emitModelCompatibility(input, task);
     const request = buildThreadResumeRequest({ ...input, task, threadId });
     const response = await client.request(request.method, request.params);
     threadContexts.set(threadId, { taskId: task.id, projectId: task.projectId, threadId });

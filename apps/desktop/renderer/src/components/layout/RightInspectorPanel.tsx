@@ -1,12 +1,18 @@
 import { X } from 'lucide-react';
 import { ArtifactPanel } from '../artifacts/ArtifactPanel';
+import { AutomationPanel } from '../automations/AutomationPanel';
 import { ChangesPanel } from '../changes/ChangesPanel';
 import { ContextPanel } from '../context/ContextPanel';
 import { FileExplorerPanel } from '../files/FileExplorerPanel';
 import { LogPanel } from '../logs/LogPanel';
+import { McpPanel } from '../mcp/McpPanel';
 import { CodeReviewPanel } from '../review/CodeReviewPanel';
 import { RulesPanel } from '../rules/RulesPanel';
+import { SkillsPanel } from '../skills/SkillsPanel';
 import { ProgressPanel } from '../status/ProgressPanel';
+import { TerminalPanel } from '../terminal/TerminalPanel';
+import { WorktreePanel } from '../worktrees/WorktreePanel';
+import type { WorkbenchActions } from '../../state/workbenchStore';
 import type { RightPanelId, WorkbenchMockData } from '../../types';
 
 interface RightInspectorPanelProps {
@@ -16,10 +22,11 @@ interface RightInspectorPanelProps {
   runtimeAvailability?: unknown;
   runtimeError?: string | null;
   apiMode?: 'ipc' | 'mock';
+  actions: WorkbenchActions;
   onOpenArtifactPreview?: () => void;
 }
 
-export function RightInspectorPanel({ data, activePanel, onClose, runtimeAvailability, runtimeError, apiMode, onOpenArtifactPreview }: RightInspectorPanelProps) {
+export function RightInspectorPanel({ data, activePanel, onClose, runtimeAvailability, runtimeError, apiMode, actions, onOpenArtifactPreview }: RightInspectorPanelProps) {
   const panelDefinition = data.rightPanels.find((panel) => panel.id === activePanel);
 
   return (
@@ -34,7 +41,7 @@ export function RightInspectorPanel({ data, activePanel, onClose, runtimeAvailab
         </button>
       </header>
       <div className="redou-inspector-content">
-        {renderPanel(activePanel, data, { runtimeAvailability, runtimeError, apiMode, onOpenArtifactPreview })}
+        {renderPanel(activePanel, data, { runtimeAvailability, runtimeError, apiMode, actions, onOpenArtifactPreview })}
       </div>
     </section>
   );
@@ -43,7 +50,7 @@ export function RightInspectorPanel({ data, activePanel, onClose, runtimeAvailab
 function renderPanel(
   activePanel: RightPanelId,
   data: WorkbenchMockData,
-  runtime: Pick<RightInspectorPanelProps, 'runtimeAvailability' | 'runtimeError' | 'apiMode' | 'onOpenArtifactPreview'>,
+  runtime: Pick<RightInspectorPanelProps, 'runtimeAvailability' | 'runtimeError' | 'apiMode' | 'actions' | 'onOpenArtifactPreview'>,
 ) {
   switch (activePanel) {
     case 'progress':
@@ -60,6 +67,9 @@ function renderPanel(
           runtimeAvailability={runtime.runtimeAvailability}
           runtimeError={runtime.runtimeError}
           apiMode={runtime.apiMode}
+          onCommitGitChanges={runtime.actions.commitGitChanges}
+          onPushGitBranch={runtime.actions.pushGitBranch}
+          onCreatePullRequest={runtime.actions.createPullRequest}
         />
       );
     case 'codeReview':
@@ -75,7 +85,17 @@ function renderPanel(
     case 'rules':
       return <RulesPanel rules={data.mockRules} />;
     case 'context':
-      return <ContextPanel context={data.mockContext} />;
+      return <ContextPanel context={data.mockContext} onRemoveItem={runtime.actions.removeContextItem} onClear={runtime.actions.clearContext} />;
+    case 'terminal':
+      return <TerminalPanel projectId={data.activeProjectId} />;
+    case 'worktrees':
+      return <WorktreePanel projectId={data.activeProjectId} />;
+    case 'automations':
+      return <AutomationPanel projectId={data.activeProjectId} />;
+    case 'skills':
+      return <SkillsPanel />;
+    case 'mcp':
+      return <McpPanel />;
     default:
       return null;
   }

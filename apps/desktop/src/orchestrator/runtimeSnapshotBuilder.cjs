@@ -1,6 +1,8 @@
 'use strict';
 
 const { REDOU_CODEX_RUNTIME_ID } = require('../runtimes/redou-codex/redouCodexRuntimeConfig.cjs');
+const { buildRedouCodexStateSnapshot } = require('../redou-codex/app-compat/state/redouCodexStateSnapshot.cjs');
+const { createDefaultArtifact } = require('../core/models/artifact.cjs');
 
 const NON_PROGRESS_ITEM_TYPES = new Set(['userMessage', 'agentMessage']);
 const TERMINAL_ERROR_STATUSES = new Set(['failed', 'error', 'cancelled', 'canceled']);
@@ -100,6 +102,56 @@ function changedFilesFrom(event) {
   }));
 }
 
+function artifactsFrom(event) {
+  const payload = event.payload || {};
+  const item = payload.item || {};
+  const artifacts = [];
+  const explicitArtifacts = [
+    payload.artifact,
+    ...(Array.isArray(payload.artifacts) ? payload.artifacts : []),
+  ].filter(Boolean);
+
+  explicitArtifacts.forEach((artifact, index) => {
+    artifacts.push(createDefaultArtifact({
+      ...artifact,
+      id: artifact.id || `${event.id}:artifact:${index}`,
+      taskId: artifact.taskId || event.taskId || event.metadata?.taskId || null,
+      projectId: artifact.projectId || event.projectId || event.metadata?.projectId || null,
+      status: artifact.status || 'ready',
+      createdAt: artifact.createdAt || event.timestamp,
+      metadata: {
+        ...(artifact.metadata || {}),
+        sourceEventId: event.id,
+      },
+    }));
+  });
+
+  if (event.type === 'file_change') {
+    const changes = payload.changes || item.changes || [];
+    changes.forEach((change, index) => {
+      if (!change.path && !change.diff) return;
+      artifacts.push(createDefaultArtifact({
+        id: `${event.id}:file-change:${index}`,
+        taskId: event.taskId || event.metadata?.taskId || null,
+        projectId: event.projectId || event.metadata?.projectId || null,
+        type: 'diff',
+        name: change.path || `File change ${index + 1}`,
+        path: change.path || null,
+        mimeType: 'text/x-diff',
+        status: item.status || payload.lifecycle || 'updated',
+        content: change.diff || payload.delta || '',
+        createdAt: event.timestamp,
+        metadata: {
+          kind: change.kind || item.type || 'file_change',
+          sourceEventId: event.id,
+        },
+      }));
+    });
+  }
+
+  return artifacts;
+}
+
 function latest(events, type) {
   return [...events].reverse().find((event) => event.type === type) || null;
 }
@@ -190,6 +242,25 @@ function turnErrorFrom(event) {
     message: `Turn failed: ${message}`,
     payload: event.payload,
     metadata: event.metadata || {},
+  };
+}
+
+function commandLogFrom(event) {
+  const payload = event.payload || {};
+  const item = payload.item || {};
+  const lifecycle = payload.lifecycle || item.status || 'updated';
+  const command = item.command || payload.command || event.metadata?.command || '';
+  const output = payload.delta && payload.delta !== command ? payload.delta : '';
+  return {
+    id: event.id,
+    level: event.level || (String(lifecycle).toLowerCase() === 'failed' ? 'error' : 'info'),
+    kind: 'command',
+    lifecycle,
+    command,
+    output,
+    message: command || output || event.message || event.title,
+    time: event.timestamp,
+    payload,
   };
 }
 
@@ -292,6 +363,9 @@ function buildRuntimeSnapshot(events = []) {
       itemEvents.push(event);
     } else if (event.type === 'file_change') {
       changedFiles.push(...changedFilesFrom(event));
+      artifacts.push(...artifactsFrom(event));
+    } else if (event.type === 'artifact' || event.type === 'artifact_created' || event.type === 'artifact_update') {
+      artifacts.push(...artifactsFrom(event));
     } else if (event.type === 'approval_required') {
       approvalRequests.push({
         id: String(event.payload && event.payload.requestId ? event.payload.requestId : event.id),
@@ -318,6 +392,14 @@ function buildRuntimeSnapshot(events = []) {
         time: event.timestamp,
         payload: event.payload,
       });
+    } else if (event.type === 'model_degraded' || event.type === 'runtime_warning') {
+      logs.push({
+        id: event.id,
+        level: event.level || 'warn',
+        message: event.message || event.title,
+        time: event.timestamp,
+        payload: event.payload,
+      });
     } else if (event.type === 'turn_update') {
       const turnError = turnErrorFrom(event);
       if (turnError) upsertTurnError(turnError);
@@ -333,13 +415,7 @@ function buildRuntimeSnapshot(events = []) {
         payload: event.payload,
       });
     } else if (event.type === 'command_update') {
-      logs.push({
-        id: event.id,
-        level: event.level || 'info',
-        message: event.message || event.title,
-        time: event.timestamp,
-        payload: event.payload,
-      });
+      logs.push(commandLogFrom(event));
     }
   }
 
@@ -360,6 +436,7 @@ function buildRuntimeSnapshot(events = []) {
   const latestTurnError = turnErrorFrom(turn);
   const latestRuntimeError = latest(ordered, 'runtime_error');
   const lastError = latestTurnError || (isAfter(latestRuntimeError, turn) ? latestRuntimeError : null);
+  const redouCodexState = buildRedouCodexStateSnapshot(ordered);
 
   return {
     messages: messages.filter(Boolean),
@@ -375,12 +452,18 @@ function buildRuntimeSnapshot(events = []) {
     artifacts,
     runtimeStatus: {
       runtime: REDOU_CODEX_RUNTIME_ID,
-      threadStatus: thread && thread.payload ? thread.payload.status || (thread.payload.thread && thread.payload.thread.status) : null,
-      turnStatus: turn && turn.payload && turn.payload.turn ? turn.payload.turn.status : null,
-      activeTurnId: turn && turn.metadata ? turn.metadata.turnId : null,
+      threadStatus: redouCodexState.threadStatus,
+      turnStatus: redouCodexState.status,
+      rawTurnStatus: redouCodexState.rawTurnStatus,
+      activeTurnId: redouCodexState.turnId || (turn && turn.metadata ? turn.metadata.turnId : null),
       activeItem,
       usage: usage ? usage.payload : null,
       lastError,
+      needsAttention: redouCodexState.needsAttention,
+      degraded: redouCodexState.degraded,
+      stopReason: redouCodexState.stopReason,
+      continuation: redouCodexState.continuation,
+      compatibility: redouCodexState,
     },
     environmentInfo: {
       runtime: 'redou-codex',

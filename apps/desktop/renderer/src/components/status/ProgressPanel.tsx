@@ -3,13 +3,13 @@ import { PlanView } from '../plan/PlanView';
 import { TodoProjectionView } from '../todo/TodoProjectionView';
 import { EnvironmentCard } from './EnvironmentCard';
 import { ProgressCard } from './ProgressCard';
-import type { ApprovalRequestProjection, CodexPlanProjection, EnvironmentInfo, LogEntryData, ProgressStepData, RuntimeStatusData, TodoProjectionEntry, WorkbenchTask } from '../../types';
+import type { ApprovalRequestProjection, RedouCodexPlanProjection, EnvironmentInfo, LogEntryData, ProgressStepData, RuntimeStatusData, TodoProjectionEntry, WorkbenchTask } from '../../types';
 
 interface ProgressPanelProps {
   task: WorkbenchTask;
   steps: ProgressStepData[];
   environment: EnvironmentInfo;
-  planEntries?: CodexPlanProjection[];
+  planEntries?: RedouCodexPlanProjection[];
   logs?: LogEntryData[];
   todoProjectionEntries?: TodoProjectionEntry[];
   approvalRequests?: ApprovalRequestProjection[];
@@ -17,6 +17,9 @@ interface ProgressPanelProps {
   runtimeAvailability?: unknown;
   runtimeError?: string | null;
   apiMode?: 'ipc' | 'mock';
+  onCommitGitChanges?: () => Promise<void>;
+  onPushGitBranch?: () => Promise<void>;
+  onCreatePullRequest?: () => Promise<void>;
 }
 
 export function ProgressPanel({
@@ -31,6 +34,9 @@ export function ProgressPanel({
   runtimeAvailability,
   runtimeError,
   apiMode = 'mock',
+  onCommitGitChanges,
+  onPushGitBranch,
+  onCreatePullRequest,
 }: ProgressPanelProps) {
   return (
     <div className="redou-panel-stack">
@@ -47,7 +53,12 @@ export function ProgressPanel({
       <PlanView entries={planEntries} />
       <TodoProjectionView entries={todoProjectionEntries} />
       <ApprovalCards approvals={approvalRequests} />
-      <EnvironmentCard environment={environment} />
+      <EnvironmentCard
+        environment={environment}
+        onCommitGitChanges={onCommitGitChanges}
+        onPushGitBranch={onPushGitBranch}
+        onCreatePullRequest={onCreatePullRequest}
+      />
     </div>
   );
 }

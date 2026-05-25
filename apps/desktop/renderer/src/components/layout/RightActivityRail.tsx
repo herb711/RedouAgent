@@ -2,11 +2,16 @@ import {
   BookOpen,
   Code2,
   Files,
+  FolderGit2,
   GitCompare,
   ListChecks,
+  CalendarClock,
   Network,
   Package,
+  PlugZap,
   ScrollText,
+  Sparkles,
+  Terminal,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import type { RightPanelDefinition, RightPanelId } from '../../types';
@@ -20,6 +25,11 @@ const panelIcons: Record<RightPanelId, LucideIcon> = {
   artifacts: Package,
   rules: BookOpen,
   context: Network,
+  terminal: Terminal,
+  worktrees: FolderGit2,
+  automations: CalendarClock,
+  skills: Sparkles,
+  mcp: PlugZap,
 };
 
 interface RightActivityRailProps {

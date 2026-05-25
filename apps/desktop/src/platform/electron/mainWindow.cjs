@@ -4,6 +4,12 @@ const path = require('node:path');
 const { BrowserWindow, nativeTheme } = require('electron');
 const { loadRenderer } = require('./rendererLoader.cjs');
 
+function resolveWindowIcon(options = {}) {
+  if (options.iconPath) return options.iconPath;
+  const iconFile = process.platform === 'win32' ? 'redou-agent.ico' : 'redou-agent.png';
+  return path.resolve(__dirname, '../../../assets/icons', iconFile);
+}
+
 function createMainWindow(options = {}) {
   nativeTheme.themeSource = 'light';
   const preload = options.preloadPath || path.join(__dirname, 'preloadBridge.cjs');
@@ -14,11 +20,13 @@ function createMainWindow(options = {}) {
     minHeight: 720,
     backgroundColor: '#f7f7f5',
     title: 'Redou Workbench',
+    icon: resolveWindowIcon(options),
     webPreferences: {
       preload,
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      webviewTag: true,
     },
   });
 
@@ -33,4 +41,4 @@ function createMainWindow(options = {}) {
   return window;
 }
 
-module.exports = { createMainWindow };
+module.exports = { createMainWindow, resolveWindowIcon };

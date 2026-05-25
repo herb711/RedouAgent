@@ -6,10 +6,10 @@ const path = require('node:path');
 function resolveRendererEntry(config = {}) {
   const rendererRoot = config.rendererRoot || path.resolve(__dirname, '../../../renderer');
   const distIndex = config.distIndex || path.join(rendererRoot, 'dist', 'index.html');
-  if (fs.existsSync(distIndex)) return { kind: 'file', target: distIndex };
   if (config.devServerUrl || process.env.REDOU_RENDERER_URL) {
     return { kind: 'url', target: config.devServerUrl || process.env.REDOU_RENDERER_URL };
   }
+  if (fs.existsSync(distIndex)) return { kind: 'file', target: distIndex };
   if (config.devServerFallback !== false) {
     return { kind: 'url', target: 'http://localhost:5173' };
   }

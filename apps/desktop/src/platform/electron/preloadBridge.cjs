@@ -1,7 +1,8 @@
 'use strict';
 
-function createInvokeApi(ipcRenderer) {
+function createInvokeApi(ipcRenderer, options = {}) {
   const invoke = (channel, payload) => ipcRenderer.invoke(channel, payload);
+  const webUtils = options.webUtils;
   return {
     runtimes: {
       list: () => invoke('redou:runtimes:list'),
@@ -43,6 +44,45 @@ function createInvokeApi(ipcRenderer) {
       list: (taskId) => invoke('redou:approvals:list', taskId ? { taskId } : {}),
       respond: (approvalId, decision) => invoke('redou:approvals:respond', { requestId: approvalId, decision }),
     },
+    git: {
+      status: (input) => invoke('redou:git:status', input || {}),
+      diff: (input) => invoke('redou:git:diff', input || {}),
+      stage: (input) => invoke('redou:git:stage', input || {}),
+      unstage: (input) => invoke('redou:git:unstage', input || {}),
+      revert: (input) => invoke('redou:git:revert', input || {}),
+      stageHunk: (input) => invoke('redou:git:stage-hunk', input || {}),
+      revertHunk: (input) => invoke('redou:git:revert-hunk', input || {}),
+      commit: (input) => invoke('redou:git:commit', input || {}),
+      push: (input) => invoke('redou:git:push', input || {}),
+      createPullRequest: (input) => invoke('redou:git:create-pr', input || {}),
+    },
+    terminal: {
+      run: (input) => invoke('redou:terminal:run', input || {}),
+    },
+    worktrees: {
+      list: (input) => invoke('redou:worktrees:list', input || {}),
+      create: (input) => invoke('redou:worktrees:create', input || {}),
+      remove: (input) => invoke('redou:worktrees:remove', input || {}),
+      open: (input) => invoke('redou:worktrees:open', input || {}),
+    },
+    automations: {
+      list: (input) => invoke('redou:automations:list', input || {}),
+      create: (input) => invoke('redou:automations:create', input || {}),
+      update: (input) => invoke('redou:automations:update', input || {}),
+      delete: (input) => invoke('redou:automations:delete', input || {}),
+      run: (input) => invoke('redou:automations:run', input || {}),
+    },
+    skills: {
+      list: (input) => invoke('redou:skills:list', input || {}),
+      rescan: (input) => invoke('redou:skills:rescan', input || {}),
+      toggle: (input) => invoke('redou:skills:toggle', input || {}),
+    },
+    mcp: {
+      list: (input) => invoke('redou:mcp:list', input || {}),
+      install: (input) => invoke('redou:mcp:install', input || {}),
+      remove: (input) => invoke('redou:mcp:remove', input || {}),
+      test: (input) => invoke('redou:mcp:test', input || {}),
+    },
     projects: {
       list: () => invoke('redou:projects:list'),
       get: (projectId) => invoke('redou:projects:get', { id: projectId, projectId }),
@@ -59,6 +99,28 @@ function createInvokeApi(ipcRenderer) {
     },
     context: {
       preview: (input) => invoke('redou:context:preview', input || {}),
+      select: (input) => invoke('redou:context:select', input || {}),
+      pathForFile: (file) => {
+        if (webUtils && typeof webUtils.getPathForFile === 'function') return webUtils.getPathForFile(file);
+        return file && (file.path || file.name) || '';
+      },
+    },
+    artifacts: {
+      list: (input) => invoke('redou:artifacts:list', input || {}),
+      get: (input) => invoke('redou:artifacts:get', input || {}),
+      createText: (input) => invoke('redou:artifacts:create-text', input || {}),
+      generateImage: (input) => invoke('redou:artifacts:generate-image', input || {}),
+      captureScreenshot: (input) => invoke('redou:artifacts:capture-screenshot', input || {}),
+      open: (input) => invoke('redou:artifacts:open', input || {}),
+      reveal: (input) => invoke('redou:artifacts:reveal', input || {}),
+    },
+    desktop: {
+      getSettings: () => invoke('redou:desktop:settings:get'),
+      updateSettings: (input) => invoke('redou:desktop:settings:update', input || {}),
+      notify: (input) => invoke('redou:desktop:notify', input || {}),
+      setPreventSleep: (enabled) => invoke('redou:desktop:prevent-sleep', { enabled }),
+      popout: (input) => invoke('redou:desktop:popout', input || {}),
+      openExternal: (url) => invoke('redou:desktop:open-external', { url }),
     },
     modelConfigs: {
       list: () => invoke('redou:model-config:list'),
@@ -73,15 +135,15 @@ function createInvokeApi(ipcRenderer) {
 function registerPreloadBridge(contextBridge, api = {}) {
   const ipcRenderer = api.ipcRenderer;
   if (!contextBridge || !ipcRenderer) return null;
-  const redouApi = api.redouApi || createInvokeApi(ipcRenderer);
+  const redouApi = api.redouApi || createInvokeApi(ipcRenderer, { webUtils: api.webUtils });
   contextBridge.exposeInMainWorld('redouApi', redouApi);
   return redouApi;
 }
 
 try {
   if (typeof process !== 'undefined' && process.type === 'renderer') {
-    const { contextBridge, ipcRenderer } = require('electron');
-    registerPreloadBridge(contextBridge, { ipcRenderer });
+    const { contextBridge, ipcRenderer, webUtils } = require('electron');
+    registerPreloadBridge(contextBridge, { ipcRenderer, webUtils });
   }
 } catch {
   // Loading this module from tests/main should not require Electron preload globals.

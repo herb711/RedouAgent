@@ -65,6 +65,44 @@ resolve_python() {
   exit 1
 }
 
+configure_linux_desktop_session() {
+  if [[ "$(uname -s)" != "Linux" || -n "${DISPLAY:-}" ]]; then
+    return 0
+  fi
+
+  local display_number uid x_socket xauth_path
+  for x_socket in /tmp/.X11-unix/X*; do
+    [[ -S "$x_socket" ]] || continue
+    display_number="${x_socket##*/X}"
+    export DISPLAY=":$display_number"
+    break
+  done
+
+  [[ -n "${DISPLAY:-}" ]] || return 0
+  if [[ -n "${XAUTHORITY:-}" && -r "$XAUTHORITY" ]]; then
+    return 0
+  fi
+
+  uid="$(id -u)"
+  for xauth_path in \
+    "${XDG_RUNTIME_DIR:-}/gdm/Xauthority" \
+    "/run/user/$uid/gdm/Xauthority" \
+    "$HOME/.Xauthority"; do
+    [[ -r "$xauth_path" ]] || continue
+    export XAUTHORITY="$xauth_path"
+    return 0
+  done
+}
+
+electron_start_args() {
+  if [[ "$(uname -s)" == "Linux" && -z "${REDOU_ENABLE_GPU:-}" ]]; then
+    printf '%s\n' "--disable-gpu"
+  fi
+  if [[ "$(uname -s)" == "Linux" && -z "${REDOU_ENABLE_SANDBOX:-}" ]]; then
+    printf '%s\n' "--no-sandbox"
+  fi
+}
+
 NPM="$(command_path npm || true)"
 if [[ -z "$NPM" ]]; then
   echo "npm was not found. Run bash install-redou-agent.sh first." >&2
@@ -81,6 +119,13 @@ fi
 if [[ ! -x "$DESKTOP_DIR/node_modules/electron/dist/electron" ]]; then
   echo "Desktop dependencies are not installed. Run bash install-redou-agent.sh first." >&2
   exit 1
+fi
+
+configure_linux_desktop_session
+
+mapfile -t ELECTRON_ARGS < <(electron_start_args)
+if [[ "${#ELECTRON_ARGS[@]}" -gt 0 ]]; then
+  exec "$NPM" --prefix "$DESKTOP_DIR" start -- "${ELECTRON_ARGS[@]}"
 fi
 
 exec "$NPM" --prefix "$DESKTOP_DIR" start

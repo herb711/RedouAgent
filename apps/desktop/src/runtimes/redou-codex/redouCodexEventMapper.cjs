@@ -222,7 +222,15 @@ function mapRedouCodexNotificationToAgentEvents(notification = {}, context = {})
   else if (method === 'item/commandExecution/outputDelta') events.push(mapCommandEvent(notification, context));
   else if (method === 'item/fileChange/patchUpdated' || method === 'item/fileChange/outputDelta') events.push(mapFileChangeEvent(notification, context));
   else if (method.endsWith('/requestApproval') || method === 'execCommandApproval' || method === 'applyPatchApproval') events.push(mapApprovalEvent(notification, context));
-  else if (method === 'serverRequest/resolved') events.push(baseEvent(notification, context, { type: 'approval_resolved', title: 'Approval resolved' }));
+  else if (method === 'serverRequest/resolved') {
+    const params = paramsOf(notification);
+    events.push(baseEvent(notification, context, {
+      type: 'approval_resolved',
+      title: 'Approval resolved',
+      payload: params,
+      metadata: { requestId: params.requestId || params.id || notification.id || null },
+    }));
+  }
   else if (method === 'error' || method === 'warning' || method === 'protocol_error' || method === 'raw_log') events.push(mapRawEvent(notification, context, method === 'error' ? 'error' : 'info'));
   else if (method === 'item/started' || method === 'item/completed') events.push(mapItemLifecycleEvent(notification, context));
   else events.push(mapRawEvent(notification, context));

@@ -18,6 +18,7 @@ export function RightStatusRail({ state, actions }: RightStatusRailProps) {
           runtimeAvailability={state.runtimeAvailability}
           runtimeError={state.runtimeError}
           apiMode={state.apiMode}
+          actions={actions}
           onOpenArtifactPreview={() => actions.selectView('artifactPreview')}
         />
       ) : null}

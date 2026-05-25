@@ -8,6 +8,7 @@ module.exports = {
   ruleStore: require('./ruleStore.cjs'),
   contextStore: require('./contextStore.cjs'),
   artifactStore: require('./artifactStore.cjs'),
+  appSettingsStore: require('./appSettingsStore.cjs'),
   logStore: require('./logStore.cjs'),
   runtimeSessionStore: require('./runtimeSessionStore.cjs'),
   workspaceStore: require('./workspaceStore.cjs'),

@@ -5,6 +5,7 @@ const { readJsonFile, writeJsonFile } = require('../../platform/filesystem/jsonF
 const { safeJoin } = require('../../platform/filesystem/paths.cjs');
 const { writeRedouCodexUserConfigSync } = require('../../runtimes/redou-codex/redouCodexRuntimeConfig.cjs');
 const { shouldProxyProvider } = require('../models/responsesChatProxy.cjs');
+const { inferRedouCodexModelCapability } = require('../../redou-codex/app-compat/models/redouCodexModelCapabilities.cjs');
 
 const MODEL_CONFIG_VERSION = 1;
 
@@ -47,7 +48,7 @@ const MODEL_PROVIDER_PRESETS = Object.freeze([
   },
   {
     id: 'doubao',
-    label: '豆包 / 火山方舟',
+    label: 'Doubao / Volcengine Ark',
     description: 'Volcengine Ark OpenAI-compatible endpoint.',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/v3',
     apiProtocol: 'chat-completions',
@@ -59,7 +60,7 @@ const MODEL_PROVIDER_PRESETS = Object.freeze([
   },
   {
     id: 'mimo',
-    label: '小米 MiMo',
+    label: 'Xiaomi MiMo',
     description: 'Xiaomi MiMo OpenAI-compatible endpoint.',
     baseUrl: 'https://api.xiaomimimo.com/v1',
     apiProtocol: 'chat-completions',
@@ -92,6 +93,30 @@ const MODEL_PROVIDER_PRESETS = Object.freeze([
     defaultModel: 'glm-5',
     region: 'CN/Global',
     tags: ['reasoning', 'coding'],
+  },
+  {
+    id: 'siliconflow',
+    label: 'SiliconFlow',
+    description: 'SiliconFlow OpenAI-compatible endpoint for Chinese and open-source models.',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    apiProtocol: 'chat-completions',
+    apiKeyEnv: 'SILICONFLOW_API_KEY',
+    models: ['Pro/zai-org/GLM-4.7', 'deepseek-ai/DeepSeek-V3.2', 'Qwen/Qwen3-32B', 'tencent/Hunyuan-A13B-Instruct'],
+    defaultModel: 'Pro/zai-org/GLM-4.7',
+    region: 'CN',
+    tags: ['marketplace', 'coding'],
+  },
+  {
+    id: 'qianfan',
+    label: 'Baidu Qianfan',
+    description: 'Baidu Qianfan ModelBuilder V2 OpenAI-compatible endpoint.',
+    baseUrl: 'https://qianfan.baidubce.com/v2',
+    apiProtocol: 'chat-completions',
+    apiKeyEnv: 'QIANFAN_API_KEY',
+    models: ['ernie-5.0', 'ernie-x1.1-preview', 'ernie-4.5-turbo-128k', 'deepseek-v4-pro'],
+    defaultModel: 'ernie-5.0',
+    region: 'CN',
+    tags: ['baidu', 'coding'],
   },
   {
     id: 'local-vllm',
@@ -138,6 +163,22 @@ function nowIso() {
 
 function cleanString(value) {
   return String(value || '').trim();
+}
+
+function cleanApiKey(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .trim()
+    .replace(/^Bearer\s+/i, '')
+    .replace(/[\s\u0000-\u001f\u007f-\u009f\u200b-\u200d\u2060\ufeff]+/g, '')
+    .replace(/^["'`]+|["'`]+$/g, '');
+}
+
+function redactSensitiveText(value) {
+  return String(value || '')
+    .replace(/\b(Bearer)\s+[^\s"']+/gi, '$1 [REDACTED_API_KEY]')
+    .replace(/\b(sk-[A-Za-z0-9._~+/=-]{8,})\b/g, '[REDACTED_API_KEY]');
 }
 
 function dedupeStrings(values) {
@@ -196,7 +237,7 @@ function normalizeProvider(input = {}, existing = {}) {
   const models = dedupeStrings(input.models && input.models.length ? input.models : existing.models || preset.models || []);
   const selectedModel = cleanString(input.selectedModel || input.model || existing.selectedModel || preset.defaultModel || models[0]);
   const defaultModel = cleanString(input.defaultModel || existing.defaultModel || selectedModel || preset.defaultModel || models[0]);
-  const apiKey = cleanString(input.apiKey) || cleanString(existing.apiKey);
+  const apiKey = cleanApiKey(input.apiKey) || cleanApiKey(existing.apiKey);
   const isCustomProvider = Boolean(input.custom) || cleanString(input.provider) === 'custom';
   const apiKeyOptional = Boolean(input.apiKeyOptional ?? existing.apiKeyOptional ?? preset.apiKeyOptional ?? isCustomProvider);
   const apiProtocol = cleanString(input.apiProtocol || existing.apiProtocol || preset.apiProtocol || 'chat-completions');
@@ -287,7 +328,7 @@ async function probeOpenAiCompatibleModels(input, options = {}) {
   if (typeof fetchImpl !== 'function') throw new Error('fetch is not available in this runtime');
 
   const headers = { Accept: 'application/json' };
-  const apiKey = cleanString(input.apiKey);
+  const apiKey = cleanApiKey(input.apiKey);
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
   const controller = new AbortController();
@@ -433,7 +474,7 @@ function createModelConfigStore(options = {}) {
         defaultModel: selectedModel && fallbackModels.includes(selectedModel) ? selectedModel : fallbackModels[0] || '',
         modelCount: fallbackModels.length,
         refreshed: false,
-        warning: `Could not refresh models from the provider: ${error && error.message ? error.message : String(error)}`,
+        warning: `Could not refresh models from the provider: ${redactSensitiveText(error && error.message ? error.message : String(error))}`,
         probedUrl: error && error.probedUrl ? error.probedUrl : modelEndpoint(baseUrl),
       };
     }
@@ -453,9 +494,15 @@ function createModelConfigStore(options = {}) {
     if (!model) return null;
     syncRuntimeConfig(data);
     const runtimeConfig = await providerToRuntimeConfig(provider, { responsesChatProxy });
+    const modelCapability = inferRedouCodexModelCapability({
+      providerId: provider.id,
+      runtimeProviderId: provider.runtimeProviderId,
+      model,
+    });
     return {
       model,
       modelProvider: provider.runtimeProviderId,
+      modelCapability,
       config: {
         [`model_providers.${provider.runtimeProviderId}`]: runtimeConfig,
       },

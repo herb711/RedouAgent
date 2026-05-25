@@ -4,13 +4,16 @@ import type { EnvironmentInfo } from '../../types';
 
 interface EnvironmentCardProps {
   environment: EnvironmentInfo;
+  onCommitGitChanges?: () => Promise<void>;
+  onPushGitBranch?: () => Promise<void>;
+  onCreatePullRequest?: () => Promise<void>;
 }
 
-export function EnvironmentCard({ environment }: EnvironmentCardProps) {
+export function EnvironmentCard({ environment, onCommitGitChanges, onPushGitBranch, onCreatePullRequest }: EnvironmentCardProps) {
   return (
     <section className="redou-inspector-card">
       <div className="redou-card-title-row">
-        <h3>环境信息</h3>
+        <h3>Environment</h3>
         <button className="redou-icon-button" type="button" aria-label="Environment settings">
           <Settings2 size={15} />
         </button>
@@ -19,29 +22,29 @@ export function EnvironmentCard({ environment }: EnvironmentCardProps) {
         <div>
           <span>
             <HardDrive size={15} />
-            变更
+            Changes
           </span>
           <strong className="redou-change-count">{environment.changes}</strong>
         </div>
         <div>
           <span>
             <Laptop size={15} />
-            本地
+            Local
           </span>
           <RuntimeStatusBadge label={environment.mode} />
         </div>
         <div>
           <span>
             <GitBranch size={15} />
-            分支
+            Branch
           </span>
           <strong>{environment.branch}</strong>
         </div>
         <div>
-          <span>提交</span>
+          <span>Commit</span>
           <div className="redou-inline-actions">
-            <button type="button">{environment.commit}</button>
-            <button type="button">推送</button>
+            <button type="button" disabled={!onCommitGitChanges} onClick={onCommitGitChanges}>{environment.commit}</button>
+            <button type="button" disabled={!onPushGitBranch} onClick={onPushGitBranch}>Push</button>
             <button type="button" aria-label="More Git actions">
               <MoreHorizontal size={14} />
             </button>
@@ -52,10 +55,10 @@ export function EnvironmentCard({ environment }: EnvironmentCardProps) {
             <GitPullRequest size={15} />
             PR
           </span>
-          <button className="redou-link-button" type="button">{environment.pullRequest}</button>
+          <button className="redou-link-button" type="button" disabled={!onCreatePullRequest} onClick={onCreatePullRequest}>{environment.pullRequest}</button>
         </div>
         <div>
-          <span>来源</span>
+          <span>Source</span>
           <strong>{environment.source}</strong>
         </div>
         {environment.threadId ? (

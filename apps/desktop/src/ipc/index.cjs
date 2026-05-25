@@ -11,6 +11,12 @@ const { registerArtifactIpc } = require('./artifactIpc.cjs');
 const { registerContextIpc } = require('./contextIpc.cjs');
 const { registerRuleIpc } = require('./ruleIpc.cjs');
 const { registerModelConfigIpc } = require('./modelConfigIpc.cjs');
+const { registerTerminalIpc } = require('./terminalIpc.cjs');
+const { registerWorktreeIpc } = require('./worktreeIpc.cjs');
+const { registerAutomationIpc } = require('./automationIpc.cjs');
+const { registerSkillsIpc } = require('./skillsIpc.cjs');
+const { registerMcpIpc } = require('./mcpIpc.cjs');
+const { registerDesktopIpc } = require('./desktopIpc.cjs');
 
 function registerAllIpc(ipcOrDependencies, maybeDependencies = {}) {
   const ipcMain = ipcOrDependencies && typeof ipcOrDependencies.handle === 'function'
@@ -28,6 +34,12 @@ function registerAllIpc(ipcOrDependencies, maybeDependencies = {}) {
   registerContextIpc(ipcMain, dependencies);
   registerRuleIpc(ipcMain, dependencies);
   registerModelConfigIpc(ipcMain, dependencies);
+  registerTerminalIpc(ipcMain, dependencies);
+  registerWorktreeIpc(ipcMain, dependencies);
+  registerAutomationIpc(ipcMain, dependencies);
+  registerSkillsIpc(ipcMain, dependencies);
+  registerMcpIpc(ipcMain, dependencies);
+  registerDesktopIpc(ipcMain, dependencies);
 }
 
 module.exports = { registerAllIpc };
