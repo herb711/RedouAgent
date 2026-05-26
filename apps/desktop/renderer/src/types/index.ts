@@ -1,5 +1,6 @@
 import type {
   AppSettingsSnapshot,
+  AutomationMessageMetadata,
   ArtifactPreview,
   ConfiguredModelProvider,
   ModelConfigSelection,
@@ -10,11 +11,11 @@ import type {
 
 export type RuntimeId = 'redou-codex' | 'hermes' | 'pi' | 'custom';
 
-export type WorkbenchTaskStatus = 'created' | 'running' | 'blocked' | 'waiting_approval' | 'failed' | 'error' | 'degraded' | 'completed';
+export type WorkbenchTaskStatus = 'created' | 'running' | 'blocked' | 'waiting_approval' | 'failed' | 'error' | 'degraded' | 'completed' | 'interrupted';
 
 export type ProgressStepStatus = 'completed' | 'active' | 'pending' | 'error';
 
-export type WorkbenchView = 'thread' | 'diffReview' | 'artifactPreview' | 'browser' | 'settings';
+export type WorkbenchView = 'thread' | 'diffReview' | 'artifactPreview' | 'browser' | 'settings' | 'extensions';
 
 export type RightPanelId =
   | 'progress'
@@ -40,6 +41,10 @@ export interface WorkbenchTask {
   projectId?: string;
   updatedAt?: string;
   unread?: boolean;
+  pinned?: boolean;
+  archived?: boolean;
+  archivedAt?: string | null;
+  redouCodexThreadId?: string | null;
   queueDepth?: number;
 }
 
@@ -48,6 +53,7 @@ export interface WorkbenchProject {
   name: string;
   rootPath?: string;
   pinned?: boolean;
+  sortOrder?: number;
   tasks: WorkbenchTask[];
 }
 
@@ -65,28 +71,47 @@ export interface TodoProjectionEntry {
 
 export interface ApprovalRequestProjection {
   id: string;
+  taskId?: string | null;
   kind: string;
   title: string;
   description: string;
   status: string;
+  payload?: unknown;
+}
+
+export interface CommandRunData {
+  id: string;
+  command: string;
+  output?: string;
+  lifecycle?: string;
+  level?: 'info' | 'warn' | 'debug' | 'error';
+  timestamp?: string;
 }
 
 export interface CommandRunSummaryData {
   count: number;
   label: string;
+  commands?: CommandRunData[];
 }
 
 export interface AgentThreadMessage {
   id: string;
   role?: 'assistant' | 'user' | 'system';
+  kind?: 'message' | 'command_summary';
   body: string;
+  timestamp?: string;
+  processedDurationMs?: number;
+  processedStatus?: string;
   deliveryMode?: string;
   status?: string;
   queueId?: string | null;
   queueState?: string | null;
   sourceEventId?: string;
   turnId?: string | null;
+  source?: string | null;
+  automation?: AutomationMessageMetadata | null;
   commandSummary?: CommandRunSummaryData;
+  contextItems?: ContextItemData[];
 }
 
 export interface ProgressStepData {
@@ -150,6 +175,7 @@ export interface ComposerPermissionPolicy {
   approvalMode: 'on-request';
   approvalsReviewer: 'user' | 'auto_review';
   networkPermission: 'restricted' | 'enabled';
+  redouCodexPermissionProfile: ':workspace' | ':danger-full-access';
 }
 
 export interface ComposerSubmitOptions {
@@ -159,6 +185,17 @@ export interface ComposerSubmitOptions {
   modelSelection?: ModelConfigSelection | null;
   reasoningEffort?: ComposerReasoningEffortId;
   contextItems?: ContextItemData[];
+  editTarget?: ComposerEditTarget | null;
+}
+
+export interface ComposerEditTarget {
+  taskId?: string | null;
+  messageId: string;
+  prompt: string;
+  timestamp?: string;
+  sourceEventId?: string;
+  turnId?: string | null;
+  isInitialPrompt?: boolean;
 }
 
 export interface ComposerState {
@@ -177,6 +214,7 @@ export interface ComposerState {
 
 export type {
   AppSettingsSnapshot,
+  AutomationMessageMetadata,
   ArtifactPreview,
   ConfiguredModelProvider,
   ModelConfigSelection,

@@ -1,65 +1,25 @@
-import { PlugZap, TestTube2, Trash2 } from 'lucide-react';
+import { ArrowRight, PlugZap, RefreshCw } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { redouApi } from '../../api/redouApi';
-
-interface McpServer {
-  name: string;
-  command: string;
-  args: string[];
-  enabled: boolean;
-  lastTest?: {
-    ok: boolean;
-    stdout?: string;
-    stderr?: string;
-    testedAt?: string;
-  } | null;
-}
+import { redouApi, type McpServerConfig } from '../../api/redouApi';
 
 export function McpPanel() {
-  const [servers, setServers] = useState<McpServer[]>([]);
-  const [name, setName] = useState('');
-  const [command, setCommand] = useState('');
-  const [args, setArgs] = useState('');
+  const [servers, setServers] = useState<McpServerConfig[]>([]);
   const [message, setMessage] = useState('');
-
-  function applyResult(data: unknown) {
-    setServers(((data as { servers?: McpServer[] })?.servers) || []);
-  }
+  const [loading, setLoading] = useState(false);
 
   async function load() {
-    const result = await redouApi.listMcpServers();
-    if (result.ok) applyResult(result.data);
-    else setMessage(result.error?.message || 'Failed to load MCP servers.');
-  }
-
-  async function install() {
-    const result = await redouApi.installMcpServer({ name, command, args });
-    if (!result.ok) {
-      setMessage(result.error?.message || 'Failed to install MCP server.');
-      return;
-    }
-    applyResult(result.data);
-    setName('');
-    setCommand('');
-    setArgs('');
-  }
-
-  async function remove(server: McpServer) {
-    if (!window.confirm(`Remove MCP server "${server.name}"?`)) return;
-    const result = await redouApi.removeMcpServer({ name: server.name });
-    if (result.ok) applyResult(result.data);
-    else setMessage(result.error?.message || 'Failed to remove MCP server.');
-  }
-
-  async function test(server: McpServer) {
-    const result = await redouApi.testMcpServer({ name: server.name });
+    setLoading(true);
+    const result = await redouApi.listMcpServers().finally(() => setLoading(false));
     if (result.ok) {
-      applyResult(result.data);
-      const lastTest = (result.data as { lastTest?: { ok?: boolean } })?.lastTest;
-      setMessage(lastTest?.ok ? `${server.name} command found.` : `${server.name} command was not found.`);
+      setServers(((result.data as { servers?: McpServerConfig[] } | null)?.servers) || []);
+      setMessage('');
     } else {
-      setMessage(result.error?.message || 'Failed to test MCP server.');
+      setMessage(result.error?.message || 'Failed to load MCP servers.');
     }
+  }
+
+  function openMcpCenter() {
+    window.dispatchEvent(new CustomEvent('redou:open-extensions', { detail: { kind: 'mcp' } }));
   }
 
   useEffect(() => {
@@ -70,19 +30,18 @@ export function McpPanel() {
     <div className="redou-panel-stack">
       <section className="redou-inspector-card">
         <div className="redou-card-title-row">
-          <h3>MCP servers</h3>
-          <PlugZap size={15} />
-        </div>
-        <div className="redou-compact-form redou-compact-form-stack">
-          <input value={name} placeholder="Server name" onChange={(event) => setName(event.target.value)} />
-          <input value={command} placeholder="Command" onChange={(event) => setCommand(event.target.value)} />
-          <input value={args} placeholder="Args" onChange={(event) => setArgs(event.target.value)} />
-          <button className="redou-primary-button" type="button" disabled={!name.trim() || !command.trim()} onClick={() => void install()}>
-            <PlugZap size={14} />
-            Add server
+          <h3>MCP</h3>
+          <button className="redou-icon-button" type="button" aria-label="Refresh MCP summary" disabled={loading} onClick={() => void load()}>
+            <RefreshCw size={14} className={loading ? 'redou-spin-icon' : undefined} />
           </button>
         </div>
+        <p className="redou-muted-copy">MCP 服务器已移至 插件中心 &gt; MCP 统一管理。</p>
         {message ? <p className="redou-muted-copy">{message}</p> : null}
+        <button className="redou-primary-button" type="button" onClick={openMcpCenter}>
+          <PlugZap size={14} />
+          <span>前往插件中心 &gt; MCP</span>
+          <ArrowRight size={14} />
+        </button>
       </section>
 
       <section className="redou-inspector-card">
@@ -91,19 +50,13 @@ export function McpPanel() {
           <span>{servers.length}</span>
         </div>
         <div className="redou-resource-list">
-          {servers.length ? servers.map((server) => (
+          {servers.length ? servers.slice(0, 5).map((server) => (
             <article className="redou-resource-row redou-resource-row-stack" key={server.name}>
               <div>
                 <strong>{server.name}</strong>
-                <span>{server.command} {(server.args || []).join(' ')}</span>
-                {server.lastTest ? <small>{server.lastTest.ok ? 'Command available' : 'Command missing'}</small> : null}
+                <span>{server.transport === 'stdio' ? server.command : server.url}</span>
+                <small>{server.enabled === false ? 'disabled' : 'ready'}</small>
               </div>
-              <button type="button" aria-label="Test MCP server" onClick={() => void test(server)}>
-                <TestTube2 size={14} />
-              </button>
-              <button type="button" aria-label="Remove MCP server" onClick={() => void remove(server)}>
-                <Trash2 size={14} />
-              </button>
             </article>
           )) : (
             <div className="redou-empty-compact">No MCP servers configured.</div>

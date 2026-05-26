@@ -1,10 +1,10 @@
-import { CornerDownRight, FilePlus2, FolderOpen, ImagePlus, Plus, Trash2, X } from 'lucide-react';
-import { type DragEvent, useState } from 'react';
+import { CornerDownRight, FilePlus2, FolderOpen, ImagePlus, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { type DragEvent, useEffect, useRef, useState } from 'react';
 import { ComposerActionButtons } from './ComposerActionButtons';
-import { createPermissionPolicy } from './composerOptions';
+import { createPermissionPolicy, defaultComposerPermissionMode } from './composerOptions';
 import { ModelSelectorButton } from './ModelSelectorButton';
 import { PermissionModeButton } from './PermissionModeButton';
-import type { AgentThreadMessage, ComposerPermissionModeId, ComposerState, ComposerSubmitOptions, ContextItemData, ContextPackageData, ModelConfigSelection, ModelConfigSnapshot, WorkbenchTask } from '../../types';
+import type { AgentThreadMessage, ComposerEditTarget, ComposerPermissionModeId, ComposerState, ComposerSubmitOptions, ContextItemData, ContextPackageData, ModelConfigSelection, ModelConfigSnapshot, WorkbenchTask } from '../../types';
 
 interface TaskComposerProps {
   task: WorkbenchTask;
@@ -12,7 +12,10 @@ interface TaskComposerProps {
   modelConfig: ModelConfigSnapshot;
   context: ContextPackageData;
   contextItems: ContextItemData[];
+  value: string;
+  editTarget?: ComposerEditTarget | null;
   pendingQueuedMessages?: AgentThreadMessage[];
+  onInputChange: (input: string) => void;
   onPermissionModeChange: (mode: ComposerPermissionModeId) => void;
   onModelSelect: (selection: ModelConfigSelection) => Promise<void>;
   onOpenSettings: () => void;
@@ -20,9 +23,11 @@ interface TaskComposerProps {
   onAddDroppedContextFiles: (files: FileList) => Promise<void>;
   onRemoveContextItem: (path: string) => void;
   onClearContext: () => void;
-  onSubmit: (input: string, options: ComposerSubmitOptions) => Promise<void>;
+  onSubmit: (input: string, options: ComposerSubmitOptions) => Promise<boolean | void>;
+  onStopTask?: () => Promise<void>;
   onGuideQueuedMessage?: (message: AgentThreadMessage) => void;
   onDeleteQueuedMessage?: (message: AgentThreadMessage) => void;
+  onCancelEdit?: () => void;
 }
 
 function shortPathLabel(path: string) {
@@ -36,7 +41,10 @@ export function TaskComposer({
   modelConfig,
   context,
   contextItems,
+  value,
+  editTarget,
   pendingQueuedMessages = [],
+  onInputChange,
   onPermissionModeChange,
   onModelSelect,
   onOpenSettings,
@@ -45,15 +53,18 @@ export function TaskComposer({
   onRemoveContextItem,
   onClearContext,
   onSubmit,
+  onStopTask,
   onGuideQueuedMessage,
   onDeleteQueuedMessage,
+  onCancelEdit,
 }: TaskComposerProps) {
-  const [value, setValue] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [dragActive, setDragActive] = useState(false);
   const [voiceActive, setVoiceActive] = useState(false);
-  const permissionMode = composer.permissionMode || 'default';
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const permissionMode = composer.permissionMode || defaultComposerPermissionMode;
   const running = task.status === 'running';
   const hasInput = Boolean(value.trim());
   const hasPendingQueue = pendingQueuedMessages.length > 0;
@@ -61,16 +72,28 @@ export function TaskComposer({
     if (submitting || !hasInput) return;
     setSubmitting(true);
     try {
-      await onSubmit(value, {
+      const submitted = await onSubmit(value, {
         permissionMode,
         permissionPolicy: createPermissionPolicy(permissionMode),
         deliveryMode,
         modelSelection: composer.modelSelection || modelConfig.selected,
         reasoningEffort: composer.reasoningEffort,
+        editTarget: editTarget || null,
       });
-      setValue('');
+      if (submitted === false) return;
+      onInputChange('');
+      onClearContext();
     } finally {
       setSubmitting(false);
+    }
+  };
+  const stopTask = async () => {
+    if (stopping || !running || !onStopTask) return;
+    setStopping(true);
+    try {
+      await onStopTask();
+    } finally {
+      setStopping(false);
     }
   };
   const selectContext = async (kind: 'file' | 'image' | 'directory') => {
@@ -120,7 +143,7 @@ export function TaskComposer({
     recognition.onresult = (event) => {
       const transcript = event.results[0]?.[0]?.transcript?.trim();
       if (!transcript) return;
-      setValue((current) => (current ? `${current} ${transcript}` : transcript));
+      onInputChange(value ? `${value} ${transcript}` : transcript);
     };
     recognition.onerror = () => setVoiceActive(false);
     recognition.onend = () => setVoiceActive(false);
@@ -139,6 +162,50 @@ export function TaskComposer({
     setDragActive(false);
     if (event.dataTransfer.files.length) await onAddDroppedContextFiles(event.dataTransfer.files);
   };
+
+  useEffect(() => {
+    const focusComposer = () => {
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        const end = textarea.value.length;
+        textarea.setSelectionRange(end, end);
+      });
+    };
+    window.addEventListener('redou:focus-composer', focusComposer);
+    return () => window.removeEventListener('redou:focus-composer', focusComposer);
+  }, []);
+
+  useEffect(() => {
+    if (!editTarget) return;
+    window.requestAnimationFrame(() => {
+      const textarea = textareaRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      const end = textarea.value.length;
+      textarea.setSelectionRange(end, end);
+    });
+  }, [editTarget]);
+
+  useEffect(() => {
+    const quoteMessage = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: string }>).detail;
+      const text = String(detail?.text || '').trim();
+      if (!text) return;
+      const nextValue = value.trim() ? `${value}\n\n${text}` : text;
+      onInputChange(nextValue);
+      window.requestAnimationFrame(() => {
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        textarea.focus();
+        const end = textarea.value.length;
+        textarea.setSelectionRange(end, end);
+      });
+    };
+    window.addEventListener('redou:quote-message', quoteMessage);
+    return () => window.removeEventListener('redou:quote-message', quoteMessage);
+  }, [onInputChange, value]);
 
   return (
     <div className="redou-task-composer-shell" data-has-pending-queue={hasPendingQueue ? 'true' : undefined}>
@@ -180,24 +247,35 @@ export function TaskComposer({
         onDrop={(event) => void handleDrop(event)}
         onSubmit={async (event) => {
           event.preventDefault();
-          await submit('auto');
+          await submit(editTarget ? 'new_turn' : 'auto');
         }}
       >
+        {editTarget ? (
+          <div className="redou-composer-edit-row">
+            <Pencil size={14} />
+            <span>正在编辑这条消息</span>
+            <button type="button" onClick={onCancelEdit}>
+              <X size={13} />
+              <span>取消</span>
+            </button>
+          </div>
+        ) : null}
         <div className="redou-composer-input-row">
           <textarea
+            ref={textareaRef}
             rows={1}
             placeholder={composer.placeholder}
             aria-label="Request follow-up change"
             value={value}
-            onChange={(event) => setValue(event.target.value)}
+            onChange={(event) => onInputChange(event.target.value)}
             onKeyDown={(event) => {
               if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
               event.preventDefault();
-              void submit(event.ctrlKey ? 'guide' : 'auto');
+              void submit(editTarget ? 'new_turn' : event.ctrlKey ? 'guide' : 'auto');
             }}
           />
         </div>
-        {running && !hasPendingQueue ? (
+        {running && !hasPendingQueue && !editTarget ? (
           <div className="redou-composer-queue-row">
             <span>任务正在执行，普通发送会排队到下一轮。</span>
             <button type="button" disabled={submitting || !hasInput} onClick={() => void submit('guide')}>
@@ -265,7 +343,14 @@ export function TaskComposer({
               onModelSelect={onModelSelect}
               onOpenSettings={onOpenSettings}
             />
-            <ComposerActionButtons submitting={submitting} voiceActive={voiceActive} onVoiceInput={startVoiceInput} />
+            <ComposerActionButtons
+              submitting={submitting}
+              sendDisabled={submitting || !hasInput}
+              stopDisabled={stopping || !running || !onStopTask}
+              voiceActive={voiceActive}
+              onVoiceInput={startVoiceInput}
+              onStopTask={stopTask}
+            />
           </div>
         </div>
       </form>

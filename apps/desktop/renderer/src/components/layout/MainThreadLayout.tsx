@@ -2,7 +2,7 @@ import { ArrowDown } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ThreadHeader } from '../thread/ThreadHeader';
 import { ThreadMessageList } from '../thread/ThreadMessageList';
-import type { AgentThreadMessage, ChangesData, ProgressStepData, RuntimeStatusData, WorkbenchTask } from '../../types';
+import type { AgentThreadMessage, ApprovalRequestProjection, ChangesData, ComposerEditTarget, ProgressStepData, RuntimeStatusData, WorkbenchTask } from '../../types';
 
 interface MainThreadLayoutProps {
   activeProjectName: string;
@@ -10,10 +10,12 @@ interface MainThreadLayoutProps {
   agentMessages: AgentThreadMessage[];
   changes: ChangesData;
   progressSteps: ProgressStepData[];
+  approvalRequests?: ApprovalRequestProjection[];
   runtimeStatus?: RuntimeStatusData | null;
   onOpenDiff: () => void;
   onGuideQueuedMessage?: (message: AgentThreadMessage) => void;
   onDeleteQueuedMessage?: (message: AgentThreadMessage) => void;
+  onEditUserPrompt?: (target: ComposerEditTarget) => void;
 }
 
 const BOTTOM_SCROLL_THRESHOLD = 32;
@@ -22,7 +24,7 @@ function isScrolledToBottom(element: HTMLElement) {
   return element.scrollHeight - element.scrollTop - element.clientHeight <= BOTTOM_SCROLL_THRESHOLD;
 }
 
-export function MainThreadLayout({ activeProjectName, task, agentMessages, changes, progressSteps, runtimeStatus, onOpenDiff, onGuideQueuedMessage, onDeleteQueuedMessage }: MainThreadLayoutProps) {
+export function MainThreadLayout({ activeProjectName, task, agentMessages, changes, progressSteps, approvalRequests = [], runtimeStatus, onOpenDiff, onGuideQueuedMessage, onDeleteQueuedMessage, onEditUserPrompt }: MainThreadLayoutProps) {
   const scrollRef = useRef<HTMLElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const shouldFollowBottomRef = useRef(true);
@@ -44,10 +46,11 @@ export function MainThreadLayout({ activeProjectName, task, agentMessages, chang
       changes.deletions,
       changes.diffSummary.length,
       progressSteps.map((step) => `${step.id}:${step.status}`).join('|'),
+      approvalRequests.map((approval) => `${approval.id}:${approval.status}`).join('|'),
       runtimeStatus?.turnStatus || '',
       runtimeStatus?.activeTurnId || '',
     ].join(':');
-  }, [agentMessages, changes.deletions, changes.diffSummary.length, changes.files.length, changes.insertions, progressSteps, runtimeStatus?.activeTurnId, runtimeStatus?.turnStatus, task.id, task.status, task.userPrompt]);
+  }, [agentMessages, approvalRequests, changes.deletions, changes.diffSummary.length, changes.files.length, changes.insertions, progressSteps, runtimeStatus?.activeTurnId, runtimeStatus?.turnStatus, task.id, task.status, task.userPrompt]);
 
   const userSubmissionKey = useMemo(() => {
     const userMessages = agentMessages
@@ -143,9 +146,11 @@ export function MainThreadLayout({ activeProjectName, task, agentMessages, chang
             agentMessages={agentMessages}
             changes={changes}
             progressSteps={progressSteps}
+            approvalRequests={approvalRequests}
             onOpenDiff={onOpenDiff}
             onGuideQueuedMessage={onGuideQueuedMessage}
             onDeleteQueuedMessage={onDeleteQueuedMessage}
+            onEditUserPrompt={onEditUserPrompt}
           />
         </div>
       </main>

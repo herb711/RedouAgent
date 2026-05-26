@@ -15,6 +15,7 @@ function compactId(id?: string | null) {
 }
 
 function statusLabel(status?: string | null) {
+  if (status === 'interrupted') return '已停止';
   if (!status) return '等待状态';
   if (status === 'running' || status === 'started' || status === 'active' || status === 'in_progress' || status === 'inProgress') return '正在执行';
   if (status === 'completed') return '已完成';
@@ -51,6 +52,7 @@ function activeLabel(progressSteps: ProgressStepData[], runtimeStatus?: RuntimeS
 }
 
 function runIcon(status: string) {
+  if (status === 'interrupted') return <CircleDot size={16} />;
   if (status === 'error' || status === 'failed') return <AlertCircle size={16} />;
   if (status === 'waiting_approval' || status === 'degraded') return <AlertCircle size={16} />;
   if (status === 'completed') return <CheckCircle2 size={16} />;

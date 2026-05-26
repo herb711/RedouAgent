@@ -1,8 +1,10 @@
 import {
+  Archive,
   ArrowLeft,
   Bell,
   Bot,
   Camera,
+  CalendarClock,
   Check,
   ChevronDown,
   CircleAlert,
@@ -14,13 +16,14 @@ import {
   Moon,
   Plus,
   Power,
+  RotateCcw,
   Server,
   Settings,
   SlidersHorizontal,
   Trash2,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { type ReactNode, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import type {
   AppSettingsSnapshot,
   ConfiguredModelProvider,
@@ -28,10 +31,14 @@ import type {
   ModelConfigSnapshot,
   ModelProbeResult,
   ModelProviderPreset,
+  WorkbenchProject,
+  WorkbenchTask,
 } from '../types';
 
 interface SettingsPageProps {
   appSettings: AppSettingsSnapshot;
+  projects: WorkbenchProject[];
+  archivedTasks: WorkbenchTask[];
   modelConfig: ModelConfigSnapshot;
   onBack: () => void;
   onSelectModel: (selection: ModelConfigSelection) => Promise<void>;
@@ -40,6 +47,11 @@ interface SettingsPageProps {
   onRemoveModelProvider: (providerId: string) => Promise<void>;
   onUpdateAppSettings: (patch: Record<string, unknown>) => Promise<void>;
   onNotifyDesktop: (title: string, body: string) => Promise<void>;
+  onReloadArchivedTasks: () => Promise<void>;
+  onRestoreArchivedTask: (taskId: string) => Promise<void>;
+  onDeleteArchivedTask: (taskId: string) => Promise<void>;
+  onDeleteAllArchivedTasks: () => Promise<void>;
+  onOpenExtensions: (kind?: 'plugin' | 'skill' | 'mcp') => void;
 }
 
 interface DraftState {
@@ -66,13 +78,15 @@ const customPreset: ModelProviderPreset = {
   apiKeyOptional: true,
 };
 
-type SettingsSectionId = 'models' | 'general' | 'appearance' | 'connections';
+type SettingsSectionId = 'models' | 'general' | 'appearance' | 'connections' | 'automation' | 'archived';
 
 const navItems: Array<{ id: SettingsSectionId; icon: LucideIcon; label: string }> = [
   { id: 'models', icon: Bot, label: '模型' },
   { id: 'general', icon: Settings, label: '常规' },
   { id: 'appearance', icon: SlidersHorizontal, label: '外观' },
   { id: 'connections', icon: Server, label: '连接' },
+  { id: 'automation', icon: CalendarClock, label: 'Automation' },
+  { id: 'archived', icon: Archive, label: '已归档对话' },
 ];
 
 function createDraft(preset: ModelProviderPreset): DraftState {
@@ -107,6 +121,8 @@ function cleanApiKeyInput(value: string) {
 
 export function SettingsPage({
   appSettings,
+  projects,
+  archivedTasks,
   modelConfig,
   onBack,
   onSelectModel,
@@ -115,6 +131,11 @@ export function SettingsPage({
   onRemoveModelProvider,
   onUpdateAppSettings,
   onNotifyDesktop,
+  onReloadArchivedTasks,
+  onRestoreArchivedTask,
+  onDeleteArchivedTask,
+  onDeleteAllArchivedTasks,
+  onOpenExtensions,
 }: SettingsPageProps) {
   const presets = useMemo(() => [customPreset, ...modelConfig.catalog], [modelConfig.catalog]);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>('models');
@@ -379,16 +400,144 @@ export function SettingsPage({
           </section>
         </div>
       </section>
+      ) : activeSection === 'archived' ? (
+        <ArchivedConversationsPage
+          archivedTasks={archivedTasks}
+          projects={projects}
+          onReload={onReloadArchivedTasks}
+          onRestore={onRestoreArchivedTask}
+          onDelete={onDeleteArchivedTask}
+          onDeleteAll={onDeleteAllArchivedTasks}
+        />
       ) : (
         <SettingsCapabilityPage
           section={activeSection}
           settings={appSettings}
           onUpdate={onUpdateAppSettings}
           onNotifyDesktop={onNotifyDesktop}
+          onOpenExtensions={onOpenExtensions}
         />
       )}
     </main>
   );
+}
+
+function ArchivedConversationsPage({
+  archivedTasks,
+  projects,
+  onReload,
+  onRestore,
+  onDelete,
+  onDeleteAll,
+}: {
+  archivedTasks: WorkbenchTask[];
+  projects: WorkbenchProject[];
+  onReload: () => Promise<void>;
+  onRestore: (taskId: string) => Promise<void>;
+  onDelete: (taskId: string) => Promise<void>;
+  onDeleteAll: () => Promise<void>;
+}) {
+  const [busyTaskId, setBusyTaskId] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const projectNames = useMemo(() => new Map(projects.map((project) => [project.id, project.name])), [projects]);
+
+  useEffect(() => {
+    setRefreshing(true);
+    void onReload().finally(() => setRefreshing(false));
+  }, []);
+
+  async function restoreTask(taskId: string) {
+    setBusyTaskId(taskId);
+    await onRestore(taskId).finally(() => setBusyTaskId(null));
+  }
+
+  async function deleteTask(taskId: string) {
+    setBusyTaskId(taskId);
+    await onDelete(taskId).finally(() => setBusyTaskId(null));
+  }
+
+  async function deleteAll() {
+    setBusyTaskId('__all__');
+    await onDeleteAll().finally(() => setBusyTaskId(null));
+  }
+
+  return (
+    <section className="redou-settings-content redou-archived-settings-content" aria-label="Archived conversations">
+      <div className="redou-archived-header">
+        <div>
+          <span className="redou-settings-kicker">对话管理</span>
+          <h2>已归档对话</h2>
+        </div>
+        <button
+          className="redou-archived-delete-all"
+          type="button"
+          disabled={!archivedTasks.length || busyTaskId === '__all__'}
+          onClick={() => void deleteAll()}
+        >
+          <Trash2 size={15} />
+          <span>全部删除</span>
+        </button>
+      </div>
+
+      <div className="redou-archived-panel">
+        {archivedTasks.length ? (
+          <div className="redou-archived-list">
+            {archivedTasks.map((task) => {
+              const busy = busyTaskId === task.id;
+              return (
+                <article className="redou-archived-row" key={task.id}>
+                  <div className="redou-archived-row-main">
+                    <strong>{task.title || task.userPrompt || '未命名对话'}</strong>
+                    <span>{formatArchivedTaskTime(task.archivedAt || task.updatedAt)} · {projectNames.get(task.projectId || '') || task.projectId || '未归属项目'}</span>
+                  </div>
+                  <div className="redou-archived-row-actions">
+                    <button
+                      className="redou-archived-icon-action"
+                      type="button"
+                      aria-label="删除已归档对话"
+                      title="删除已归档对话"
+                      disabled={busy}
+                      onClick={() => void deleteTask(task.id)}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                    <button
+                      className="redou-secondary-button redou-archived-restore"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void restoreTask(task.id)}
+                    >
+                      <RotateCcw size={15} />
+                      <span>取消归档</span>
+                    </button>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+        ) : (
+          <div className="redou-settings-empty-state">
+            <Archive size={24} />
+            <strong>{refreshing ? '正在加载' : '没有已归档对话'}</strong>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function formatArchivedTaskTime(value?: string | null) {
+  if (!value) return '时间未知';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date);
 }
 
 function SettingsCapabilityPage({
@@ -396,11 +545,13 @@ function SettingsCapabilityPage({
   settings,
   onUpdate,
   onNotifyDesktop,
+  onOpenExtensions,
 }: {
-  section: Exclude<SettingsSectionId, 'models'>;
+  section: Exclude<SettingsSectionId, 'models' | 'archived'>;
   settings: AppSettingsSnapshot;
   onUpdate: (patch: Record<string, unknown>) => Promise<void>;
   onNotifyDesktop: (title: string, body: string) => Promise<void>;
+  onOpenExtensions: (kind?: 'plugin' | 'skill' | 'mcp') => void;
 }) {
   if (section === 'appearance') {
     return (
@@ -446,6 +597,40 @@ function SettingsCapabilityPage({
           <ToggleSetting icon={Monitor} title="语音输入" detail="使用系统 Web Speech 能力" enabled={settings.media.voiceInput} onToggle={() => onUpdate({ media: { voiceInput: !settings.media.voiceInput } })} />
           <ToggleSetting icon={Camera} title="图片输入" detail="文件选择与拖拽图片上下文" enabled={settings.media.imageInput} onToggle={() => onUpdate({ media: { imageInput: !settings.media.imageInput } })} />
           <ToggleSetting icon={Globe2} title="图片生成" detail="生成图片 artifact 并进入预览" enabled={settings.media.imageGeneration} onToggle={() => onUpdate({ media: { imageGeneration: !settings.media.imageGeneration } })} />
+        </SettingsCard>
+        <SettingsCard title="MCP 服务器" description="MCP 服务器已移至插件中心统一管理">
+          <SettingRow icon={Server} title="统一入口" detail="MCP 服务器已移至 插件中心 > MCP 统一管理。">
+            <button className="redou-secondary-button" type="button" onClick={() => onOpenExtensions('mcp')}>前往插件中心 &gt; MCP</button>
+          </SettingRow>
+        </SettingsCard>
+      </section>
+    );
+  }
+
+  if (section === 'automation') {
+    return (
+      <section className="redou-settings-content" aria-label="Automation settings">
+        <h2>Automation</h2>
+        <SettingsCard title="模型自动化权限" description="控制对话中的模型是否能看到并调用 automation.create">
+          <ToggleSetting
+            icon={CalendarClock}
+            title="允许模型创建自动化任务"
+            detail="关闭后，即使模型请求创建提醒或定时任务，也不会写入 Automation store。"
+            enabled={settings.automation.allowModelCreate}
+            onToggle={() => onUpdate({ automation: { allowModelCreate: !settings.automation.allowModelCreate } })}
+          />
+          <ToggleSetting
+            icon={Bot}
+            title="向模型暴露 Automation 工具"
+            detail="开启后，新对话的模型工具列表才会包含 automation.create。"
+            enabled={settings.automation.exposeToolToModel}
+            onToggle={() => onUpdate({ automation: { exposeToolToModel: !settings.automation.exposeToolToModel } })}
+          />
+        </SettingsCard>
+        <SettingsCard title="执行结果" description="模型创建的自动化默认绑定当前对话并回写结果">
+          <SettingRow icon={CalendarClock} title="对话绑定" detail="由模型创建的任务会保存 conversationId、projectId、source message 和 source model。">
+            <span className="redou-settings-inline-status">Always on for model-created automations</span>
+          </SettingRow>
         </SettingsCard>
       </section>
     );

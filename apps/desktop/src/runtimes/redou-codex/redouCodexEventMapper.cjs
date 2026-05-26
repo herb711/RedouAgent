@@ -2,6 +2,7 @@
 
 const RAW_LIMIT = 8 * 1024;
 const { REDOU_CODEX_RUNTIME_ID } = require('./redouCodexRuntimeConfig.cjs');
+const MCP_ELICITATION_REQUEST = 'mcpServer/elicitation/request';
 
 function nowIso() {
   return new Date().toISOString();
@@ -161,10 +162,22 @@ function mapDiffEvent(notification, context) {
 }
 
 function approvalKind(method) {
+  if (method === MCP_ELICITATION_REQUEST) return 'mcp_elicitation';
   if (method.includes('commandExecution') || method === 'execCommandApproval') return 'command';
   if (method.includes('fileChange') || method === 'applyPatchApproval') return 'file_change';
   if (method.includes('permissions')) return 'permissions';
   return 'unknown';
+}
+
+function approvalMessage(params, kind) {
+  return params.message || params.reason || params.command || kind;
+}
+
+function isApprovalRequestMethod(method) {
+  return method === MCP_ELICITATION_REQUEST
+    || method.endsWith('/requestApproval')
+    || method === 'execCommandApproval'
+    || method === 'applyPatchApproval';
 }
 
 function mapApprovalEvent(notification, context) {
@@ -173,7 +186,7 @@ function mapApprovalEvent(notification, context) {
   return baseEvent(notification, context, {
     type: 'approval_required',
     title: 'Approval required',
-    message: params.reason || params.command || kind,
+    message: approvalMessage(params, kind),
     payload: {
       requestId: notification.id,
       method: notification.method,
@@ -221,7 +234,7 @@ function mapRedouCodexNotificationToAgentEvents(notification = {}, context = {})
   else if (method === 'item/agentMessage/delta') events.push(mapMessageDelta(notification, context));
   else if (method === 'item/commandExecution/outputDelta') events.push(mapCommandEvent(notification, context));
   else if (method === 'item/fileChange/patchUpdated' || method === 'item/fileChange/outputDelta') events.push(mapFileChangeEvent(notification, context));
-  else if (method.endsWith('/requestApproval') || method === 'execCommandApproval' || method === 'applyPatchApproval') events.push(mapApprovalEvent(notification, context));
+  else if (isApprovalRequestMethod(method)) events.push(mapApprovalEvent(notification, context));
   else if (method === 'serverRequest/resolved') {
     const params = paramsOf(notification);
     events.push(baseEvent(notification, context, {

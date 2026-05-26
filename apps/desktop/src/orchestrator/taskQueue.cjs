@@ -1,7 +1,8 @@
 'use strict';
 
-const { startRuntimeRun, steerRuntimeRun } = require('./runtimeRunOrchestrator.cjs');
+const { startRuntimeRun, steerRuntimeRun, interruptRuntimeRun } = require('./runtimeRunOrchestrator.cjs');
 const { REDOU_CODEX_RUNTIME_ID } = require('../runtimes/redou-codex/redouCodexRuntimeConfig.cjs');
+const { buildRedouCodexStateSnapshot } = require('../redou-codex/app-compat/state/redouCodexStateSnapshot.cjs');
 
 const TERMINAL_TURN_STATUSES = new Set(['completed', 'failed', 'cancelled', 'canceled', 'interrupted', 'error']);
 
@@ -78,10 +79,61 @@ function userTurnPayload(input = {}, overrides = {}) {
   };
 }
 
+function pathFromRenderedContext(value) {
+  const text = String(value || '').trim();
+  const firstLine = text.split(/\r?\n/, 1)[0] || text;
+  const match = /^(?:File|Directory|Path):\s*(.+)$/i.exec(firstLine);
+  return match ? match[1].trim() : firstLine;
+}
+
+function normalizeContextItem(path, kind = 'file') {
+  const itemPath = String(path || '').trim();
+  if (!itemPath) return null;
+  const normalizedKind = kind === 'image' || kind === 'directory' ? kind : 'file';
+  return {
+    path: itemPath,
+    name: itemPath.split(/[\\/]/).filter(Boolean).pop() || itemPath,
+    kind: normalizedKind,
+  };
+}
+
+function uniqueContextItems(items = []) {
+  const byKey = new Map();
+  for (const item of items) {
+    const normalized = normalizeContextItem(item && item.path, item && item.kind);
+    if (normalized) byKey.set(`${normalized.kind}:${normalized.path}`, normalized);
+  }
+  return Array.from(byKey.values());
+}
+
+function contextItemsFromInput(input = {}) {
+  const contextPackage = input.contextPackage || {};
+  const metadata = contextPackage.metadata || {};
+  if (Array.isArray(metadata.contextItems) && metadata.contextItems.length) {
+    return uniqueContextItems(metadata.contextItems);
+  }
+
+  const selectedFiles = Array.isArray(metadata.selectedFiles)
+    ? metadata.selectedFiles
+    : (Array.isArray(contextPackage.selectedFiles) ? contextPackage.selectedFiles.map(pathFromRenderedContext) : []);
+  const selectedDirectories = Array.isArray(metadata.selectedDirectories) ? metadata.selectedDirectories : [];
+  const attachments = Array.isArray(metadata.attachments)
+    ? metadata.attachments
+    : (Array.isArray(contextPackage.attachments) ? contextPackage.attachments : []);
+
+  return uniqueContextItems([
+    ...selectedFiles.map((path) => ({ path, kind: 'file' })),
+    ...selectedDirectories.map((path) => ({ path, kind: 'directory' })),
+    ...attachments.map((path) => ({ path, kind: 'image' })),
+  ]);
+}
+
 async function persistUserTurn(task, input = {}, dependencies = {}, overrides = {}) {
   const payload = userTurnPayload(input, overrides);
   if (!payload.userInput) return null;
   const queueId = payload.queuedTurnId || (payload.deliveryMode === 'queue' ? payload.id : null);
+  const contextItems = contextItemsFromInput(input);
+  const automation = input.automation || (input.metadata && input.metadata.automation) || null;
   const message = {
     id: payload.id,
     taskId: task.id,
@@ -97,10 +149,14 @@ async function persistUserTurn(task, input = {}, dependencies = {}, overrides = 
         text: payload.userInput,
         deliveryMode: payload.deliveryMode,
         status: payload.status,
+        contextItems,
         queuedTurnId: payload.queuedTurnId,
         queuedAt: payload.queuedAt,
         consumedAt: payload.consumedAt,
       },
+      contextItems,
+      contextPackage: input.contextPackage || null,
+      automation,
     },
   };
   await saveMessage(dependencies, message);
@@ -113,12 +169,14 @@ async function persistUserTurn(task, input = {}, dependencies = {}, overrides = 
     level: 'info',
     title: payload.deliveryMode === 'guide' ? 'Guidance' : 'User message',
     message: payload.userInput,
-    payload,
+    payload: { ...payload, contextItems },
     metadata: {
       deliveryMode: payload.deliveryMode,
       queuedTurnId: payload.queuedTurnId,
       queueId,
+      contextItems,
       inputEnvelope: message.metadata.inputEnvelope,
+      automation,
     },
   });
   return message;
@@ -160,10 +218,12 @@ async function enqueueTaskTurn(input = {}, dependencies = {}) {
     userInput,
     queuedAt,
     status: 'pending',
+    permissionMode: input.permissionMode || null,
     permissionPolicy: input.permissionPolicy || null,
     modelSelection: input.modelSelection || null,
     reasoningEffort: input.reasoningEffort || null,
     contextPackage: input.contextPackage || null,
+    automation: input.automation || null,
   };
   const queuedTurns = [...queuedTurnsFrom(task), item];
   const saved = await saveTask(task, dependencies, {
@@ -197,14 +257,100 @@ async function startRuntimeTurn(input = {}, dependencies = {}, overrides = {}) {
   if (!taskId) throw new Error('taskId is required to start a turn');
   const task = await dependencies.taskStore.get(taskId);
   if (!task) throw new Error(`Task not found: ${taskId}`);
+  await recoverStaleApprovalBlock(task, input, dependencies);
   await persistUserTurn(task, input, dependencies, overrides);
   const runner = dependencies.startRuntimeRun || startRuntimeRun;
-  return runner(input, dependencies);
+  const result = await runner(input, dependencies);
+  const automation = input.automation || (input.metadata && input.metadata.automation) || null;
+  const turnId = result && (result.activeTurnId || result.turnId);
+  if (automation && turnId) {
+    await emitRuntimeEvent(dependencies, {
+      taskId: task.id,
+      projectId: task.projectId || input.projectId || null,
+      runtime: task.runtime || REDOU_CODEX_RUNTIME_ID,
+      type: 'automation_run_dispatched',
+      level: 'info',
+      title: 'Automation dispatched',
+      message: automation.title || 'Automation',
+      payload: {
+        automationId: automation.id || null,
+        automationTitle: automation.title || null,
+        automationRunId: automation.runId || null,
+        triggeredAt: automation.triggeredAt || null,
+        turnId,
+      },
+      metadata: {
+        automation,
+        automationId: automation.id || null,
+        automationRunId: automation.runId || null,
+        turnId,
+      },
+    });
+  }
+  return result;
 }
 
 function isRuntimeFailure(result) {
   const status = String(result && result.status ? result.status : '').toLowerCase();
   return status === 'error' || status === 'unavailable' || status === 'failed';
+}
+
+function isStaleApprovalBlockedState(state = {}) {
+  return state && state.stopReason && state.stopReason.code === 'approval_request_expired';
+}
+
+async function runtimeStateForTask(task = {}, dependencies = {}) {
+  if (!task.id || (task.runtime && task.runtime !== REDOU_CODEX_RUNTIME_ID)) return null;
+  const eventStore = dependencies.eventStore;
+  if (!eventStore || typeof eventStore.list !== 'function') return null;
+  try {
+    const events = await eventStore.list({ taskId: task.id });
+    return buildRedouCodexStateSnapshot(events);
+  } catch (error) {
+    await emitRuntimeEvent(dependencies, {
+      taskId: task.id,
+      projectId: task.projectId || null,
+      runtime: task.runtime || REDOU_CODEX_RUNTIME_ID,
+      type: 'runtime_warning',
+      level: 'warn',
+      title: 'Runtime state unavailable',
+      message: error && error.message ? error.message : String(error),
+      payload: { source: 'runtimeStateForTask' },
+    });
+    return null;
+  }
+}
+
+async function recoverStaleApprovalBlock(task = {}, input = {}, dependencies = {}) {
+  const state = await runtimeStateForTask(task, dependencies);
+  if (!isStaleApprovalBlockedState(state)) return { stale: false, state };
+  const interrupt = dependencies.interruptRuntimeRun || interruptRuntimeRun;
+  try {
+    await interrupt({
+      ...input,
+      id: task.id,
+      taskId: task.id,
+      task,
+      threadId: input.threadId || task.redouCodexThreadId || null,
+      turnId: input.turnId || state.turnId || task.redouCodexActiveTurnId || null,
+    }, dependencies);
+    return { stale: true, interrupted: true, state };
+  } catch (error) {
+    await emitRuntimeEvent(dependencies, {
+      taskId: task.id,
+      projectId: task.projectId || null,
+      runtime: task.runtime || REDOU_CODEX_RUNTIME_ID,
+      type: 'runtime_warning',
+      level: 'warn',
+      title: 'Stale approval recovery failed',
+      message: error && error.message ? error.message : String(error),
+      payload: {
+        source: 'recoverStaleApprovalBlock',
+        stopReason: state.stopReason || null,
+      },
+    });
+    return { stale: true, interrupted: false, state, error };
+  }
 }
 
 async function updateQueuedTaskTurn(input = {}, dependencies = {}) {
@@ -238,6 +384,8 @@ async function updateQueuedTaskTurn(input = {}, dependencies = {}) {
     await persistUserTurn(task, {
       ...input,
       userInput: queued.userInput,
+      contextPackage: queued.contextPackage,
+      automation: queued.automation || null,
     }, dependencies, {
       id: queueId,
       deliveryMode: 'queue',
@@ -253,14 +401,52 @@ async function updateQueuedTaskTurn(input = {}, dependencies = {}) {
     return { ok: true, deleted: true, queueDepth: queueDepthFor(saved), queueId };
   }
 
+  const runtimeState = await runtimeStateForTask(task, dependencies);
+  if (isStaleApprovalBlockedState(runtimeState)) {
+    const saved = await saveTask(task, dependencies, {
+      status: 'running',
+      metadata: {
+        ...queueMetadata(task, remaining),
+        lastQueuedTurnStartedAt: nowIso(),
+        lastQueuedTurnId: queued.id,
+      },
+    });
+    await emitQueueUpdate(saved, dependencies, 'Queued message started after stale approval recovery.', {
+      queueId,
+      queueState: 'started',
+      recoveredFrom: 'approval_request_expired',
+    });
+    const result = await startRuntimeTurn({
+      taskId,
+      userMessageId: queueId,
+      userInput: queued.userInput,
+      permissionMode: queued.permissionMode,
+      permissionPolicy: queued.permissionPolicy,
+      modelSelection: queued.modelSelection,
+      reasoningEffort: queued.reasoningEffort,
+      contextPackage: queued.contextPackage,
+      automation: queued.automation || null,
+      deliveryMode: 'queue',
+      queuedTurnId: queueId,
+      queuedAt: queued.queuedAt,
+    }, dependencies, {
+      deliveryMode: 'queue',
+      queuedTurnId: queueId,
+      queuedAt: queued.queuedAt,
+    });
+    return { ok: !isRuntimeFailure(result), started: true, queueDepth: queueDepthFor(saved), queueId, result };
+  }
+
   const steer = dependencies.steerRuntimeRun || steerRuntimeRun;
   const result = await steer({
     taskId,
     userInput: queued.userInput,
+    permissionMode: queued.permissionMode,
     permissionPolicy: queued.permissionPolicy,
     modelSelection: queued.modelSelection,
     reasoningEffort: queued.reasoningEffort,
     contextPackage: queued.contextPackage,
+    automation: queued.automation || null,
     deliveryMode: 'guide',
   }, dependencies);
   if (isRuntimeFailure(result)) {
@@ -284,6 +470,8 @@ async function updateQueuedTaskTurn(input = {}, dependencies = {}) {
   await persistUserTurn(task, {
     ...input,
     userInput: queued.userInput,
+    contextPackage: queued.contextPackage,
+    automation: queued.automation || null,
   }, dependencies, {
     id: queueId,
     deliveryMode: 'guide',
@@ -353,10 +541,12 @@ async function drainNextQueuedTurn(taskId, dependencies = {}, options = {}) {
     taskId,
     userMessageId: next.id,
     userInput: next.userInput,
+    permissionMode: next.permissionMode,
     permissionPolicy: next.permissionPolicy,
     modelSelection: next.modelSelection,
     reasoningEffort: next.reasoningEffort,
     contextPackage: next.contextPackage,
+    automation: next.automation || null,
     deliveryMode: 'queue',
     queuedTurnId: next.id,
     queuedAt: next.queuedAt,

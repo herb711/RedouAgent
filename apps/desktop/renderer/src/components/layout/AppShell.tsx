@@ -17,6 +17,7 @@ import { TopTitleBar } from './TopTitleBar';
 import { ArtifactPreviewPage } from '../../pages/ArtifactPreviewPage';
 import { BrowserPage } from '../../pages/BrowserPage';
 import { DiffReviewPage } from '../../pages/DiffReviewPage';
+import { ExtensionsPage } from '../../pages/ExtensionsPage';
 import { SettingsPage } from '../../pages/SettingsPage';
 import type { WorkbenchActions, WorkbenchState } from '../../state/workbenchStore';
 import { isPendingQueuedUserMessage } from '../../utils/threadMessages';
@@ -61,6 +62,8 @@ export function AppShell({ state, actions }: AppShellProps) {
   const title =
     state.activeView === 'settings'
       ? '设置'
+      : state.activeView === 'extensions'
+        ? '插件中心'
       : state.activeView === 'diffReview'
         ? '文件变更预览'
         : state.activeView === 'artifactPreview'
@@ -146,11 +149,37 @@ export function AppShell({ state, actions }: AppShellProps) {
     applyNavSnapshot(next);
   }
 
+  useEffect(() => {
+    function openExtensions(event: Event) {
+      const detail = (event as CustomEvent<{ kind?: string }>).detail;
+      if (detail?.kind) window.localStorage.setItem('redou.extensions.activeKind', detail.kind);
+      actions.selectView('extensions');
+    }
+    window.addEventListener('redou:open-extensions', openExtensions);
+    return () => window.removeEventListener('redou:open-extensions', openExtensions);
+  }, [actions]);
+
+  useEffect(() => {
+    function openAutomation() {
+      actions.selectView('thread');
+      actions.selectRightPanel('automations');
+    }
+    window.addEventListener('redou:open-automation', openAutomation);
+    return () => window.removeEventListener('redou:open-automation', openAutomation);
+  }, [actions]);
+
+  function openExtensionsFromSettings(kind?: 'plugin' | 'skill' | 'mcp') {
+    if (kind) window.localStorage.setItem('redou.extensions.activeKind', kind);
+    navigateWithHistory(() => actions.selectView('extensions'));
+  }
+
   if (state.activeView === 'settings') {
     return (
       <div className="redou-app-shell redou-app-shell-settings" ref={shellRef}>
         <SettingsPage
           appSettings={state.appSettings}
+          projects={state.data.projects}
+          archivedTasks={state.archivedTasks}
           modelConfig={state.modelConfig}
           onBack={() => navigateWithHistory(() => actions.selectView('thread'))}
           onSelectModel={actions.selectConfiguredModel}
@@ -159,6 +188,11 @@ export function AppShell({ state, actions }: AppShellProps) {
           onRemoveModelProvider={actions.removeModelProvider}
           onUpdateAppSettings={actions.updateAppSettings}
           onNotifyDesktop={actions.notifyDesktop}
+          onReloadArchivedTasks={actions.reloadArchivedTasks}
+          onRestoreArchivedTask={actions.restoreArchivedTask}
+          onDeleteArchivedTask={actions.deleteArchivedTask}
+          onDeleteAllArchivedTasks={actions.deleteAllArchivedTasks}
+          onOpenExtensions={openExtensionsFromSettings}
         />
       </div>
     );
@@ -182,6 +216,7 @@ export function AppShell({ state, actions }: AppShellProps) {
             projects={data.projects}
             activeProjectId={data.activeProjectId}
             activeTaskId={data.activeTask.id}
+            activeBranch={data.environment.branch}
             activeView={state.activeView}
             expandedProjectIds={state.expandedProjectIds}
             onCollapseSidebar={() => setSidebarHidden(true)}
@@ -194,11 +229,24 @@ export function AppShell({ state, actions }: AppShellProps) {
             onCreateConversationInProject={actions.createConversationInProject}
             onCreateProjectFromFolder={actions.createProjectFromFolder}
             onToggleProjectPinned={actions.toggleProjectPinned}
+            onReorderProjects={actions.reorderProjects}
             onOpenProjectFolder={actions.openProjectFolder}
             onRenameProject={actions.renameProject}
             onArchiveProjectConversation={actions.archiveProjectConversation}
             onRemoveProject={actions.removeProject}
+            onToggleTaskPinned={actions.toggleTaskPinned}
+            onRenameTaskConversation={actions.renameTaskConversation}
+            onArchiveTaskConversation={actions.archiveTaskConversation}
+            onToggleTaskUnread={actions.toggleTaskUnread}
+            onOpenTaskWorkspace={actions.openTaskWorkspace}
+            onCopyTaskWorkspace={actions.copyTaskWorkspace}
+            onCopyTaskConversationId={actions.copyTaskConversationId}
+            onCopyTaskDeepLink={actions.copyTaskDeepLink}
+            onForkTaskToLocal={actions.forkTaskToLocal}
+            onForkTaskToNewWorktree={actions.forkTaskToNewWorktree}
+            onOpenTaskInNewWindow={actions.openTaskInNewWindow}
             onSelectProject={(projectId) => navigateWithHistory(() => actions.selectProject(projectId))}
+            onToggleProjectExpanded={actions.toggleProjectExpanded}
             onSelectTask={(taskId) => navigateWithHistory(() => actions.selectTask(taskId))}
             onSelectView={(view) => navigateWithHistory(() => actions.selectView(view))}
           />
@@ -225,10 +273,12 @@ export function AppShell({ state, actions }: AppShellProps) {
                   agentMessages={visibleAgentMessages}
                   changes={data.mockChanges}
                   progressSteps={data.progressSteps}
+                  approvalRequests={data.approvalRequests}
                   runtimeStatus={data.runtimeStatus}
                   onOpenDiff={() => navigateWithHistory(() => actions.selectView('diffReview'))}
                   onGuideQueuedMessage={actions.guideQueuedMessage}
                   onDeleteQueuedMessage={actions.deleteQueuedMessage}
+                  onEditUserPrompt={actions.startComposerEdit}
                 />
                 <BottomComposerBar
                   task={data.activeTask}
@@ -236,7 +286,10 @@ export function AppShell({ state, actions }: AppShellProps) {
                   modelConfig={state.modelConfig}
                   context={data.mockContext}
                   contextItems={data.contextItems}
+                  composerInput={state.composerInput}
+                  composerEditTarget={state.composerEditTarget}
                   pendingQueuedMessages={pendingQueuedMessages}
+                  onComposerInputChange={actions.setComposerInput}
                   onPermissionModeChange={actions.setComposerPermissionMode}
                   onModelSelect={actions.selectConfiguredModel}
                   onOpenSettings={() => navigateWithHistory(() => actions.selectView('settings'))}
@@ -245,8 +298,10 @@ export function AppShell({ state, actions }: AppShellProps) {
                   onRemoveContextItem={actions.removeContextItem}
                   onClearContext={actions.clearContext}
                   onSubmit={actions.submitComposer}
+                  onStopTask={actions.stopActiveTask}
                   onGuideQueuedMessage={actions.guideQueuedMessage}
                   onDeleteQueuedMessage={actions.deleteQueuedMessage}
+                  onCancelComposerEdit={actions.cancelComposerEdit}
                 />
               </>
             ) : null}
@@ -283,6 +338,7 @@ export function AppShell({ state, actions }: AppShellProps) {
                 onCaptureScreenshot={actions.captureScreenshotComment}
               />
             ) : null}
+            {state.activeView === 'extensions' ? <ExtensionsPage /> : null}
           </div>
           {state.activeView === 'thread' ? <RightStatusRail state={state} actions={actions} /> : null}
         </div>

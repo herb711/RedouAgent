@@ -345,6 +345,7 @@ test('turn context serializes structured environment without object placeholders
   const text = params.input[0].text;
 
   assert.doesNotMatch(text, /\[object Object\]/);
+  assert.equal(params.cwd, 'D:\\work\\project');
   assert.match(text, /"cwd": "D:\\\\work\\\\project"/);
   assert.match(text, /"shell": "powershell"/);
 });

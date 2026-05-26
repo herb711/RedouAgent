@@ -50,7 +50,7 @@ async function checkRedouCodexAvailability(options = {}) {
   try {
     const init = buildInitializeRequest({
       clientInfo: options.clientInfo,
-      experimentalApi: Boolean(options.experimentalApi),
+      experimentalApi: options.experimentalApi ?? true,
     });
     const result = await client.initialize(init.params);
     await client.dispose();

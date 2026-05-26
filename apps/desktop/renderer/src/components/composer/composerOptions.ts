@@ -4,6 +4,8 @@ import type {
   ComposerReasoningEffortId,
 } from '../../types';
 
+export const defaultComposerPermissionMode: ComposerPermissionModeId = 'default';
+
 export const permissionModeOptions: Array<{
   id: ComposerPermissionModeId;
   label: string;
@@ -51,6 +53,10 @@ export function getPermissionModeOption(mode: ComposerPermissionModeId) {
   return permissionModeOptions.find((option) => option.id === mode) || permissionModeOptions[0];
 }
 
+export function isComposerPermissionModeId(value: unknown): value is ComposerPermissionModeId {
+  return permissionModeOptions.some((option) => option.id === value);
+}
+
 export function getReasoningEffortLabel(effort: ComposerReasoningEffortId) {
   return reasoningEffortOptions.find((option) => option.id === effort)?.label || '\u667a\u80fd';
 }
@@ -62,6 +68,7 @@ export function createPermissionPolicy(mode: ComposerPermissionModeId): Composer
       approvalMode: 'on-request',
       approvalsReviewer: 'user',
       networkPermission: 'enabled',
+      redouCodexPermissionProfile: ':danger-full-access',
     };
   }
 
@@ -71,6 +78,7 @@ export function createPermissionPolicy(mode: ComposerPermissionModeId): Composer
       approvalMode: 'on-request',
       approvalsReviewer: 'auto_review',
       networkPermission: 'restricted',
+      redouCodexPermissionProfile: ':workspace',
     };
   }
 
@@ -79,5 +87,6 @@ export function createPermissionPolicy(mode: ComposerPermissionModeId): Composer
     approvalMode: 'on-request',
     approvalsReviewer: 'user',
     networkPermission: 'restricted',
+    redouCodexPermissionProfile: ':workspace',
   };
 }

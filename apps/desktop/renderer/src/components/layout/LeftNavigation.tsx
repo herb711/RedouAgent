@@ -22,6 +22,7 @@ interface LeftNavigationProps {
   projects: WorkbenchProject[];
   activeProjectId: string;
   activeTaskId: string;
+  activeBranch?: string;
   activeView: WorkbenchView;
   expandedProjectIds: string[];
   onCollapseSidebar: () => void;
@@ -34,11 +35,24 @@ interface LeftNavigationProps {
   onCreateConversationInProject: (projectId: string) => Promise<void>;
   onCreateProjectFromFolder: () => Promise<void>;
   onToggleProjectPinned: (projectId: string) => Promise<void>;
+  onReorderProjects: (orderedProjectIds: string[]) => Promise<void>;
   onOpenProjectFolder: (projectId: string) => Promise<void>;
   onRenameProject: (projectId: string) => Promise<void>;
   onArchiveProjectConversation: (projectId: string) => Promise<void>;
   onRemoveProject: (projectId: string) => Promise<void>;
+  onToggleTaskPinned: (taskId: string) => Promise<void>;
+  onRenameTaskConversation: (taskId: string) => Promise<void>;
+  onArchiveTaskConversation: (taskId: string) => Promise<void>;
+  onToggleTaskUnread: (taskId: string) => Promise<void>;
+  onOpenTaskWorkspace: (taskId: string) => Promise<void>;
+  onCopyTaskWorkspace: (taskId: string) => Promise<void>;
+  onCopyTaskConversationId: (taskId: string) => Promise<void>;
+  onCopyTaskDeepLink: (taskId: string) => Promise<void>;
+  onForkTaskToLocal: (taskId: string) => Promise<void>;
+  onForkTaskToNewWorktree: (taskId: string) => Promise<void>;
+  onOpenTaskInNewWindow: (taskId: string) => Promise<void>;
   onSelectProject: (projectId: string) => void;
+  onToggleProjectExpanded: (projectId: string) => void;
   onSelectTask: (taskId: string) => void;
   onSelectView: (view: WorkbenchView) => void;
 }
@@ -62,6 +76,7 @@ export function LeftNavigation({
   projects,
   activeProjectId,
   activeTaskId,
+  activeBranch,
   activeView,
   expandedProjectIds,
   onCollapseSidebar,
@@ -74,11 +89,24 @@ export function LeftNavigation({
   onCreateConversationInProject,
   onCreateProjectFromFolder,
   onToggleProjectPinned,
+  onReorderProjects,
   onOpenProjectFolder,
   onRenameProject,
   onArchiveProjectConversation,
   onRemoveProject,
+  onToggleTaskPinned,
+  onRenameTaskConversation,
+  onArchiveTaskConversation,
+  onToggleTaskUnread,
+  onOpenTaskWorkspace,
+  onCopyTaskWorkspace,
+  onCopyTaskConversationId,
+  onCopyTaskDeepLink,
+  onForkTaskToLocal,
+  onForkTaskToNewWorktree,
+  onOpenTaskInNewWindow,
   onSelectProject,
+  onToggleProjectExpanded,
   onSelectTask,
   onSelectView,
 }: LeftNavigationProps) {
@@ -137,6 +165,10 @@ export function LeftNavigation({
     await onCreateProjectFromFolder();
   }
 
+  async function handleReorderProjects(orderedProjectIds: string[]) {
+    await onReorderProjects(orderedProjectIds);
+  }
+
   return (
     <aside className="redou-left-navigation" aria-label="Redou 导航">
       <div className="redou-left-toolbar">
@@ -154,10 +186,18 @@ export function LeftNavigation({
       </div>
 
       <nav className="redou-primary-nav" aria-label="主导航">
-        <NavItem icon={MessageSquare} label="新建对话" active={activeView === 'thread'} onClick={() => onSelectView('thread')} />
+        <NavItem
+          icon={MessageSquare}
+          label="新建对话"
+          active={activeView === 'thread'}
+          onClick={() => {
+            if (activeProjectId) void onCreateConversationInProject(activeProjectId);
+            else onSelectView('thread');
+          }}
+        />
         <NavItem icon={Search} label="搜索" active={searchOpen} onClick={() => setSearchOpen((open) => !open)} />
         <NavItem icon={Globe2} label="浏览器" active={activeView === 'browser'} onClick={() => onSelectView('browser')} />
-        <NavItem icon={Plug} label="插件" />
+        <NavItem icon={Plug} label="插件" active={activeView === 'extensions'} onClick={() => onSelectView('extensions')} />
         <NavItem icon={CalendarClock} label="自动化" />
       </nav>
 
@@ -174,21 +214,35 @@ export function LeftNavigation({
       ) : null}
 
       <div className="redou-sidebar-scroll">
-        <ProjectSection title="已固定">
+        <ProjectSection title="置顶">
           <ProjectList
             projects={pinnedProjects}
             activeProjectId={activeProjectId}
             activeTaskId={activeTaskId}
+            activeBranch={activeBranch}
             expandedProjectIds={expandedProjectIds}
             compact
             onSelectProject={onSelectProject}
+            onToggleProjectExpanded={onToggleProjectExpanded}
             onSelectTask={onSelectTask}
             onCreateConversation={onCreateConversationInProject}
             onToggleProjectPinned={onToggleProjectPinned}
+            onReorderProjects={searchQuery.trim() ? undefined : handleReorderProjects}
             onOpenProjectFolder={onOpenProjectFolder}
             onRenameProject={onRenameProject}
             onArchiveProjectConversation={onArchiveProjectConversation}
             onRemoveProject={onRemoveProject}
+            onToggleTaskPinned={onToggleTaskPinned}
+            onRenameTaskConversation={onRenameTaskConversation}
+            onArchiveTaskConversation={onArchiveTaskConversation}
+            onToggleTaskUnread={onToggleTaskUnread}
+            onOpenTaskWorkspace={onOpenTaskWorkspace}
+            onCopyTaskWorkspace={onCopyTaskWorkspace}
+            onCopyTaskConversationId={onCopyTaskConversationId}
+            onCopyTaskDeepLink={onCopyTaskDeepLink}
+            onForkTaskToLocal={onForkTaskToLocal}
+            onForkTaskToNewWorktree={onForkTaskToNewWorktree}
+            onOpenTaskInNewWindow={onOpenTaskInNewWindow}
           />
         </ProjectSection>
         <ProjectSection
@@ -223,15 +277,29 @@ export function LeftNavigation({
             projects={visibleProjects}
             activeProjectId={activeProjectId}
             activeTaskId={activeTaskId}
+            activeBranch={activeBranch}
             expandedProjectIds={expandedProjectIds}
             onSelectProject={onSelectProject}
+            onToggleProjectExpanded={onToggleProjectExpanded}
             onSelectTask={onSelectTask}
             onCreateConversation={onCreateConversationInProject}
             onToggleProjectPinned={onToggleProjectPinned}
+            onReorderProjects={searchQuery.trim() ? undefined : handleReorderProjects}
             onOpenProjectFolder={onOpenProjectFolder}
             onRenameProject={onRenameProject}
             onArchiveProjectConversation={onArchiveProjectConversation}
             onRemoveProject={onRemoveProject}
+            onToggleTaskPinned={onToggleTaskPinned}
+            onRenameTaskConversation={onRenameTaskConversation}
+            onArchiveTaskConversation={onArchiveTaskConversation}
+            onToggleTaskUnread={onToggleTaskUnread}
+            onOpenTaskWorkspace={onOpenTaskWorkspace}
+            onCopyTaskWorkspace={onCopyTaskWorkspace}
+            onCopyTaskConversationId={onCopyTaskConversationId}
+            onCopyTaskDeepLink={onCopyTaskDeepLink}
+            onForkTaskToLocal={onForkTaskToLocal}
+            onForkTaskToNewWorktree={onForkTaskToNewWorktree}
+            onOpenTaskInNewWindow={onOpenTaskInNewWindow}
           />
         </ProjectSection>
       </div>

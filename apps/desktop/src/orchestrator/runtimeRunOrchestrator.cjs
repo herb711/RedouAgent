@@ -2,6 +2,7 @@
 
 const { REDOU_CODEX_RUNTIME_ID } = require('../runtimes/redou-codex/redouCodexRuntimeConfig.cjs');
 const { enrichRedouCodexContextPackage } = require('../redou-codex/app-compat/context/redouCodexContextSerializer.cjs');
+const { dynamicAutomationTools } = require('../services/local-service/automationService.cjs');
 
 function defaultContextPackage(task = {}, input = {}) {
   return {
@@ -133,6 +134,16 @@ async function resolveRuntimeModelOverrides(input, dependencies) {
   };
 }
 
+async function resolveDynamicTools(input, dependencies) {
+  const explicit = input.dynamicTools || input.dynamic_tools;
+  if (Array.isArray(explicit)) return explicit;
+  try {
+    return await dynamicAutomationTools(dependencies);
+  } catch (_error) {
+    return [];
+  }
+}
+
 async function invokeRuntime(method, input = {}, dependencies = {}) {
   const task = await getTask(input, dependencies);
   if (!task) throw new Error('Task is required');
@@ -140,9 +151,13 @@ async function invokeRuntime(method, input = {}, dependencies = {}) {
   const runtimeModelOverrides = method === 'startTask' || method === 'resumeTask'
     ? await resolveRuntimeModelOverrides(input, dependencies)
     : {};
+  const runtimeDynamicTools = method === 'startTask' || method === 'resumeTask'
+    ? await resolveDynamicTools(input, dependencies)
+    : [];
   const runtimeInput = {
     ...input,
     ...runtimeModelOverrides,
+    ...(runtimeDynamicTools.length ? { dynamicTools: runtimeDynamicTools } : {}),
     config: {
       ...(runtimeModelOverrides.config || {}),
       ...(input.config || {}),

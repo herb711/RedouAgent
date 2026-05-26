@@ -3,6 +3,26 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+function queryObject(query) {
+  if (!query || typeof query !== 'object') return null;
+  const cleaned = {};
+  for (const [key, value] of Object.entries(query)) {
+    if (value === undefined || value === null || value === '') continue;
+    cleaned[key] = String(value);
+  }
+  return Object.keys(cleaned).length ? cleaned : null;
+}
+
+function appendQuery(url, query) {
+  const cleaned = queryObject(query);
+  if (!cleaned) return url;
+  const target = new URL(url);
+  for (const [key, value] of Object.entries(cleaned)) {
+    target.searchParams.set(key, value);
+  }
+  return target.toString();
+}
+
 function resolveRendererEntry(config = {}) {
   const rendererRoot = config.rendererRoot || path.resolve(__dirname, '../../../renderer');
   const distIndex = config.distIndex || path.join(rendererRoot, 'dist', 'index.html');
@@ -29,10 +49,12 @@ function resolveRendererEntry(config = {}) {
 async function loadRenderer(window, config = {}) {
   const entry = resolveRendererEntry(config);
   if (entry.kind === 'file') {
-    await window.loadFile(entry.target);
+    const query = queryObject(config.query);
+    if (query) await window.loadFile(entry.target, { query });
+    else await window.loadFile(entry.target);
   } else if (entry.kind === 'url') {
     try {
-      await window.loadURL(entry.target);
+      await window.loadURL(appendQuery(entry.target, config.query));
     } catch (error) {
       const fallback = resolveRendererEntry({ ...config, devServerFallback: false });
       if (fallback.kind === 'html') await window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(fallback.target)}`);

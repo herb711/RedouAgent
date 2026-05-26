@@ -103,3 +103,49 @@ test('incomplete detector ignores promises followed by a tool event', () => {
   assert.equal(detectIncompleteTurn(events).incomplete, false);
   assert.equal(buildRedouCodexStateSnapshot(events).status, 'completed');
 });
+
+test('state snapshot marks legacy raw MCP approval stalls as interrupted', () => {
+  const events = [
+    {
+      id: 'turn-started',
+      type: 'turn_update',
+      timestamp: '2026-05-26T03:28:20.431Z',
+      message: 'inProgress',
+      payload: { turn: { id: 'turn-1', status: 'inProgress' } },
+      metadata: { turnId: 'turn-1', redouCodexMethod: 'turn/started' },
+    },
+    {
+      id: 'thread-waiting',
+      type: 'thread_update',
+      timestamp: '2026-05-26T03:28:55.191Z',
+      message: { type: 'active', activeFlags: ['waitingOnApproval'] },
+      payload: { status: { type: 'active', activeFlags: ['waitingOnApproval'] }, threadId: 'thread-1' },
+      metadata: { redouCodexMethod: 'thread/status/changed', threadId: 'thread-1' },
+    },
+    {
+      id: 'raw-mcp-approval',
+      type: 'raw_log',
+      timestamp: '2026-05-26T03:28:55.191Z',
+      title: 'mcpServer/elicitation/request',
+      message: 'Allow MCP tool?',
+      payload: { threadId: 'thread-1', turnId: 'turn-1', serverName: 'MiniMax', message: 'Allow MCP tool?' },
+      metadata: {
+        redouCodexMethod: 'mcpServer/elicitation/request',
+        threadId: 'thread-1',
+        turnId: 'turn-1',
+        raw: JSON.stringify({
+          id: 0,
+          method: 'mcpServer/elicitation/request',
+          params: { threadId: 'thread-1', turnId: 'turn-1', serverName: 'MiniMax', message: 'Allow MCP tool?' },
+        }),
+      },
+    },
+  ];
+
+  const state = buildRedouCodexStateSnapshot(events);
+  assert.equal(state.status, 'interrupted');
+  assert.equal(state.needsAttention, true);
+  assert.equal(state.threadStatus, 'active');
+  assert.equal(state.stopReason.code, 'approval_request_expired');
+  assert.equal(state.stopReason.details.approvalRequestId, 0);
+});

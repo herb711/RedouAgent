@@ -91,7 +91,7 @@ function renderPanel(
     case 'worktrees':
       return <WorktreePanel projectId={data.activeProjectId} />;
     case 'automations':
-      return <AutomationPanel projectId={data.activeProjectId} />;
+      return <AutomationPanel projectId={data.activeProjectId} conversationId={data.activeTask.id} />;
     case 'skills':
       return <SkillsPanel />;
     case 'mcp':

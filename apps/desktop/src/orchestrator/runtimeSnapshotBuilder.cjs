@@ -6,7 +6,10 @@ const { createDefaultArtifact } = require('../core/models/artifact.cjs');
 
 const NON_PROGRESS_ITEM_TYPES = new Set(['userMessage', 'agentMessage']);
 const TERMINAL_ERROR_STATUSES = new Set(['failed', 'error', 'cancelled', 'canceled']);
-const TERMINAL_ITEM_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled', 'canceled']);
+const TERMINAL_TURN_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled', 'canceled', 'interrupted']);
+const TERMINAL_ITEM_STATUSES = new Set(['completed', 'failed', 'error', 'cancelled', 'canceled', 'interrupted']);
+const OPEN_PROGRESS_STATUSES = new Set(['active', 'in_progress', 'inprogress', 'running', 'started', 'updated', 'waiting_approval']);
+const MCP_ELICITATION_REQUEST = 'mcpServer/elicitation/request';
 
 function textFromMessageEvent(event) {
   if (event.type === 'message_delta') return event.message || (event.payload && event.payload.delta) || '';
@@ -201,6 +204,59 @@ function activeItemFrom(itemEvents) {
     || null;
 }
 
+function terminalItemStatusFromTurnState(redouCodexState = {}) {
+  const rawTurnStatus = String(redouCodexState.rawTurnStatus || '').toLowerCase();
+  const projectedStatus = String(redouCodexState.status || '').toLowerCase();
+  if (rawTurnStatus === 'completed' || projectedStatus === 'completed' || projectedStatus === 'degraded' || projectedStatus === 'incomplete') {
+    return 'completed';
+  }
+  if (rawTurnStatus === 'cancelled' || rawTurnStatus === 'canceled' || projectedStatus === 'interrupted') {
+    return 'cancelled';
+  }
+  if (rawTurnStatus === 'failed' || rawTurnStatus === 'error' || projectedStatus === 'failed' || projectedStatus === 'error') {
+    return 'failed';
+  }
+  return null;
+}
+
+function closeOpenProgressStatus(status, terminalStatus) {
+  if (!terminalStatus) return status;
+  const normalized = String(status || '').toLowerCase();
+  if (TERMINAL_ITEM_STATUSES.has(normalized)) return status;
+  if (OPEN_PROGRESS_STATUSES.has(normalized)) return terminalStatus;
+  return status;
+}
+
+function closeOpenPlanEntriesForTerminalTurn(planEntries, terminalStatus) {
+  if (!terminalStatus) return planEntries;
+  return planEntries.map((entry) => ({
+    ...entry,
+    status: closeOpenProgressStatus(entry.status, terminalStatus),
+  }));
+}
+
+function closeOpenItemEventsForTerminalTurn(itemEvents, terminalStatus) {
+  if (!terminalStatus) return itemEvents;
+  return itemEvents.map((event) => {
+    if (!isProgressItemEvent(event)) return event;
+    const status = String(itemStatusFromEvent(event) || '').toLowerCase();
+    if (TERMINAL_ITEM_STATUSES.has(status)) return event;
+    const payload = event.payload || {};
+    const item = payload.item || {};
+    return {
+      ...event,
+      payload: {
+        ...payload,
+        lifecycle: terminalStatus,
+        item: {
+          ...item,
+          status: terminalStatus,
+        },
+      },
+    };
+  });
+}
+
 function parseErrorText(value) {
   if (!value) return '';
   if (typeof value !== 'string') {
@@ -264,36 +320,237 @@ function commandLogFrom(event) {
   };
 }
 
+function commandRunFrom(event) {
+  const payload = event.payload || {};
+  const item = payload.item || {};
+  const lifecycle = payload.lifecycle || item.status || 'updated';
+  const command = item.command || payload.command || event.metadata?.command || '';
+  const output = payload.delta && payload.delta !== command ? payload.delta : '';
+  return {
+    id: String(item.id || event.metadata?.itemId || event.id),
+    turnId: eventTurnId(event),
+    command,
+    output,
+    lifecycle,
+    level: event.level || (String(lifecycle).toLowerCase() === 'failed' ? 'error' : 'info'),
+    timestamp: event.timestamp,
+  };
+}
+
+function commandSummaryLabel(commands = []) {
+  const count = commands.length;
+  const failed = commands.filter((command) => (
+    command.level === 'error'
+    || TERMINAL_ERROR_STATUSES.has(String(command.lifecycle || '').toLowerCase())
+  )).length;
+  const running = commands.some((command) => {
+    const lifecycle = String(command.lifecycle || '').toLowerCase();
+    return lifecycle === 'running' || lifecycle === 'started' || lifecycle === 'active';
+  });
+  if (failed) return `已运行 ${count} 条命令，${failed} 条失败`;
+  if (running) return `正在运行 ${count} 条命令`;
+  return `已运行 ${count} 条命令`;
+}
+
+function refreshCommandSummary(summary) {
+  const commands = summary.commands || [];
+  summary.count = commands.length;
+  summary.label = commandSummaryLabel(commands);
+}
+
+function mergeCommandRun(summary, update) {
+  if (!update.command && !update.output) return;
+  if (!Array.isArray(summary.commands)) summary.commands = [];
+  let run = summary.commands.find((entry) => entry.id === update.id);
+  if (!run) {
+    run = {
+      id: update.id,
+      command: update.command || '',
+      output: '',
+      lifecycle: update.lifecycle,
+      level: update.level,
+      timestamp: update.timestamp,
+    };
+    summary.commands.push(run);
+  }
+  if (update.command) run.command = update.command;
+  if (update.output) run.output = run.output ? `${run.output}${update.output}` : update.output;
+  if (update.lifecycle) run.lifecycle = update.lifecycle;
+  if (update.level) run.level = update.level;
+  if (update.timestamp) run.timestamp = update.timestamp;
+  refreshCommandSummary(summary);
+}
+
 function isAfter(left, right) {
   if (!left) return false;
   if (!right) return true;
   return String(left.timestamp || '').localeCompare(String(right.timestamp || '')) > 0;
 }
 
+function timestampMs(value) {
+  if (!value) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function terminalTurnStatus(status) {
+  return TERMINAL_TURN_STATUSES.has(String(status || '').toLowerCase());
+}
+
+function turnStatusFromEvent(event = {}) {
+  const turn = event.payload && event.payload.turn && typeof event.payload.turn === 'object'
+    ? event.payload.turn
+    : {};
+  return turn.status || event.payload?.status || event.message || '';
+}
+
+function collectTurnTimings(events = []) {
+  const timings = new Map();
+  const timingFor = (turnId) => {
+    const id = String(turnId || '');
+    if (!id) return null;
+    if (!timings.has(id)) timings.set(id, { startedAt: null, completedAt: null, firstEventAt: null, status: '' });
+    return timings.get(id);
+  };
+
+  for (const event of events) {
+    const turnId = eventTurnId(event);
+    const time = timestampMs(event.timestamp);
+    const timing = turnId && time !== null ? timingFor(turnId) : null;
+    if (!timing) continue;
+    timing.firstEventAt = timing.firstEventAt === null ? time : Math.min(timing.firstEventAt, time);
+
+    if (event.type !== 'turn_update') continue;
+    const status = String(turnStatusFromEvent(event) || '').toLowerCase();
+    timing.status = status || timing.status;
+    if (status === 'running' || status === 'started' || status === 'inprogress' || status === 'in_progress') {
+      timing.startedAt = timing.startedAt === null ? time : Math.min(timing.startedAt, time);
+    }
+    if (terminalTurnStatus(status)) {
+      timing.completedAt = timing.completedAt === null ? time : Math.max(timing.completedAt, time);
+    }
+  }
+
+  return timings;
+}
+
+function processedDurationForMessage(turnTimings, turnId, completedAt) {
+  const completedMs = timestampMs(completedAt);
+  if (!turnId || completedMs === null) return null;
+  const timing = turnTimings.get(String(turnId));
+  if (!timing) return null;
+  const startedAt = timing.startedAt ?? timing.firstEventAt;
+  if (startedAt === null || completedMs < startedAt) return null;
+  return completedMs - startedAt;
+}
+
+function parseRawNotification(event = {}) {
+  const raw = event.metadata && typeof event.metadata.raw === 'string' ? event.metadata.raw : '';
+  if (!raw || raw.includes('\n[truncated]')) return null;
+  try {
+    return JSON.parse(raw);
+  } catch (_error) {
+    return null;
+  }
+}
+
+function legacyMcpElicitationPayload(event = {}) {
+  if (event.type !== 'raw_log') return null;
+  const raw = parseRawNotification(event);
+  const method = raw?.method || event.metadata?.redouCodexMethod || event.title || '';
+  if (method !== MCP_ELICITATION_REQUEST) return null;
+  const params = raw?.params || event.payload || {};
+  const requestId = raw && raw.id !== undefined && raw.id !== null
+    ? raw.id
+    : event.payload && event.payload.requestId !== undefined && event.payload.requestId !== null
+      ? event.payload.requestId
+      : event.id;
+  return {
+    requestId,
+    method,
+    kind: 'mcp_elicitation',
+    ...params,
+  };
+}
+
+function approvalProjectionFromEvent(event = {}) {
+  const payload = event.type === 'approval_required'
+    ? event.payload || {}
+    : legacyMcpElicitationPayload(event);
+  if (!payload) return null;
+  const requestId = payload.requestId !== undefined && payload.requestId !== null ? payload.requestId : event.id;
+  const expired = event.type !== 'approval_required';
+  return {
+    id: String(requestId),
+    taskId: event.taskId || null,
+    status: expired ? 'expired' : 'pending',
+    kind: payload.kind || 'unknown',
+    title: event.title || 'Approval required',
+    description: event.message || payload.message || '',
+    payload: expired ? { ...payload, expired: true } : payload,
+    sourceEventId: event.id,
+  };
+}
+
 function buildRuntimeSnapshot(events = []) {
   const ordered = [...events].sort((a, b) => String(a.timestamp || '').localeCompare(String(b.timestamp || '')));
+  const turnTimings = collectTurnTimings(ordered);
   const messageBuffers = new Map();
   const messages = [];
   let latestPlan = [];
   const itemEvents = [];
   const changedFiles = [];
   const approvalRequests = [];
+  const resolvedApprovalRequests = new Set();
   const logs = [];
   const artifacts = [];
   const userMessageIndexes = new Map();
   const hiddenUserMessages = new Set();
   const turnErrorMessageIndexes = new Map();
   const turnErrorLogIndexes = new Map();
+  const automationByTurnId = new Map();
+  let activeCommandGroup = null;
+  let commandGroupCounter = 0;
+  const closeCommandGroup = () => {
+    activeCommandGroup = null;
+  };
+  const appendCommandRun = (event) => {
+    const run = commandRunFrom(event);
+    if (!run.command && !run.output) return;
+    if (!activeCommandGroup || activeCommandGroup.turnId !== run.turnId) {
+      commandGroupCounter += 1;
+      const summary = { count: 0, label: '已运行 0 条命令', commands: [] };
+      const message = {
+        id: `${run.turnId || event.id}:commands:${commandGroupCounter}`,
+        role: 'system',
+        kind: 'command_summary',
+        body: '',
+        timestamp: run.timestamp,
+        commandSummary: summary,
+        sourceEventId: event.id,
+        turnId: run.turnId,
+      };
+      messages.push(message);
+      activeCommandGroup = { turnId: run.turnId, message };
+    }
+    mergeCommandRun(activeCommandGroup.message.commandSummary, run);
+    if (run.timestamp) activeCommandGroup.message.timestamp = run.timestamp;
+    activeCommandGroup.message.sourceEventId = event.id;
+  };
   const upsertUserMessage = (event) => {
     const messageId = userMessageIdFrom(event);
     const activeQueueId = queueIdFrom(event);
     if (hiddenUserMessages.has(messageId) || (activeQueueId && hiddenUserMessages.has(activeQueueId))) return;
     const payload = event.payload || {};
     const metadata = event.metadata || {};
+    const contextItems = Array.isArray(metadata.contextItems)
+      ? metadata.contextItems
+      : (Array.isArray(payload.contextItems) ? payload.contextItems : []);
     const message = {
       id: messageId,
       role: 'user',
       body: event.message || payload.userInput || '',
+      timestamp: event.timestamp,
       deliveryMode: metadata.deliveryMode || null,
       status: payload.status || null,
       queueId: activeQueueId,
@@ -301,6 +558,11 @@ function buildRuntimeSnapshot(events = []) {
       sourceEventId: event.id,
       turnId: metadata.turnId || null,
     };
+    if (metadata.automation) {
+      message.source = 'automation';
+      message.automation = metadata.automation;
+    }
+    if (contextItems.length) message.contextItems = contextItems;
     if (userMessageIndexes.has(messageId)) {
       messages[userMessageIndexes.get(messageId)] = message;
     } else {
@@ -320,6 +582,7 @@ function buildRuntimeSnapshot(events = []) {
       id: `${turnError.id}:message`,
       role: 'system',
       body: turnError.message,
+      timestamp: turnError.timestamp,
       status: 'error',
       sourceEventId: turnError.sourceEventId,
       turnId: turnError.turnId,
@@ -347,7 +610,31 @@ function buildRuntimeSnapshot(events = []) {
   };
 
   for (const event of ordered) {
-    if (event.type === 'user_message') {
+    const legacyApproval = approvalProjectionFromEvent(event);
+    if (legacyApproval && event.type !== 'approval_required') approvalRequests.push(legacyApproval);
+
+    if (event.type === 'automation_run_dispatched') {
+      const turnId = event.metadata?.turnId || event.payload?.turnId || null;
+      if (turnId && event.metadata?.automation) automationByTurnId.set(turnId, event.metadata.automation);
+      logs.push({
+        id: event.id,
+        level: event.level || 'info',
+        message: event.message || event.title,
+        time: event.timestamp,
+        payload: event.payload,
+      });
+    } else if (event.type === 'automation_run' || event.type === 'automation_run_completed' || event.type === 'automation_run_failed' || event.type === 'automation_run_logged' || event.type === 'automation_tool_call') {
+      const turnId = event.metadata?.turnId || event.payload?.turnId || null;
+      if (turnId && event.metadata?.automation) automationByTurnId.set(turnId, event.metadata.automation);
+      logs.push({
+        id: event.id,
+        level: event.level || 'info',
+        message: event.message || event.title,
+        time: event.timestamp,
+        payload: event.payload,
+      });
+    } else if (event.type === 'user_message') {
+      closeCommandGroup();
       upsertUserMessage(event);
     } else if (event.type === 'message_delta') {
       const itemId = event.metadata && event.metadata.itemId ? event.metadata.itemId : 'assistant';
@@ -355,7 +642,22 @@ function buildRuntimeSnapshot(events = []) {
     } else if (event.type === 'message_completed') {
       const itemId = event.metadata && event.metadata.itemId ? event.metadata.itemId : event.id;
       const text = textFromMessageEvent(event) || messageBuffers.get(itemId) || '';
-      if (text.trim()) messages.push({ id: itemId, role: 'assistant', body: text, sourceEventId: event.id, turnId: eventTurnId(event) });
+      if (text.trim()) {
+        closeCommandGroup();
+        const turnId = eventTurnId(event);
+        const automation = turnId ? automationByTurnId.get(turnId) : null;
+        const processedDurationMs = processedDurationForMessage(turnTimings, turnId, event.timestamp);
+        messages.push({
+          id: itemId,
+          role: 'assistant',
+          body: text,
+          timestamp: event.timestamp,
+          ...(processedDurationMs !== null ? { processedDurationMs, processedStatus: 'completed' } : {}),
+          sourceEventId: event.id,
+          turnId,
+          ...(automation ? { source: 'automation', automation } : {}),
+        });
+      }
       messageBuffers.delete(itemId);
     } else if (event.type === 'plan_update') {
       latestPlan = planEntriesFrom(event);
@@ -367,20 +669,22 @@ function buildRuntimeSnapshot(events = []) {
     } else if (event.type === 'artifact' || event.type === 'artifact_created' || event.type === 'artifact_update') {
       artifacts.push(...artifactsFrom(event));
     } else if (event.type === 'approval_required') {
-      approvalRequests.push({
-        id: String(event.payload && event.payload.requestId ? event.payload.requestId : event.id),
-        status: 'pending',
-        kind: event.payload && event.payload.kind ? event.payload.kind : 'unknown',
-        title: event.title,
-        description: event.message,
-        payload: event.payload,
-        sourceEventId: event.id,
-      });
+      const approval = approvalProjectionFromEvent(event);
+      if (approval) approvalRequests.push(approval);
+    } else if (event.type === 'approval_resolved') {
+      const requestId = event.metadata && event.metadata.requestId !== undefined && event.metadata.requestId !== null
+        ? event.metadata.requestId
+        : event.payload && event.payload.requestId !== undefined && event.payload.requestId !== null
+          ? event.payload.requestId
+          : event.id;
+      resolvedApprovalRequests.add(String(requestId));
     } else if (event.type === 'runtime_error') {
+      closeCommandGroup();
       messages.push({
         id: `${event.id}:message`,
         role: 'system',
         body: event.message || event.title || 'Runtime error',
+        timestamp: event.timestamp,
         status: 'error',
         sourceEventId: event.id,
         turnId: eventTurnId(event),
@@ -402,7 +706,10 @@ function buildRuntimeSnapshot(events = []) {
       });
     } else if (event.type === 'turn_update') {
       const turnError = turnErrorFrom(event);
-      if (turnError) upsertTurnError(turnError);
+      if (turnError) {
+        closeCommandGroup();
+        upsertTurnError(turnError);
+      }
     } else if (event.type === 'raw_log' || event.type === 'queue_update') {
       if (event.type === 'queue_update' && event.metadata && event.metadata.queueState === 'deleted') {
         hideUserMessage(event.metadata.queueId);
@@ -416,34 +723,40 @@ function buildRuntimeSnapshot(events = []) {
       });
     } else if (event.type === 'command_update') {
       logs.push(commandLogFrom(event));
+      appendCommandRun(event);
     }
   }
 
   for (const [id, body] of messageBuffers.entries()) {
-    if (String(body || '').trim()) messages.push({ id, role: 'assistant', body, sourceEventId: id, turnId: null });
+    if (String(body || '').trim()) {
+      closeCommandGroup();
+      messages.push({ id, role: 'assistant', body, sourceEventId: id, turnId: null });
+    }
   }
 
   const turn = latest(ordered, 'turn_update');
   const thread = latest(ordered, 'thread_update');
   const diff = latest(ordered, 'diff_update');
   const usage = latest(ordered, 'usage_update');
+  const redouCodexState = buildRedouCodexStateSnapshot(ordered);
+  const terminalItemStatus = terminalItemStatusFromTurnState(redouCodexState);
   const latestTurnId = eventTurnId(turn) || eventTurnId([...itemEvents].reverse().find(Boolean));
-  const projectionItemEvents = scopedItemEvents(itemEvents, latestTurnId);
-  const planEntries = latestTurnId && latestPlan.some((entry) => entry.turnId && entry.turnId !== latestTurnId)
+  const projectionItemEvents = closeOpenItemEventsForTerminalTurn(scopedItemEvents(itemEvents, latestTurnId), terminalItemStatus);
+  const rawPlanEntries = latestTurnId && latestPlan.some((entry) => entry.turnId && entry.turnId !== latestTurnId)
     ? []
     : latestPlan;
+  const planEntries = closeOpenPlanEntriesForTerminalTurn(rawPlanEntries, terminalItemStatus);
   const activeItem = activeItemFrom(projectionItemEvents);
   const latestTurnError = turnErrorFrom(turn);
   const latestRuntimeError = latest(ordered, 'runtime_error');
   const lastError = latestTurnError || (isAfter(latestRuntimeError, turn) ? latestRuntimeError : null);
-  const redouCodexState = buildRedouCodexStateSnapshot(ordered);
 
   return {
     messages: messages.filter(Boolean),
     progressSteps: progressStepsFrom(planEntries, projectionItemEvents),
     planEntries,
     todoProjectionEntries: buildTodoProjection(planEntries, projectionItemEvents),
-    approvalRequests,
+    approvalRequests: approvalRequests.filter((request) => !resolvedApprovalRequests.has(String(request.id))),
     diffSummary: diff && diff.payload
       ? diff.payload.diff || null
       : (changedFiles.length ? `${changedFiles.length} file change${changedFiles.length === 1 ? '' : 's'}` : null),

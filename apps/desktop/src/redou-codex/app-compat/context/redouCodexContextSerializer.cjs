@@ -54,7 +54,7 @@ function enrichRedouCodexContextPackage(contextPackage = {}, input = {}) {
       runtime: task.runtime || input.runtime || 'redou-codex',
       model: input.model || context.environment?.model || null,
       modelProvider: input.modelProvider || context.environment?.modelProvider || null,
-      permissionMode: input.permissionMode || input.permissionPolicy?.approvalMode || context.environment?.permissionMode || null,
+      permissionMode: input.permissionMode || input.permissionPolicy?.permissionMode || input.permissionPolicy?.redouCodexPermissionProfile || context.environment?.permissionMode || null,
       degradedModel: Boolean(modelCapability && modelCapability.degraded),
     },
     metadata: {

@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('node:path');
-const { app, ipcMain, dialog, shell, Notification, powerSaveBlocker, BrowserWindow, Menu } = require('electron');
+const { app, ipcMain, dialog, shell, Notification, powerSaveBlocker, BrowserWindow, Menu, clipboard } = require('electron');
 const { createApplicationMenu, createMainWindow, registerAppLifecycle } = require('./platform/electron/index.cjs');
 const { getRedouDataRoot } = require('./platform/filesystem/index.cjs');
 const { createProjectStore } = require('./core/store/projectStore.cjs');
@@ -73,6 +73,7 @@ function createDependencies() {
     taskStore,
     runtimeSessionStore,
     modelConfigStore,
+    appSettingsStore,
     responsesChatProxy,
     eventSink,
   });
@@ -89,6 +90,7 @@ function createDependencies() {
     eventStore,
     runtimeSessionStore,
     modelConfigStore,
+    appSettingsStore,
     eventSink,
     contextAssembler,
     runtimeSnapshotBuilder,
@@ -101,6 +103,7 @@ function createDependencies() {
     dataRoot,
     dialog,
     shell,
+    clipboard,
     Notification,
     powerSaveBlocker,
     BrowserWindow,
@@ -120,6 +123,18 @@ function createDependencies() {
     responsesChatProxy,
     redouCodexAdapter,
     automationScheduler,
+    createAppWindow: (route = {}) => createMainWindow({
+      renderer: {
+        rendererRoot: path.join(desktopRoot, 'renderer'),
+        devServerUrl: process.env.REDOU_RENDERER_URL,
+        devServerFallback: process.env.NODE_ENV !== 'production',
+        query: {
+          projectId: route.projectId || '',
+          taskId: route.taskId || '',
+        },
+      },
+      openDevTools: process.env.NODE_ENV === 'development',
+    }),
   };
 }
 

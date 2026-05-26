@@ -16,6 +16,22 @@ function createProjectStore(options = {}) {
     return safeJoin(storageRoot, `${encodeURIComponent(id)}.json`);
   }
 
+  function projectSortOrder(project) {
+    const value = Number(project && project.metadata && project.metadata.sortOrder);
+    return Number.isFinite(value) ? value : null;
+  }
+
+  function compareProjects(left, right) {
+    const leftOrder = projectSortOrder(left);
+    const rightOrder = projectSortOrder(right);
+    if (leftOrder !== null || rightOrder !== null) {
+      const orderDelta = (leftOrder === null ? Number.MAX_SAFE_INTEGER : leftOrder)
+        - (rightOrder === null ? Number.MAX_SAFE_INTEGER : rightOrder);
+      if (orderDelta !== 0) return orderDelta;
+    }
+    return String(left.name).localeCompare(String(right.name));
+  }
+
   async function readPersisted() {
     await ensureDir(storageRoot);
     const names = await fs.readdir(storageRoot);
@@ -44,7 +60,7 @@ function createProjectStore(options = {}) {
       if (!persisted.length && defaultProject) {
         return [await ensureDefaultProject()];
       }
-      return Array.from(memory.values()).sort((a, b) => String(a.name).localeCompare(String(b.name)));
+      return Array.from(memory.values()).sort(compareProjects);
     },
     async get(id) {
       if (!id && defaultProject) id = defaultProject.id;

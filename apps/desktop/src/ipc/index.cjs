@@ -16,6 +16,8 @@ const { registerWorktreeIpc } = require('./worktreeIpc.cjs');
 const { registerAutomationIpc } = require('./automationIpc.cjs');
 const { registerSkillsIpc } = require('./skillsIpc.cjs');
 const { registerMcpIpc } = require('./mcpIpc.cjs');
+const { registerExtensionsIpc } = require('./extensionsIpc.cjs');
+const { registerPluginsIpc } = require('./pluginsIpc.cjs');
 const { registerDesktopIpc } = require('./desktopIpc.cjs');
 
 function registerAllIpc(ipcOrDependencies, maybeDependencies = {}) {
@@ -37,6 +39,8 @@ function registerAllIpc(ipcOrDependencies, maybeDependencies = {}) {
   registerTerminalIpc(ipcMain, dependencies);
   registerWorktreeIpc(ipcMain, dependencies);
   registerAutomationIpc(ipcMain, dependencies);
+  registerExtensionsIpc(ipcMain, dependencies);
+  registerPluginsIpc(ipcMain, dependencies);
   registerSkillsIpc(ipcMain, dependencies);
   registerMcpIpc(ipcMain, dependencies);
   registerDesktopIpc(ipcMain, dependencies);

@@ -85,15 +85,29 @@ export const mockWorkbenchData: WorkbenchMockData = {
         '我会先把 RedouAgent 的工作台做成 Codex-like 基线：左侧负责项目和任务，中间负责线程与执行过程，右侧负责进度、环境、变更和交付动作。',
       commandSummary: {
         count: 4,
+        commands: [
+          { id: 'mock-cmd-1', command: 'Get-ChildItem -Force', lifecycle: 'completed' },
+          { id: 'mock-cmd-2', command: 'rg --files apps/desktop/renderer/src', lifecycle: 'completed' },
+          { id: 'mock-cmd-3', command: 'git status --short', lifecycle: 'completed', output: ' M apps/desktop/renderer/src/components/thread/ThreadMessageList.tsx' },
+          { id: 'mock-cmd-4', command: 'Get-Content apps/desktop/renderer/src/components/thread/AgentMessage.tsx', lifecycle: 'completed' },
+        ],
         label: '已检查项目结构并读取前端入口',
       },
     },
     {
       id: 'agent-2',
+      timestamp: '2026-05-26T09:13:00.000Z',
+      processedDurationMs: 38000,
+      processedStatus: 'completed',
       body:
         '当前 renderer 已经有 Workbench 组件雏形，但 mock 数据和部分文案需要清理。下一步会把 UI 结构补到第一阶段可用状态，并保留后续接真实 IPC 数据的位置。',
       commandSummary: {
         count: 3,
+        commands: [
+          { id: 'mock-cmd-5', command: 'npm --prefix apps/desktop/renderer run build', lifecycle: 'completed' },
+          { id: 'mock-cmd-6', command: 'node --test apps/desktop/tests/runtimeSnapshotBuilder.test.cjs', lifecycle: 'completed' },
+          { id: 'mock-cmd-7', command: 'git diff -- apps/desktop/renderer/src', lifecycle: 'completed' },
+        ],
         label: '已编辑 UI shell 组件',
       },
     },
@@ -121,8 +135,8 @@ export const mockWorkbenchData: WorkbenchMockData = {
   },
   composer: {
     placeholder: '\u8981\u6c42\u540e\u7eed\u53d8\u66f4',
-    permission: '\u5b8c\u5168\u8bbf\u95ee\u6743\u9650',
-    permissionMode: 'full-access',
+    permission: '\u9ed8\u8ba4\u6743\u9650',
+    permissionMode: 'default',
     model: '5.5 \u8d85\u9ad8',
     modelId: 'GPT-5.5',
     reasoningEffort: 'xhigh',

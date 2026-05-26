@@ -9,6 +9,8 @@ const CHANNELS = Object.freeze([
   'redou:desktop:prevent-sleep',
   'redou:desktop:popout',
   'redou:desktop:open-external',
+  'redou:desktop:clipboard-write',
+  'redou:desktop:app-window-open',
 ]);
 
 function ok(data, warnings = []) {
@@ -157,6 +159,30 @@ async function openExternal(payload, dependencies = {}) {
   return { opened: true, url };
 }
 
+async function writeClipboardText(payload, dependencies = {}) {
+  const hostClipboard = dependencies.clipboard;
+  if (!hostClipboard || typeof hostClipboard.writeText !== 'function') {
+    const error = new Error('Host clipboard is not available.');
+    error.code = 'CLIPBOARD_UNAVAILABLE';
+    throw error;
+  }
+  const text = String(payload.text || '');
+  hostClipboard.writeText(text);
+  return { copied: true, textLength: text.length };
+}
+
+async function openAppWindow(payload, dependencies = {}) {
+  if (!dependencies.createAppWindow || typeof dependencies.createAppWindow !== 'function') {
+    const error = new Error('App window creation is not available.');
+    error.code = 'APP_WINDOW_UNAVAILABLE';
+    throw error;
+  }
+  const projectId = payload.projectId ? String(payload.projectId) : '';
+  const taskId = payload.taskId ? String(payload.taskId) : '';
+  dependencies.createAppWindow({ projectId, taskId });
+  return { opened: true, projectId, taskId };
+}
+
 async function popout(payload, dependencies = {}) {
   const BrowserWindow = dependencies.BrowserWindow;
   if (!BrowserWindow) {
@@ -196,12 +222,16 @@ function registerDesktopIpc(ipcMain, dependencies = {}) {
   handle(ipcMain, 'redou:desktop:prevent-sleep', async (payload) => setPreventSleep(payload, dependencies));
   handle(ipcMain, 'redou:desktop:popout', async (payload) => popout(payload, dependencies));
   handle(ipcMain, 'redou:desktop:open-external', async (payload) => openExternal(payload, dependencies));
+  handle(ipcMain, 'redou:desktop:clipboard-write', async (payload) => writeClipboardText(payload, dependencies));
+  handle(ipcMain, 'redou:desktop:app-window-open', async (payload) => openAppWindow(payload, dependencies));
   return CHANNELS;
 }
 
 module.exports = {
   CHANNELS,
   normalizeUrl,
+  openAppWindow,
   registerDesktopIpc,
   setPreventSleep,
+  writeClipboardText,
 };

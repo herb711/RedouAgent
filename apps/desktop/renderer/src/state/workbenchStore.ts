@@ -1,12 +1,18 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { hasRealRedouApi, redouApi, type ArtifactSnapshot, type ContextSelectionItem, type ContextSelectionKind, type GitDiffSnapshot, type RuntimeSnapshot } from '../api/redouApi';
-import { createPermissionPolicy, getPermissionModeOption } from '../components/composer/composerOptions';
+import {
+  createPermissionPolicy,
+  defaultComposerPermissionMode,
+  getPermissionModeOption,
+  isComposerPermissionModeId,
+} from '../components/composer/composerOptions';
 import { mockWorkbenchData } from './mockWorkbenchData';
 import type {
   AgentThreadMessage,
   AppSettingsSnapshot,
   ArtifactData,
   ChangeFileData,
+  ComposerEditTarget,
   ContextItemData,
   RedouCodexPlanProjection,
   ComposerPermissionModeId,
@@ -29,6 +35,9 @@ import type {
 export interface WorkbenchState {
   data: WorkbenchMockData;
   selectedTask: WorkbenchTask | null;
+  composerInput: string;
+  composerEditTarget: ComposerEditTarget | null;
+  conversationDrafts: Record<string, ConversationDraft>;
   activeView: WorkbenchView;
   redouCodexPlan: RedouCodexPlanProjection[];
   activeRightPanel: RightPanelId | null;
@@ -39,6 +48,7 @@ export interface WorkbenchState {
   runtimeError: string | null;
   modelConfig: ModelConfigSnapshot;
   appSettings: AppSettingsSnapshot;
+  archivedTasks: WorkbenchTask[];
 }
 
 export interface WorkbenchActions {
@@ -48,14 +58,31 @@ export interface WorkbenchActions {
   selectRightPanel: (panel: RightPanelId) => void;
   closeRightPanel: () => void;
   collapseAllProjects: () => void;
+  toggleProjectExpanded: (projectId: string) => void;
   createBlankProject: (name?: string) => Promise<void>;
   createConversationInProject: (projectId: string) => Promise<void>;
   createProjectFromFolder: () => Promise<void>;
   toggleProjectPinned: (projectId: string) => Promise<void>;
+  reorderProjects: (orderedProjectIds: string[]) => Promise<void>;
   openProjectFolder: (projectId: string) => Promise<void>;
   renameProject: (projectId: string) => Promise<void>;
   archiveProjectConversation: (projectId: string) => Promise<void>;
+  reloadArchivedTasks: () => Promise<void>;
+  restoreArchivedTask: (taskId: string) => Promise<void>;
+  deleteArchivedTask: (taskId: string) => Promise<void>;
+  deleteAllArchivedTasks: () => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
+  toggleTaskPinned: (taskId: string) => Promise<void>;
+  renameTaskConversation: (taskId: string) => Promise<void>;
+  archiveTaskConversation: (taskId: string) => Promise<void>;
+  toggleTaskUnread: (taskId: string) => Promise<void>;
+  openTaskWorkspace: (taskId: string) => Promise<void>;
+  copyTaskWorkspace: (taskId: string) => Promise<void>;
+  copyTaskConversationId: (taskId: string) => Promise<void>;
+  copyTaskDeepLink: (taskId: string) => Promise<void>;
+  forkTaskToLocal: (taskId: string) => Promise<void>;
+  forkTaskToNewWorktree: (taskId: string) => Promise<void>;
+  openTaskInNewWindow: (taskId: string) => Promise<void>;
   setComposerPermissionMode: (mode: ComposerPermissionModeId) => void;
   reloadModelConfigs: () => Promise<void>;
   selectConfiguredModel: (selection: ModelConfigSelection) => Promise<void>;
@@ -66,6 +93,9 @@ export interface WorkbenchActions {
   addDroppedContextFiles: (files: FileList | File[]) => Promise<void>;
   removeContextItem: (path: string) => void;
   clearContext: () => void;
+  setComposerInput: (input: string) => void;
+  startComposerEdit: (target: ComposerEditTarget) => void;
+  cancelComposerEdit: () => void;
   generateImageArtifact: (prompt: string) => Promise<void>;
   captureScreenshotComment: (comment: string) => Promise<void>;
   openArtifact: (artifact: ArtifactData) => Promise<void>;
@@ -76,7 +106,8 @@ export interface WorkbenchActions {
   popoutBrowser: (url?: string) => Promise<void>;
   notifyDesktop: (title: string, body: string) => Promise<void>;
   updateAppSettings: (patch: Record<string, unknown>) => Promise<void>;
-  submitComposer: (input: string, options: ComposerSubmitOptions) => Promise<void>;
+  submitComposer: (input: string, options: ComposerSubmitOptions) => Promise<boolean | void>;
+  stopActiveTask: () => Promise<void>;
   guideQueuedMessage: (message: AgentThreadMessage) => Promise<void>;
   deleteQueuedMessage: (message: AgentThreadMessage) => Promise<void>;
   stageGitFile: (file: ChangeFileData) => Promise<void>;
@@ -127,27 +158,175 @@ const defaultAppSettings: AppSettingsSnapshot = {
     inAppBrowser: true,
     screenshotCapture: true,
   },
+  composer: {
+    permissionMode: defaultComposerPermissionMode,
+  },
+  automation: {
+    allowModelCreate: false,
+    exposeToolToModel: false,
+  },
+};
+
+const EMPTY_CONTEXT_SUMMARY = 'No context selected.';
+const COMPOSER_PERMISSION_MODE_STORAGE_KEY = 'redou.composer.permissionMode';
+
+function readStoredComposerPermissionMode(): ComposerPermissionModeId | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const stored = window.localStorage.getItem(COMPOSER_PERMISSION_MODE_STORAGE_KEY);
+    return isComposerPermissionModeId(stored) ? stored : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredComposerPermissionMode(mode: ComposerPermissionModeId) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(COMPOSER_PERMISSION_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Ignore storage errors; the in-memory state still reflects the user's choice.
+  }
+}
+
+function resolveComposerPermissionMode(settings?: AppSettingsSnapshot | null): ComposerPermissionModeId {
+  return readStoredComposerPermissionMode()
+    || (isComposerPermissionModeId(settings?.composer?.permissionMode) ? settings.composer.permissionMode : null)
+    || defaultComposerPermissionMode;
+}
+
+function applyComposerPermissionModeToData(data: WorkbenchMockData, mode: ComposerPermissionModeId): WorkbenchMockData {
+  const option = getPermissionModeOption(mode);
+  return {
+    ...data,
+    composer: {
+      ...data.composer,
+      permission: option.label,
+      permissionMode: mode,
+    },
+  };
+}
+
+export interface ConversationDraft {
+  input: string;
+  contextItems: ContextItemData[];
+  selectedFiles: string[];
+  selectedDirectories: string[];
+  attachments: string[];
+}
+
+function conversationDraftKey(projectId?: string | null, taskId?: string | null) {
+  return `${projectId || 'no-project'}::${taskId || 'no-task'}`;
+}
+
+function initialRouteSelection() {
+  if (typeof window === 'undefined') return { projectId: '', taskId: '' };
+  const params = new URLSearchParams(window.location.search);
+  return {
+    projectId: params.get('projectId') || '',
+    taskId: params.get('taskId') || '',
+  };
+}
+
+function taskDraftKey(projectId: string | undefined, task?: Pick<WorkbenchTask, 'id' | 'projectId'> | null) {
+  return conversationDraftKey(task?.projectId || projectId, task?.id || null);
+}
+
+function activeConversationDraftKey(state: Pick<WorkbenchState, 'data' | 'selectedTask'>) {
+  return taskDraftKey(state.data.activeProjectId, state.selectedTask || state.data.activeTask);
+}
+
+function emptyConversationDraft(input = ''): ConversationDraft {
+  return {
+    input,
+    contextItems: [],
+    selectedFiles: [],
+    selectedDirectories: [],
+    attachments: [],
+  };
+}
+
+function conversationDraftFromData(data: WorkbenchMockData, input = ''): ConversationDraft {
+  return {
+    input,
+    contextItems: data.contextItems || [],
+    selectedFiles: uniqueStrings(data.mockContext.selectedFiles || []),
+    selectedDirectories: uniqueStrings(data.mockContext.selectedDirectories || []),
+    attachments: uniqueStrings(data.mockContext.attachments || []),
+  };
+}
+
+function contextSummary(total: number) {
+  return total
+    ? `${total} context item${total === 1 ? '' : 's'} selected for the next turn.`
+    : EMPTY_CONTEXT_SUMMARY;
+}
+
+function applyConversationDraftToData(data: WorkbenchMockData, draft: ConversationDraft = emptyConversationDraft()): WorkbenchMockData {
+  const selectedFiles = uniqueStrings(draft.selectedFiles);
+  const selectedDirectories = uniqueStrings(draft.selectedDirectories);
+  const attachments = uniqueStrings(draft.attachments);
+  const total = selectedFiles.length + selectedDirectories.length + attachments.length;
+  return {
+    ...data,
+    contextItems: draft.contextItems || [],
+    mockContext: {
+      ...data.mockContext,
+      summary: contextSummary(total),
+      selectedFiles,
+      selectedDirectories,
+      attachments,
+    },
+  };
+}
+
+function updateActiveConversationDraft(state: WorkbenchState, data: WorkbenchMockData, input = state.composerInput) {
+  const key = activeConversationDraftKey(state);
+  return {
+    ...state.conversationDrafts,
+    [key]: conversationDraftFromData(data, input),
+  };
+}
+
+function activateConversationData(data: WorkbenchMockData, draft?: ConversationDraft) {
+  return applyConversationDraftToData(resetThreadProjection(data), draft || emptyConversationDraft());
+}
+
+const initialComposerPermissionMode = resolveComposerPermissionMode();
+const initialWorkbenchData = applyComposerPermissionModeToData(mockWorkbenchData, initialComposerPermissionMode);
+const initialAppSettings: AppSettingsSnapshot = {
+  ...defaultAppSettings,
+  composer: {
+    ...defaultAppSettings.composer,
+    permissionMode: initialComposerPermissionMode,
+  },
 };
 
 export const initialWorkbenchState: WorkbenchState = {
-  data: mockWorkbenchData,
-  selectedTask: mockWorkbenchData.activeTask,
+  data: initialWorkbenchData,
+  selectedTask: initialWorkbenchData.activeTask,
+  composerInput: '',
+  composerEditTarget: null,
+  conversationDrafts: {
+    [conversationDraftKey(initialWorkbenchData.activeProjectId, initialWorkbenchData.activeTask.id)]: conversationDraftFromData(initialWorkbenchData, ''),
+  },
   activeView: 'thread',
   redouCodexPlan: [],
   activeRightPanel: 'progress',
   rightPanelOpen: true,
-  expandedProjectIds: [mockWorkbenchData.activeProjectId],
+  expandedProjectIds: [initialWorkbenchData.activeProjectId],
   apiMode: hasRealRedouApi() ? 'ipc' : 'mock',
   runtimeAvailability: null,
   runtimeError: null,
   modelConfig: emptyModelConfig,
-  appSettings: defaultAppSettings,
+  appSettings: initialAppSettings,
+  archivedTasks: [],
 };
 
 function mapProgressStatus(status: string): ProgressStepStatus {
   if (status === 'completed') return 'completed';
   if (status === 'inProgress' || status === 'in_progress' || status === 'active' || status === 'running' || status === 'started' || status === 'updated' || status === 'waiting_approval') return 'active';
-  if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled' || status === 'degraded') return 'error';
+  if (status === 'failed' || status === 'error' || status === 'cancelled' || status === 'canceled' || status === 'interrupted' || status === 'degraded') return 'error';
   return 'pending';
 }
 
@@ -165,8 +344,9 @@ function mapTaskStatus(status?: string): WorkbenchTaskStatus {
     || status === 'error'
     || status === 'degraded'
     || status === 'completed'
+    || status === 'interrupted'
   ) return status;
-  if (status === 'cancelled' || status === 'canceled') return 'failed';
+  if (status === 'cancelled' || status === 'canceled') return 'interrupted';
   if (status === 'idle') return 'completed';
   return 'created';
 }
@@ -249,6 +429,9 @@ function normalizeModelConfigSnapshot(input: unknown): ModelConfigSnapshot {
 
 function normalizeAppSettingsSnapshot(input: unknown): AppSettingsSnapshot {
   const snapshot = (input || {}) as Partial<AppSettingsSnapshot>;
+  const composerPermissionMode = isComposerPermissionModeId(snapshot.composer?.permissionMode)
+    ? snapshot.composer.permissionMode
+    : defaultAppSettings.composer.permissionMode;
   return {
     ...defaultAppSettings,
     ...snapshot,
@@ -258,6 +441,8 @@ function normalizeAppSettingsSnapshot(input: unknown): AppSettingsSnapshot {
     browser: { ...defaultAppSettings.browser, ...(snapshot.browser || {}) },
     media: { ...defaultAppSettings.media, ...(snapshot.media || {}) },
     connections: { ...defaultAppSettings.connections, ...(snapshot.connections || {}) },
+    composer: { ...defaultAppSettings.composer, ...(snapshot.composer || {}), permissionMode: composerPermissionMode },
+    automation: { ...defaultAppSettings.automation, ...(snapshot.automation || {}) },
   };
 }
 
@@ -321,6 +506,7 @@ function applyModelConfigToData(data: WorkbenchMockData, snapshot: ModelConfigSn
 }
 
 function mapTask(task: Record<string, unknown>): WorkbenchTask {
+  const metadata = (task.metadata || {}) as { unread?: unknown; pinned?: unknown; archived?: unknown; archivedAt?: unknown };
   return {
     id: String(task.id || ''),
     projectId: task.projectId ? String(task.projectId) : undefined,
@@ -329,19 +515,35 @@ function mapTask(task: Record<string, unknown>): WorkbenchTask {
     runtime: mapRuntimeId(String(task.runtime || 'redou-codex')),
     userPrompt: String(task.userInput || ''),
     updatedAt: task.updatedAt ? String(task.updatedAt) : undefined,
+    unread: Boolean(metadata.unread),
+    pinned: Boolean(metadata.pinned),
+    archived: Boolean(metadata.archived),
+    archivedAt: metadata.archivedAt ? String(metadata.archivedAt) : null,
+    redouCodexThreadId: task.redouCodexThreadId ? String(task.redouCodexThreadId) : null,
     queueDepth: queueDepthFromTask(task),
   };
 }
 
+function compareTasks(left: WorkbenchTask, right: WorkbenchTask) {
+  if (left.pinned !== right.pinned) return left.pinned ? -1 : 1;
+  return String(right.updatedAt || '').localeCompare(String(left.updatedAt || ''));
+}
+
+function projectSortOrder(value: unknown) {
+  const order = Number(value);
+  return Number.isFinite(order) ? order : undefined;
+}
+
 function mapProject(project: Record<string, unknown>, tasks: WorkbenchTask[]): WorkbenchProject {
   const projectId = String(project.id || 'default-workspace');
-  const metadata = (project.metadata || {}) as { pinned?: boolean };
+  const metadata = (project.metadata || {}) as { pinned?: boolean; sortOrder?: unknown };
   return {
     id: projectId,
     name: String(project.name || 'RedouAgent'),
     rootPath: project.rootPath ? String(project.rootPath) : undefined,
     pinned: metadata.pinned === undefined ? projectId === 'default-workspace' : Boolean(metadata.pinned),
-    tasks: tasks.filter((task) => !task.projectId || task.projectId === projectId),
+    sortOrder: projectSortOrder(metadata.sortOrder),
+    tasks: tasks.filter((task) => !task.projectId || task.projectId === projectId).sort(compareTasks),
   };
 }
 
@@ -529,9 +731,7 @@ function addContextItemsToData(data: WorkbenchMockData, items: ContextSelectionI
     contextItems: mergeContextItems(data.contextItems || [], items),
     mockContext: {
       ...data.mockContext,
-      summary: total
-        ? `${total} context item${total === 1 ? '' : 's'} selected for the next turn.`
-        : 'No context selected.',
+      summary: contextSummary(total),
       selectedFiles: nextFiles,
       selectedDirectories: nextDirectories,
       attachments: nextAttachments,
@@ -549,9 +749,7 @@ function removeContextItemFromData(data: WorkbenchMockData, itemPath: string): W
     contextItems: (data.contextItems || []).filter((item) => item.path !== itemPath),
     mockContext: {
       ...data.mockContext,
-      summary: total
-        ? `${total} context item${total === 1 ? '' : 's'} selected for the next turn.`
-        : 'No context selected.',
+      summary: contextSummary(total),
       selectedFiles: nextFiles,
       selectedDirectories: nextDirectories,
       attachments: nextAttachments,
@@ -565,7 +763,7 @@ function clearContextFromData(data: WorkbenchMockData): WorkbenchMockData {
     contextItems: [],
     mockContext: {
       ...data.mockContext,
-      summary: 'No context selected.',
+      summary: EMPTY_CONTEXT_SUMMARY,
       selectedFiles: [],
       selectedDirectories: [],
       attachments: [],
@@ -607,7 +805,10 @@ async function buildContextPackageForTurn(state: WorkbenchState, userInput: stri
     },
     metadata: {
       source: 'renderer-composer',
+      contextItems: state.data.contextItems || [],
+      selectedFiles: state.data.mockContext.selectedFiles || [],
       selectedDirectories: state.data.mockContext.selectedDirectories || [],
+      attachments: state.data.mockContext.attachments || [],
     },
   };
   const result = await redouApi.previewContext(input);
@@ -643,12 +844,22 @@ export function applyRuntimeSnapshotToData(data: WorkbenchMockData, snapshot: Ru
           id: message.id,
           role: message.role === 'user' || message.role === 'system' ? message.role : 'assistant',
           body: message.body,
+          timestamp: message.timestamp,
+          processedDurationMs: typeof message.processedDurationMs === 'number' ? message.processedDurationMs : undefined,
+          processedStatus: message.processedStatus,
           deliveryMode: message.deliveryMode,
           status: message.status,
           queueId: message.queueId ?? null,
           queueState: message.queueState ?? null,
+          source: message.source ?? null,
           sourceEventId: message.sourceEventId,
           turnId: message.turnId ?? null,
+          automation: message.automation ?? null,
+          contextItems: Array.isArray(message.contextItems)
+            ? message.contextItems
+                .map((item) => normalizeContextItem(item as ContextSelectionItem))
+                .filter((item): item is ContextItemData => Boolean(item))
+            : [],
         }))
       : data.agentMessages,
     progressSteps: hasProgressSteps
@@ -670,13 +881,15 @@ export function applyRuntimeSnapshotToData(data: WorkbenchMockData, snapshot: Ru
       : data.todoProjectionEntries,
     approvalRequests: hasApprovalRequests
       ? snapshot.approvalRequests.map((approval) => {
-          const item = approval as { id?: string; kind?: string; title?: string; description?: string; status?: string };
+          const item = approval as { id?: string; taskId?: string | null; kind?: string; title?: string; description?: string; status?: string; payload?: unknown };
           return {
             id: item.id || '',
+            taskId: item.taskId || null,
             kind: item.kind || 'unknown',
             title: item.title || 'Approval required',
             description: item.description || '',
             status: item.status || 'pending',
+            payload: item.payload,
           };
         })
       : data.approvalRequests,
@@ -769,6 +982,7 @@ function resetThreadProjection(data: WorkbenchMockData): WorkbenchMockData {
     approvalRequests: [],
     mockLogs: [],
     mockArtifacts: [],
+    mockContext: { ...data.mockContext, recentMessages: [] },
     mockChanges: { ...data.mockChanges, files: [], insertions: 0, deletions: 0, diffSummary: '' },
     environment: { ...data.environment, changes: '无变更' },
     runtimeStatus: null,
@@ -777,6 +991,81 @@ function resetThreadProjection(data: WorkbenchMockData): WorkbenchMockData {
 
 function projectResultError(result: { ok: boolean; error?: { message?: string } | null }, fallback: string) {
   return result.ok ? null : result.error?.message || fallback;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' ? value as Record<string, unknown> : {};
+}
+
+function runtimeEventFromSubscription(payload: unknown): Record<string, unknown> | null {
+  const envelope = asRecord(payload);
+  const event = Object.prototype.hasOwnProperty.call(envelope, 'data') ? envelope.data : payload;
+  if (!event || typeof event !== 'object') return null;
+  return event as Record<string, unknown>;
+}
+
+function runtimeEventTaskId(event: Record<string, unknown> | null): string {
+  if (!event) return '';
+  const payload = asRecord(event.payload);
+  const metadata = asRecord(event.metadata);
+  return String(event.taskId || payload.taskId || metadata.taskId || '');
+}
+
+function runtimeEventProjectedTaskStatus(event: Record<string, unknown> | null): WorkbenchTaskStatus | null {
+  if (!event) return null;
+  const payload = asRecord(event.payload);
+  const metadata = asRecord(event.metadata);
+  const turn = asRecord(payload.turn);
+  const compatibility = asRecord(payload.compatibility);
+  const stopReason = asRecord(payload.stopReason);
+  const method = String(metadata.redouCodexMethod || '');
+  const type = String(event.type || '');
+
+  if (method === 'turn/started') return 'running';
+  if (method === 'turn/completed') {
+    const compatibilityStatus = String(metadata.redouCodexStopStatus || compatibility.status || stopReason.status || '');
+    if (compatibilityStatus === 'waiting_approval') return 'waiting_approval';
+    if (compatibilityStatus === 'incomplete') return 'degraded';
+    return mapTaskStatus(String(turn.status || payload.status || event.message || 'completed'));
+  }
+  if (type === 'runtime_error') return 'error';
+  if (type === 'queue_update') {
+    const queueState = String(metadata.queueState || payload.queueState || '');
+    if (queueState === 'started') return 'running';
+  }
+  return null;
+}
+
+function mergeRuntimeTaskRefresh(
+  state: WorkbenchState,
+  refreshedTask: WorkbenchTask,
+  projectedStatus: WorkbenchTaskStatus | null,
+  markUnread: boolean,
+): WorkbenchState {
+  const taskId = refreshedTask.id;
+  const location = findTaskLocation(state.data.projects, taskId);
+  const isOpen = state.selectedTask?.id === taskId || state.data.activeTask.id === taskId;
+  const nextTask: WorkbenchTask = {
+    ...(location?.task || {}),
+    ...refreshedTask,
+    ...(projectedStatus ? { status: projectedStatus } : {}),
+    unread: isOpen ? false : markUnread ? true : Boolean(location?.task.unread || refreshedTask.unread),
+  };
+  const data = location
+    ? updateTaskProjection(state.data, nextTask)
+    : { ...state.data, projects: insertTaskIntoProjects(state.data.projects, nextTask) };
+  return {
+    ...state,
+    selectedTask: state.selectedTask?.id === taskId ? nextTask : state.selectedTask,
+    data,
+  };
+}
+
+function shouldMarkRuntimeTaskUnread(state: WorkbenchState, taskId: string, status: WorkbenchTaskStatus | null) {
+  if (status !== 'completed') return false;
+  if (state.selectedTask?.id === taskId || state.data.activeTask.id === taskId) return false;
+  const location = findTaskLocation(state.data.projects, taskId);
+  return !location?.task.unread;
 }
 
 function upsertProject(projects: WorkbenchProject[], project: WorkbenchProject) {
@@ -789,14 +1078,79 @@ function replaceProject(projects: WorkbenchProject[], projectId: string, updater
   return projects.map((project) => (project.id === projectId ? updater(project) : project));
 }
 
+function reorderProjectsByIds(projects: WorkbenchProject[], orderedProjectIds: string[]) {
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const scopedIds = orderedProjectIds.filter((projectId, index, list) => (
+    projectById.has(projectId) && list.indexOf(projectId) === index
+  ));
+  if (scopedIds.length < 2) return projects;
+  const scopedSet = new Set(scopedIds);
+  const nextScopedIds = [...scopedIds];
+  const nextProjects = projects.map((project) => (
+    scopedSet.has(project.id) ? projectById.get(nextScopedIds.shift() || project.id) || project : project
+  ));
+  return nextProjects.map((project, index) => ({ ...project, sortOrder: index }));
+}
+
+function projectIdsChanged(left: WorkbenchProject[], right: WorkbenchProject[]) {
+  if (left.length !== right.length) return true;
+  return left.some((project, index) => project.id !== right[index]?.id);
+}
+
+function findTaskLocation(projects: WorkbenchProject[], taskId: string) {
+  for (const project of projects) {
+    const task = project.tasks.find((item) => item.id === taskId);
+    if (task) return { project, task };
+  }
+  return null;
+}
+
+function replaceTask(projects: WorkbenchProject[], taskId: string, updater: (task: WorkbenchTask, project: WorkbenchProject) => WorkbenchTask) {
+  return projects.map((project) => ({
+    ...project,
+    tasks: project.tasks.map((task) => (task.id === taskId ? updater(task, project) : task)).sort(compareTasks),
+  }));
+}
+
+function insertTaskIntoProjects(projects: WorkbenchProject[], task: WorkbenchTask) {
+  const projectId = task.projectId || projects[0]?.id || 'default-workspace';
+  const restoredTask = { ...task, projectId, archived: false, archivedAt: null };
+  let matched = false;
+  const nextProjects = projects.map((project) => {
+    if (project.id !== projectId) return project;
+    matched = true;
+    const tasks = project.tasks.some((item) => item.id === task.id)
+      ? project.tasks.map((item) => (item.id === task.id ? restoredTask : item))
+      : [restoredTask, ...project.tasks];
+    return { ...project, tasks: tasks.sort(compareTasks) };
+  });
+  if (matched) return nextProjects;
+  return [
+    {
+      id: projectId,
+      name: projectId,
+      tasks: [restoredTask],
+    },
+    ...nextProjects,
+  ];
+}
+
 function updateTaskProjection(data: WorkbenchMockData, updatedTask: WorkbenchTask): WorkbenchMockData {
   return {
     ...data,
     activeTask: data.activeTask.id === updatedTask.id ? { ...data.activeTask, ...updatedTask } : data.activeTask,
     projects: data.projects.map((project) => ({
       ...project,
-      tasks: project.tasks.map((task) => (task.id === updatedTask.id ? { ...task, ...updatedTask } : task)),
+      tasks: project.tasks.map((task) => (task.id === updatedTask.id ? { ...task, ...updatedTask } : task)).sort(compareTasks),
     })),
+  };
+}
+
+function updateTaskUnreadProjection(data: WorkbenchMockData, taskId: string, unread: boolean): WorkbenchMockData {
+  return {
+    ...data,
+    activeTask: data.activeTask.id === taskId ? { ...data.activeTask, unread } : data.activeTask,
+    projects: replaceTask(data.projects, taskId, (task) => ({ ...task, unread })),
   };
 }
 
@@ -812,6 +1166,26 @@ function updateQueuedMessageProjection(
       const next = updater(message);
       return next ? [next] : [];
     }),
+  };
+}
+
+function updateEditedUserPromptProjection(data: WorkbenchMockData, target: ComposerEditTarget, prompt: string): WorkbenchMockData {
+  const taskId = target.taskId || data.activeTask.id;
+  const updateTask = (task: WorkbenchTask) => ({
+    ...task,
+    userPrompt: prompt,
+    title: target.isInitialPrompt || shouldReplaceBlankTitle(task) ? titleFromPrompt(prompt) : task.title,
+  });
+  return {
+    ...data,
+    activeTask: data.activeTask.id === taskId ? updateTask(data.activeTask) : data.activeTask,
+    agentMessages: data.agentMessages.map((message) => (
+      message.id === target.messageId ? { ...message, body: prompt } : message
+    )),
+    projects: data.projects.map((project) => ({
+      ...project,
+      tasks: project.tasks.map((task) => (task.id === taskId ? updateTask(task) : task)).sort(compareTasks),
+    })),
   };
 }
 
@@ -834,6 +1208,39 @@ function taskForProject(state: WorkbenchState, projectId: string) {
   return project?.tasks.find((task) => task.id === state.data.activeTask.id) || project?.tasks[0] || null;
 }
 
+function taskConversationId(task: WorkbenchTask) {
+  return task.redouCodexThreadId || task.id;
+}
+
+function taskDeepLink(project: WorkbenchProject, task: WorkbenchTask) {
+  const params = new URLSearchParams({
+    projectId: project.id,
+    taskId: task.id,
+  });
+  return `redou-agent://thread/${encodeURIComponent(taskConversationId(task))}?${params.toString()}`;
+}
+
+function branchSlug(input: string) {
+  const cleaned = input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._/-]+/g, '-')
+    .replace(/\/+/g, '/')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  return cleaned || `conversation-${Date.now()}`;
+}
+
+async function writeClipboardText(text: string) {
+  const result = await redouApi.copyText(text);
+  if (result.ok) return null;
+  if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return null;
+  }
+  return result.error?.message || 'Failed to copy text';
+}
+
 export function getNextRightPanelState(
   state: Pick<WorkbenchState, 'activeRightPanel' | 'rightPanelOpen'>,
   panel: RightPanelId,
@@ -853,18 +1260,33 @@ export function getNextRightPanelState(
 
 export function useWorkbenchStore(): { state: WorkbenchState; actions: WorkbenchActions } {
   const [state, setState] = useState<WorkbenchState>(initialWorkbenchState);
+  const stateRef = useRef(state);
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  function persistTaskUnread(taskId: string, unread: boolean) {
+    if (!hasRealRedouApi()) return;
+    void redouApi.updateTask({ id: taskId, metadata: { unread } }).then((result) => {
+      const error = projectResultError(result, 'Failed to update read status');
+      if (!error) return;
+      setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+    });
+  }
 
   useEffect(() => {
     let cancelled = false;
     async function bootstrap() {
       if (!hasRealRedouApi()) return;
       try {
-        const [runtimes, availability, projectsResult, modelConfigResult, appSettingsResult] = await Promise.all([
+        const [runtimes, availability, projectsResult, modelConfigResult, appSettingsResult, archivedTasksResult] = await Promise.all([
           redouApi.listRuntimes(),
           redouApi.getRuntimeAvailability('redou-codex'),
           redouApi.listProjects(),
           redouApi.listModelConfigs(),
           redouApi.getAppSettings(),
+          redouApi.listArchivedTasks(),
         ]);
         const projects = (projectsResult.data || []) as Array<Record<string, unknown>>;
         const normalizedProjects = projects.length ? projects : [{ id: 'default-workspace', name: 'Default workspace' }];
@@ -872,17 +1294,35 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           const tasksResult = await redouApi.listTasks(String(project.id || ''));
           return ((tasksResult.data || []) as Array<Record<string, unknown>>).map(mapTask);
         }));
-        const activeProject = normalizedProjects[0];
-        const tasks = projectTasks[0] || [];
-        const activeTask = tasks[0] || null;
+        const route = initialRouteSelection();
+        const routeTaskProjectIndex = route.taskId
+          ? projectTasks.findIndex((tasks) => tasks.some((task) => task.id === route.taskId))
+          : -1;
+        const routeProjectIndex = route.projectId
+          ? normalizedProjects.findIndex((project) => String(project.id || '') === route.projectId)
+          : -1;
+        const activeProjectIndex = routeTaskProjectIndex >= 0
+          ? routeTaskProjectIndex
+          : routeProjectIndex >= 0
+            ? routeProjectIndex
+            : 0;
+        const activeProject = normalizedProjects[activeProjectIndex] || normalizedProjects[0];
+        const tasks = projectTasks[activeProjectIndex] || projectTasks[0] || [];
+        const activeTask = route.taskId ? tasks.find((task) => task.id === route.taskId) || tasks[0] || null : tasks[0] || null;
+        const openedActiveTask = activeTask?.unread ? { ...activeTask, unread: false } : activeTask;
         if (cancelled) return;
         const runtimeList = Array.isArray(runtimes.data) ? runtimes.data as Array<{ id?: string }> : [];
         const redouCodexDescriptor = runtimeList.find((runtime) => runtime.id === 'redou-codex') || null;
         const availabilityData = (availability.data || redouCodexDescriptor) as { available?: boolean; lastError?: { message?: string } } | null;
         const availabilityError = availabilityData?.lastError?.message || (!availability.ok ? availability.error?.message : null) || null;
         const activeProjectId = String(activeProject.id || 'default-workspace');
-        const displayTask = activeTask || createEmptyTask(activeProjectId);
-        const mappedProjects = normalizedProjects.map((project, index) => mapProject(project, projectTasks[index] || []));
+        const displayTask = openedActiveTask || createEmptyTask(activeProjectId);
+        let mappedProjects = normalizedProjects.map((project, index) => mapProject(project, projectTasks[index] || []));
+        if (activeTask?.unread) {
+          mappedProjects = updateTaskUnreadProjection({ ...initialWorkbenchData, projects: mappedProjects }, activeTask.id, false).projects;
+          persistTaskUnread(activeTask.id, false);
+        }
+        const archivedTasks = ((archivedTasksResult.data || []) as Array<Record<string, unknown>>).map(mapTask);
         const modelConfig = normalizeModelConfigSnapshot(modelConfigResult.data);
         const appSettings = normalizeAppSettingsSnapshot(appSettingsResult.data);
         const [gitDiffResult, artifactsResult] = await Promise.all([
@@ -892,6 +1332,8 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
         const gitDiff = gitDiffResult.ok && gitDiffResult.data ? gitDiffResult.data : null;
         const artifacts = artifactsResult.ok && artifactsResult.data ? artifactsResult.data.map(normalizeArtifactSnapshot) : [];
         if (cancelled) return;
+        const preferredPermissionMode = resolveComposerPermissionMode(appSettings);
+        writeStoredComposerPermissionMode(preferredPermissionMode);
         setState((current) => {
           const nextData: WorkbenchMockData = {
             ...current.data,
@@ -920,15 +1362,33 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
               source: availabilityError || 'redou-codex app-server',
             },
           };
-          const dataWithModelConfig = applyGitDiffToData(applyModelConfigToData(nextData, modelConfig), gitDiff);
+          const draftKey = taskDraftKey(activeProjectId, activeTask || displayTask);
+          const draft = current.conversationDrafts[draftKey] || emptyConversationDraft();
+          const dataWithModelConfig = applyConversationDraftToData(
+            applyGitDiffToData(applyModelConfigToData(applyComposerPermissionModeToData(nextData, preferredPermissionMode), modelConfig), gitDiff),
+            draft,
+          );
           return {
             ...current,
             apiMode: 'ipc',
             runtimeAvailability: availability.data || redouCodexDescriptor,
             runtimeError: availabilityError,
             modelConfig,
-            appSettings,
-            selectedTask: activeTask,
+            appSettings: {
+              ...appSettings,
+              composer: {
+                ...appSettings.composer,
+                permissionMode: preferredPermissionMode,
+              },
+            },
+            archivedTasks,
+            selectedTask: openedActiveTask,
+            composerInput: draft.input,
+            composerEditTarget: null,
+            conversationDrafts: {
+              ...current.conversationDrafts,
+              [draftKey]: draft,
+            },
             expandedProjectIds: activeProjectId ? [activeProjectId] : [],
             data: availabilityError ? appendRuntimeErrorLog(dataWithModelConfig, availabilityError) : dataWithModelConfig,
           };
@@ -941,10 +1401,12 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           apiMode: 'ipc',
           runtimeError: message,
           selectedTask: null,
-          data: appendRuntimeErrorLog({
+          composerInput: '',
+          composerEditTarget: null,
+          data: applyConversationDraftToData(appendRuntimeErrorLog({
             ...current.data,
             activeTask: createEmptyTask(current.data.activeProjectId),
-          }, message),
+          }, message), emptyConversationDraft()),
         }));
       }
     }
@@ -967,20 +1429,27 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
         redouApi.listArtifacts({ projectId, taskId }),
       ]);
       if (cancelled || !result.data) return;
-      const runtimeStatus = result.data.runtimeStatus as { lastError?: { message?: string } } | undefined;
+      const runtimeStatus = normalizeRuntimeStatus(result.data.runtimeStatus);
+      const projectedTaskStatus = runtimeStatus?.turnStatus ? mapTaskStatus(runtimeStatus.turnStatus) : null;
       const snapshotError = runtimeStatus?.lastError?.message || null;
       const refreshedTask = taskResult.ok && taskResult.data ? mapTask(taskResult.data as Record<string, unknown>) : null;
+      const projectedRefreshedTask = refreshedTask && projectedTaskStatus
+        ? { ...refreshedTask, status: projectedTaskStatus }
+        : refreshedTask;
+      const openedRefreshedTask = projectedRefreshedTask ? { ...projectedRefreshedTask, unread: false } : null;
+      if (projectedRefreshedTask?.unread) persistTaskUnread(taskId, false);
       const gitDiff = gitDiffResult.ok && gitDiffResult.data ? gitDiffResult.data : null;
       const artifacts = artifactsResult.ok && artifactsResult.data ? artifactsResult.data.map(normalizeArtifactSnapshot) : null;
       setState((current) => ({
         ...current,
-        selectedTask: refreshedTask && current.selectedTask?.id === taskId ? refreshedTask : current.selectedTask,
+        selectedTask: openedRefreshedTask && current.selectedTask?.id === taskId ? openedRefreshedTask : current.selectedTask,
         data: (() => {
-          const runtimeData = applyRuntimeSnapshotToData(current.data, result.data);
+          const taskData = openedRefreshedTask && current.data.activeTask.id === taskId
+            ? updateTaskProjection(current.data, openedRefreshedTask)
+            : current.data;
+          const runtimeData = applyRuntimeSnapshotToData(taskData, result.data);
           const artifactData = artifacts ? { ...runtimeData, mockArtifacts: artifacts } : runtimeData;
-          return refreshedTask && current.data.activeTask.id === taskId
-            ? applyGitDiffToData(updateTaskProjection(artifactData, refreshedTask), gitDiff)
-            : applyGitDiffToData(artifactData, gitDiff);
+          return applyGitDiffToData(artifactData, gitDiff);
         })(),
         runtimeError: snapshotError,
         redouCodexPlan: (result.data?.planEntries || []).map((entry) => ({
@@ -992,13 +1461,61 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
     };
     pullSnapshot();
     const timer = window.setInterval(pullSnapshot, 1000);
-    const unsubscribe = redouApi.subscribeEvents(taskId, () => pullSnapshot());
+    const unsubscribe = redouApi.subscribeEvents(taskId, (event) => {
+      const eventTaskId = runtimeEventTaskId(runtimeEventFromSubscription(event));
+      if (!eventTaskId || eventTaskId === taskId) void pullSnapshot();
+    });
     return () => {
       cancelled = true;
       window.clearInterval(timer);
       unsubscribe();
     };
   }, [state.selectedTask?.id, state.selectedTask?.projectId, state.data.activeProjectId]);
+
+  useEffect(() => {
+    if (!hasRealRedouApi()) return undefined;
+    let cancelled = false;
+    let timer: number | null = null;
+    const pendingTaskStatuses = new Map<string, WorkbenchTaskStatus | null>();
+
+    async function refreshPendingTasks() {
+      const entries = Array.from(pendingTaskStatuses.entries());
+      pendingTaskStatuses.clear();
+      await Promise.all(entries.map(async ([taskId, projectedStatus]) => {
+        const result = await redouApi.getTask(taskId);
+        if (cancelled || !result.ok || !result.data) return;
+        const refreshedTask = mapTask(result.data as Record<string, unknown>);
+        const status = projectedStatus || refreshedTask.status;
+        const current = stateRef.current;
+        const markUnread = shouldMarkRuntimeTaskUnread(current, taskId, status);
+        const shouldClearOpenUnread = Boolean((current.selectedTask?.id === taskId || current.data.activeTask.id === taskId) && refreshedTask.unread);
+        setState((snapshot) => mergeRuntimeTaskRefresh(snapshot, refreshedTask, projectedStatus, markUnread));
+        if (markUnread) persistTaskUnread(taskId, true);
+        if (shouldClearOpenUnread) persistTaskUnread(taskId, false);
+      }));
+    }
+
+    function scheduleTaskRefresh(taskId: string, projectedStatus: WorkbenchTaskStatus | null) {
+      pendingTaskStatuses.set(taskId, projectedStatus || pendingTaskStatuses.get(taskId) || null);
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void refreshPendingTasks();
+      }, 180);
+    }
+
+    const unsubscribe = redouApi.subscribeEvents(undefined, (payload) => {
+      const event = runtimeEventFromSubscription(payload);
+      const taskId = runtimeEventTaskId(event);
+      if (!taskId) return;
+      scheduleTaskRefresh(taskId, runtimeEventProjectedTaskStatus(event));
+    });
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+      unsubscribe();
+    };
+  }, []);
 
   const actions = useMemo<WorkbenchActions>(
     () => ({
@@ -1015,46 +1532,73 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
         }));
       },
       selectProject(projectId) {
+        const projectLocation = state.data.projects.find((item) => item.id === projectId);
+        const taskToMarkRead = projectLocation?.tasks[0];
+        if (taskToMarkRead?.unread) persistTaskUnread(taskToMarkRead.id, false);
         setState((current) => {
           const project = current.data.projects.find((item) => item.id === projectId);
           const task = project?.tasks[0] || null;
-          const displayTask = task || createEmptyTask(projectId);
+          const openedTask = task?.unread ? { ...task, unread: false } : task;
+          const displayTask = openedTask || createEmptyTask(projectId);
+          const nextDrafts = updateActiveConversationDraft(current, current.data, current.composerInput);
+          const targetDraftKey = taskDraftKey(projectId, openedTask || displayTask);
+          const targetDraft = nextDrafts[targetDraftKey] || emptyConversationDraft();
           return {
             ...current,
             activeView: 'thread',
-            selectedTask: task,
+            selectedTask: openedTask,
+            composerInput: targetDraft.input,
+            composerEditTarget: null,
+            conversationDrafts: {
+              ...nextDrafts,
+              [targetDraftKey]: targetDraft,
+            },
             expandedProjectIds: Array.from(new Set([...current.expandedProjectIds, projectId])),
-            data: {
+            data: activateConversationData({
               ...current.data,
+              projects: task?.unread ? updateTaskUnreadProjection(current.data, task.id, false).projects : current.data.projects,
               activeProjectId: projectId,
               activeTask: displayTask,
               composer: {
                 ...current.data.composer,
                 workspace: project?.name || current.data.composer.workspace,
               },
-            },
+            }, targetDraft),
           };
         });
       },
       selectTask(taskId) {
+        const taskToMarkRead = findTaskLocation(state.data.projects, taskId)?.task;
+        if (taskToMarkRead?.unread) persistTaskUnread(taskId, false);
         setState((current) => {
           for (const project of current.data.projects) {
             const task = project.tasks.find((item) => item.id === taskId);
             if (task) {
+              const openedTask = task.unread ? { ...task, unread: false } : task;
+              const nextDrafts = updateActiveConversationDraft(current, current.data, current.composerInput);
+              const targetDraftKey = taskDraftKey(project.id, openedTask);
+              const targetDraft = nextDrafts[targetDraftKey] || emptyConversationDraft();
               return {
                 ...current,
                 activeView: 'thread',
-                selectedTask: task,
+                selectedTask: openedTask,
+                composerInput: targetDraft.input,
+                composerEditTarget: null,
+                conversationDrafts: {
+                  ...nextDrafts,
+                  [targetDraftKey]: targetDraft,
+                },
                 expandedProjectIds: Array.from(new Set([...current.expandedProjectIds, project.id])),
-                data: {
+                data: activateConversationData({
                   ...current.data,
+                  projects: task.unread ? updateTaskUnreadProjection(current.data, task.id, false).projects : current.data.projects,
                   activeProjectId: project.id,
-                  activeTask: task,
+                  activeTask: openedTask,
                   composer: {
                     ...current.data.composer,
                     workspace: project.name,
                   },
-                },
+                }, targetDraft),
               };
             }
           }
@@ -1073,6 +1617,14 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           expandedProjectIds: [],
         }));
       },
+      toggleProjectExpanded(projectId) {
+        setState((current) => ({
+          ...current,
+          expandedProjectIds: current.expandedProjectIds.includes(projectId)
+            ? current.expandedProjectIds.filter((id) => id !== projectId)
+            : Array.from(new Set([...current.expandedProjectIds, projectId])),
+        }));
+      },
       async createConversationInProject(projectId) {
         const localProject = state.data.projects.find((project) => project.id === projectId);
         if (!localProject) return;
@@ -1082,9 +1634,14 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
             ...current,
             activeView: 'thread',
             selectedTask: task,
+            composerInput: '',
+            conversationDrafts: {
+              ...updateActiveConversationDraft(current, current.data, current.composerInput),
+              [taskDraftKey(projectId, task)]: emptyConversationDraft(),
+            },
             runtimeError: null,
             expandedProjectIds: Array.from(new Set([...current.expandedProjectIds, projectId])),
-            data: resetThreadProjection({
+            data: activateConversationData({
               ...current.data,
               activeProjectId: projectId,
               activeTask: task,
@@ -1116,13 +1673,20 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
         const task = mapTask(created.data as Record<string, unknown>);
         setState((current) => {
           const project = current.data.projects.find((item) => item.id === projectId);
+          const targetDraftKey = taskDraftKey(projectId, task);
+          const targetDraft = emptyConversationDraft();
           return {
             ...current,
             activeView: 'thread',
             selectedTask: task,
+            composerInput: '',
+            conversationDrafts: {
+              ...updateActiveConversationDraft(current, current.data, current.composerInput),
+              [targetDraftKey]: targetDraft,
+            },
             runtimeError: null,
             expandedProjectIds: Array.from(new Set([...current.expandedProjectIds, projectId])),
-            data: resetThreadProjection({
+            data: activateConversationData({
               ...current.data,
               activeProjectId: projectId,
               activeTask: task,
@@ -1134,7 +1698,7 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
                 ...current.data.composer,
                 workspace: project?.name || localProject.name,
               },
-            }),
+            }, targetDraft),
           };
         });
       },
@@ -1151,9 +1715,14 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           ...current,
           activeView: 'thread',
           selectedTask: null,
+          composerInput: '',
+          conversationDrafts: {
+            ...updateActiveConversationDraft(current, current.data, current.composerInput),
+            [taskDraftKey(project.id, displayTask)]: emptyConversationDraft(),
+          },
           runtimeError: null,
           expandedProjectIds: Array.from(new Set([project.id, ...current.expandedProjectIds])),
-          data: {
+          data: activateConversationData({
             ...current.data,
             projects: upsertProject(current.data.projects, project),
             activeProjectId: project.id,
@@ -1162,7 +1731,7 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
               ...current.data.composer,
               workspace: project.name,
             },
-          },
+          }),
         }));
       },
       async createProjectFromFolder() {
@@ -1175,13 +1744,20 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
         if (!result.data) return;
         const project = mapProject(result.data as Record<string, unknown>, []);
         const displayTask = project.tasks[0] || createEmptyTask(project.id);
+        const targetDraftKey = taskDraftKey(project.id, project.tasks[0] || displayTask);
+        const targetDraft = emptyConversationDraft();
         setState((current) => ({
           ...current,
           activeView: 'thread',
           selectedTask: project.tasks[0] || null,
+          composerInput: targetDraft.input,
+          conversationDrafts: {
+            ...updateActiveConversationDraft(current, current.data, current.composerInput),
+            [targetDraftKey]: targetDraft,
+          },
           runtimeError: null,
           expandedProjectIds: Array.from(new Set([project.id, ...current.expandedProjectIds])),
-          data: {
+          data: activateConversationData({
             ...current.data,
             projects: upsertProject(current.data.projects, project),
             activeProjectId: project.id,
@@ -1190,7 +1766,7 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
               ...current.data.composer,
               workspace: project.name,
             },
-          },
+          }, targetDraft),
         }));
       },
       async toggleProjectPinned(projectId) {
@@ -1212,6 +1788,26 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
             projects: replaceProject(current.data.projects, projectId, (item) => ({ ...item, pinned })),
           },
         }));
+      },
+      async reorderProjects(orderedProjectIds) {
+        const nextProjects = reorderProjectsByIds(state.data.projects, orderedProjectIds);
+        if (!projectIdsChanged(state.data.projects, nextProjects)) return;
+        setState((current) => ({
+          ...current,
+          data: {
+            ...current.data,
+            projects: reorderProjectsByIds(current.data.projects, orderedProjectIds),
+          },
+        }));
+        if (!hasRealRedouApi()) return;
+        const results = await Promise.all(nextProjects.map((project, index) => (
+          redouApi.updateProject({ id: project.id, metadata: { sortOrder: index } })
+        )));
+        const failed = results.find((result) => !result.ok);
+        if (failed) {
+          const error = projectResultError(failed, 'Failed to reorder projects');
+          if (error) setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+        }
       },
       async openProjectFolder(projectId) {
         const project = state.data.projects.find((item) => item.id === projectId);
@@ -1268,19 +1864,351 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           const activeTask = current.data.activeTask.id === task.id
             ? nextTask || createEmptyTask(projectId)
             : current.data.activeTask;
+          const nextDrafts = updateActiveConversationDraft(current, current.data, current.composerInput);
+          const targetDraftKey = taskDraftKey(projectId, nextTask || activeTask);
+          const targetDraft = nextDrafts[targetDraftKey] || emptyConversationDraft();
           return {
             ...current,
             selectedTask: archivedSelectedTask ? nextTask : current.selectedTask,
-            data: resetThreadProjection({
+            composerInput: targetDraft.input,
+            conversationDrafts: {
+              ...nextDrafts,
+              [targetDraftKey]: targetDraft,
+            },
+            data: activateConversationData({
               ...current.data,
               activeTask,
               projects: replaceProject(current.data.projects, projectId, (project) => ({
                 ...project,
                 tasks: project.tasks.filter((item) => item.id !== task.id),
               })),
-            }),
+            }, targetDraft),
           };
         });
+      },
+      async toggleTaskPinned(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        if (!location) return;
+        const pinned = !location.task.pinned;
+        if (hasRealRedouApi()) {
+          const result = await redouApi.updateTask({ id: taskId, metadata: { pinned } });
+          const error = projectResultError(result, 'Failed to update conversation');
+          if (error) {
+            setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+            return;
+          }
+        }
+        setState((current) => ({
+          ...current,
+          selectedTask: current.selectedTask?.id === taskId ? { ...current.selectedTask, pinned } : current.selectedTask,
+          data: {
+            ...current.data,
+            activeTask: current.data.activeTask.id === taskId ? { ...current.data.activeTask, pinned } : current.data.activeTask,
+            projects: replaceTask(current.data.projects, taskId, (task) => ({ ...task, pinned })),
+          },
+        }));
+      },
+      async renameTaskConversation(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        if (!location) return;
+        const name = window.prompt('对话名称', location.task.title);
+        if (name === null) return;
+        const trimmed = name.trim();
+        if (!trimmed || trimmed === location.task.title) return;
+        if (hasRealRedouApi()) {
+          const result = await redouApi.updateTask({ id: taskId, title: trimmed });
+          const error = projectResultError(result, 'Failed to rename conversation');
+          if (error) {
+            setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+            return;
+          }
+        }
+        setState((current) => ({
+          ...current,
+          selectedTask: current.selectedTask?.id === taskId ? { ...current.selectedTask, title: trimmed } : current.selectedTask,
+          data: updateTaskProjection(current.data, { ...location.task, title: trimmed }),
+        }));
+      },
+      async archiveTaskConversation(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        if (!location) return;
+        if (hasRealRedouApi()) {
+          const result = await redouApi.archiveTask(taskId);
+          const error = projectResultError(result, 'Failed to archive conversation');
+          if (error) {
+            setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+            return;
+          }
+        }
+        setState((current) => {
+          const currentProject = current.data.projects.find((project) => project.tasks.some((task) => task.id === taskId));
+          if (!currentProject) return current;
+          const remainingTasks = currentProject.tasks.filter((item) => item.id !== taskId);
+          const archivedSelectedTask = current.selectedTask?.id === taskId;
+          const nextTask = archivedSelectedTask ? firstProjectTask({ ...currentProject, tasks: remainingTasks }) : current.selectedTask;
+          const activeTask = current.data.activeTask.id === taskId
+            ? nextTask || createEmptyTask(currentProject.id)
+            : current.data.activeTask;
+          const nextDrafts = updateActiveConversationDraft(current, current.data, current.composerInput);
+          const targetDraftKey = taskDraftKey(currentProject.id, nextTask || activeTask);
+          const targetDraft = nextDrafts[targetDraftKey] || emptyConversationDraft();
+          return {
+            ...current,
+            selectedTask: archivedSelectedTask ? nextTask : current.selectedTask,
+            composerInput: targetDraft.input,
+            conversationDrafts: {
+              ...nextDrafts,
+              [targetDraftKey]: targetDraft,
+            },
+            data: activateConversationData({
+              ...current.data,
+              activeTask,
+              projects: replaceProject(current.data.projects, currentProject.id, (project) => ({
+                ...project,
+                tasks: project.tasks.filter((item) => item.id !== taskId),
+              })),
+            }, targetDraft),
+          };
+        });
+      },
+      async reloadArchivedTasks() {
+        if (!hasRealRedouApi()) return;
+        const result = await redouApi.listArchivedTasks();
+        if (!result.ok) {
+          const error = result.error?.message || 'Failed to load archived conversations';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+          return;
+        }
+        const archivedTasks = ((result.data || []) as Array<Record<string, unknown>>).map(mapTask);
+        setState((current) => ({ ...current, archivedTasks }));
+      },
+      async restoreArchivedTask(taskId) {
+        const archivedTask = state.archivedTasks.find((task) => task.id === taskId);
+        if (!archivedTask) return;
+        let restoredTask = { ...archivedTask, archived: false, archivedAt: null };
+        if (hasRealRedouApi()) {
+          const result = await redouApi.restoreTask(taskId);
+          const error = projectResultError(result, 'Failed to restore conversation');
+          if (error) {
+            setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+            return;
+          }
+          if (result.data) restoredTask = mapTask(result.data as Record<string, unknown>);
+        }
+        setState((current) => ({
+          ...current,
+          archivedTasks: current.archivedTasks.filter((task) => task.id !== taskId),
+          expandedProjectIds: Array.from(new Set([...current.expandedProjectIds, restoredTask.projectId || current.data.activeProjectId])),
+          data: {
+            ...current.data,
+            projects: insertTaskIntoProjects(current.data.projects, restoredTask),
+          },
+        }));
+      },
+      async deleteArchivedTask(taskId) {
+        const archivedTask = state.archivedTasks.find((task) => task.id === taskId);
+        if (!archivedTask) return;
+        const confirmed = window.confirm(`永久删除已归档对话“${archivedTask.title}”？此操作不可撤销。`);
+        if (!confirmed) return;
+        if (hasRealRedouApi()) {
+          const result = await redouApi.removeTask(taskId);
+          const error = projectResultError(result, 'Failed to delete archived conversation');
+          if (error) {
+            setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+            return;
+          }
+        }
+        setState((current) => ({
+          ...current,
+          archivedTasks: current.archivedTasks.filter((task) => task.id !== taskId),
+        }));
+      },
+      async deleteAllArchivedTasks() {
+        if (!state.archivedTasks.length) return;
+        const confirmed = window.confirm(`永久删除 ${state.archivedTasks.length} 个已归档对话？此操作不可撤销。`);
+        if (!confirmed) return;
+        if (hasRealRedouApi()) {
+          for (const task of state.archivedTasks) {
+            const result = await redouApi.removeTask(task.id);
+            const error = projectResultError(result, 'Failed to delete archived conversations');
+            if (error) {
+              setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+              return;
+            }
+          }
+        }
+        setState((current) => ({ ...current, archivedTasks: [] }));
+      },
+      async toggleTaskUnread(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        if (!location) return;
+        const unread = !location.task.unread;
+        if (hasRealRedouApi()) {
+          const result = await redouApi.updateTask({ id: taskId, metadata: { unread } });
+          const error = projectResultError(result, 'Failed to update read status');
+          if (error) {
+            setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+            return;
+          }
+        }
+        setState((current) => ({
+          ...current,
+          selectedTask: current.selectedTask?.id === taskId ? { ...current.selectedTask, unread } : current.selectedTask,
+          data: {
+            ...current.data,
+            activeTask: current.data.activeTask.id === taskId ? { ...current.data.activeTask, unread } : current.data.activeTask,
+            projects: replaceTask(current.data.projects, taskId, (task) => ({ ...task, unread })),
+          },
+        }));
+      },
+      async openTaskWorkspace(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        if (!location?.project.rootPath) return;
+        const result = await redouApi.openProjectFolder(location.project.id);
+        const error = projectResultError(result, 'Failed to open project folder');
+        if (error) {
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+        }
+      },
+      async copyTaskWorkspace(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        const rootPath = location?.project.rootPath || '';
+        if (!rootPath) return;
+        const error = await writeClipboardText(rootPath);
+        if (error) setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+      },
+      async copyTaskConversationId(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        if (!location) return;
+        const error = await writeClipboardText(taskConversationId(location.task));
+        if (error) setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+      },
+      async copyTaskDeepLink(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        if (!location) return;
+        const error = await writeClipboardText(taskDeepLink(location.project, location.task));
+        if (error) setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+      },
+      async forkTaskToLocal(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        if (!location) return;
+        const result = await redouApi.forkTask({
+          taskId,
+          projectId: location.project.id,
+          cwd: location.project.rootPath,
+          mode: 'local',
+        });
+        const error = actionResultError(result, 'Failed to fork conversation');
+        if (error || !result.data) {
+          setState((current) => ({ ...current, runtimeError: error || 'Failed to fork conversation', data: appendRuntimeErrorLog(current.data, error || 'Failed to fork conversation') }));
+          return;
+        }
+        const task = mapTask((result.data as { task?: Record<string, unknown> }).task || (result.data as Record<string, unknown>));
+        setState((current) => {
+          const targetDraftKey = taskDraftKey(location.project.id, task);
+          const targetDraft = emptyConversationDraft();
+          return {
+            ...current,
+            activeView: 'thread',
+            selectedTask: task,
+            composerInput: '',
+            conversationDrafts: {
+              ...updateActiveConversationDraft(current, current.data, current.composerInput),
+              [targetDraftKey]: targetDraft,
+            },
+            runtimeError: null,
+            expandedProjectIds: Array.from(new Set([...current.expandedProjectIds, location.project.id])),
+            data: activateConversationData({
+              ...current.data,
+              activeProjectId: location.project.id,
+              activeTask: task,
+              projects: replaceProject(current.data.projects, location.project.id, (project) => ({
+                ...project,
+                tasks: [task, ...project.tasks.filter((existing) => existing.id !== task.id)].sort(compareTasks),
+              })),
+              composer: {
+                ...current.data.composer,
+                workspace: location.project.name,
+              },
+            }, targetDraft),
+          };
+        });
+      },
+      async forkTaskToNewWorktree(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        if (!location?.project.rootPath) return;
+        const defaultBranch = `codex/${branchSlug(location.task.title)}`;
+        const branchName = window.prompt('新工作树分支名', defaultBranch)?.trim();
+        if (!branchName) return;
+        const worktreeResult = await redouApi.createWorktree({
+          projectId: location.project.id,
+          branchName,
+          base: 'HEAD',
+        });
+        const worktreeError = actionResultError(worktreeResult, 'Failed to create worktree');
+        if (worktreeError || !worktreeResult.data) {
+          setState((current) => ({ ...current, runtimeError: worktreeError || 'Failed to create worktree', data: appendRuntimeErrorLog(current.data, worktreeError || 'Failed to create worktree') }));
+          return;
+        }
+        const created = (worktreeResult.data as { created?: { path?: string; project?: Record<string, unknown> } }).created || {};
+        const project = created.project ? mapProject(created.project, []) : {
+          ...location.project,
+          id: `${location.project.id}:${branchName}`,
+          name: branchName,
+          rootPath: created.path || location.project.rootPath,
+          tasks: [],
+        };
+        const forkResult = await redouApi.forkTask({
+          taskId,
+          projectId: project.id,
+          cwd: project.rootPath,
+          mode: 'worktree',
+          metadata: { worktreeBranch: branchName },
+        });
+        const forkError = actionResultError(forkResult, 'Failed to fork conversation into worktree');
+        if (forkError || !forkResult.data) {
+          setState((current) => ({
+            ...current,
+            runtimeError: forkError || 'Failed to fork conversation into worktree',
+            data: appendRuntimeErrorLog({ ...current.data, projects: upsertProject(current.data.projects, project) }, forkError || 'Failed to fork conversation into worktree'),
+          }));
+          return;
+        }
+        const task = mapTask((forkResult.data as { task?: Record<string, unknown> }).task || (forkResult.data as Record<string, unknown>));
+        const projectWithTask = { ...project, tasks: [task] };
+        setState((current) => {
+          const targetDraftKey = taskDraftKey(project.id, task);
+          const targetDraft = emptyConversationDraft();
+          return {
+            ...current,
+            activeView: 'thread',
+            selectedTask: task,
+            composerInput: '',
+            conversationDrafts: {
+              ...updateActiveConversationDraft(current, current.data, current.composerInput),
+              [targetDraftKey]: targetDraft,
+            },
+            runtimeError: null,
+            expandedProjectIds: Array.from(new Set([project.id, ...current.expandedProjectIds])),
+            data: activateConversationData({
+              ...current.data,
+              projects: upsertProject(current.data.projects, projectWithTask),
+              activeProjectId: project.id,
+              activeTask: task,
+              composer: {
+                ...current.data.composer,
+                workspace: project.name,
+              },
+            }, targetDraft),
+          };
+        });
+      },
+      async openTaskInNewWindow(taskId) {
+        const location = findTaskLocation(state.data.projects, taskId);
+        if (!location) return;
+        const result = await redouApi.openAppWindow({ projectId: location.project.id, taskId });
+        const error = actionResultError(result, 'Failed to open conversation in a new window');
+        if (error) setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
       },
       async removeProject(projectId) {
         const project = state.data.projects.find((item) => item.id === projectId);
@@ -1300,27 +2228,44 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           const removedActiveProject = current.data.activeProjectId === projectId;
           const nextProject = removedActiveProject ? projects[0] || null : current.data.projects.find((item) => item.id === current.data.activeProjectId) || null;
           const nextTask = removedActiveProject ? firstProjectTask(nextProject) : current.selectedTask;
+          const activeTask = nextTask || createEmptyTask(nextProject?.id);
+          const nextDrafts = updateActiveConversationDraft(current, current.data, current.composerInput);
+          const targetDraftKey = taskDraftKey(nextProject?.id, nextTask || activeTask);
+          const targetDraft = nextDrafts[targetDraftKey] || emptyConversationDraft();
           return {
             ...current,
             selectedTask: nextTask,
+            composerInput: targetDraft.input,
+            conversationDrafts: {
+              ...nextDrafts,
+              [targetDraftKey]: targetDraft,
+            },
             expandedProjectIds: current.expandedProjectIds.filter((id) => id !== projectId),
-            data: resetThreadProjection({
+            data: activateConversationData({
               ...current.data,
               projects,
               activeProjectId: nextProject?.id || '',
-              activeTask: nextTask || createEmptyTask(nextProject?.id),
+              activeTask,
               composer: {
                 ...current.data.composer,
                 workspace: nextProject?.name || current.data.composer.workspace,
               },
-            }),
+            }, targetDraft),
           };
         });
       },
       setComposerPermissionMode(mode) {
         const option = getPermissionModeOption(mode);
+        writeStoredComposerPermissionMode(mode);
         setState((current) => ({
           ...current,
+          appSettings: {
+            ...current.appSettings,
+            composer: {
+              ...current.appSettings.composer,
+              permissionMode: mode,
+            },
+          },
           data: {
             ...current.data,
             composer: {
@@ -1330,6 +2275,13 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
             },
           },
         }));
+        if (hasRealRedouApi()) {
+          void redouApi.updateAppSettings({ patch: { composer: { permissionMode: mode } } }).then((result) => {
+            if (result.ok) return;
+            const error = result.error?.message || 'Failed to save permission preference';
+            setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorLog(current.data, error) }));
+          });
+        }
       },
       async reloadModelConfigs() {
         const result = await redouApi.listModelConfigs();
@@ -1423,34 +2375,86 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           return;
         }
         if (result.data.canceled || !result.data.items.length) return;
-        setState((current) => ({
-          ...current,
-          runtimeError: null,
-          activeRightPanel: 'context',
-          rightPanelOpen: true,
-          data: addContextItemsToData(current.data, result.data?.items || []),
-        }));
+        setState((current) => {
+          const nextData = addContextItemsToData(current.data, result.data?.items || []);
+          return {
+            ...current,
+            runtimeError: null,
+            activeRightPanel: 'context',
+            rightPanelOpen: true,
+            conversationDrafts: updateActiveConversationDraft(current, nextData, current.composerInput),
+            data: nextData,
+          };
+        });
       },
       async addDroppedContextFiles(files) {
         const items = droppedContextItems(files);
         if (!items.length) return;
-        setState((current) => ({
-          ...current,
-          activeRightPanel: 'context',
-          rightPanelOpen: true,
-          data: addContextItemsToData(current.data, items),
-        }));
+        setState((current) => {
+          const nextData = addContextItemsToData(current.data, items);
+          return {
+            ...current,
+            activeRightPanel: 'context',
+            rightPanelOpen: true,
+            conversationDrafts: updateActiveConversationDraft(current, nextData, current.composerInput),
+            data: nextData,
+          };
+        });
       },
       removeContextItem(path) {
-        setState((current) => ({
-          ...current,
-          data: removeContextItemFromData(current.data, path),
-        }));
+        setState((current) => {
+          const nextData = removeContextItemFromData(current.data, path);
+          return {
+            ...current,
+            conversationDrafts: updateActiveConversationDraft(current, nextData, current.composerInput),
+            data: nextData,
+          };
+        });
       },
       clearContext() {
+        setState((current) => {
+          const nextData = clearContextFromData(current.data);
+          return {
+            ...current,
+            conversationDrafts: updateActiveConversationDraft(current, nextData, current.composerInput),
+            data: nextData,
+          };
+        });
+      },
+      setComposerInput(input) {
         setState((current) => ({
           ...current,
-          data: clearContextFromData(current.data),
+          composerInput: input,
+          conversationDrafts: {
+            ...current.conversationDrafts,
+            [activeConversationDraftKey(current)]: conversationDraftFromData(current.data, input),
+          },
+        }));
+      },
+      startComposerEdit(target) {
+        setState((current) => ({
+          ...current,
+          composerInput: target.prompt,
+          composerEditTarget: {
+            ...target,
+            taskId: target.taskId || current.selectedTask?.id || current.data.activeTask.id,
+          },
+          conversationDrafts: {
+            ...current.conversationDrafts,
+            [activeConversationDraftKey(current)]: conversationDraftFromData(current.data, target.prompt),
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('redou:focus-composer'));
+      },
+      cancelComposerEdit() {
+        setState((current) => ({
+          ...current,
+          composerInput: '',
+          composerEditTarget: null,
+          conversationDrafts: {
+            ...current.conversationDrafts,
+            [activeConversationDraftKey(current)]: conversationDraftFromData(current.data, ''),
+          },
         }));
       },
       async generateImageArtifact(prompt) {
@@ -1574,20 +2578,21 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
       async submitComposer(input, options) {
         const trimmed = input.trim();
         if (!trimmed) return;
-        const permissionMode = options?.permissionMode || state.data.composer.permissionMode || 'default';
+        const permissionMode = options?.permissionMode || state.data.composer.permissionMode || defaultComposerPermissionMode;
         const permissionPolicy = options?.permissionPolicy || createPermissionPolicy(permissionMode);
         const modelSelection = options?.modelSelection || state.data.composer.modelSelection || state.modelConfig.selected || null;
         const reasoningEffort = options?.reasoningEffort || state.data.composer.reasoningEffort;
         const deliveryMode = options?.deliveryMode || 'auto';
+        const editTarget = options?.editTarget || state.composerEditTarget;
         const contextPackage = await buildContextPackageForTurn(state, trimmed);
-        const turnOptions = { permissionPolicy, modelSelection, reasoningEffort, contextPackage };
+        const turnOptions = { permissionMode, permissionPolicy, modelSelection, reasoningEffort, contextPackage };
         if (!hasRealRedouApi()) {
           setState((current) => ({
             ...current,
             runtimeError: 'Electron preload API is not available.',
             data: appendRuntimeErrorFeedback(current.data, 'Electron preload API is not available.'),
           }));
-          return;
+          return false;
         }
         const currentTask = state.selectedTask;
         if (!currentTask) {
@@ -1607,12 +2612,17 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           setState((current) => ({
             ...current,
             selectedTask: task,
+            composerInput: current.composerInput,
+            conversationDrafts: {
+              ...updateActiveConversationDraft(current, current.data, current.composerInput),
+              [taskDraftKey(projectId, task)]: conversationDraftFromData(current.data, current.composerInput),
+            },
             expandedProjectIds: Array.from(new Set([...current.expandedProjectIds, projectId])),
-            data: {
+            data: activateConversationData({
               ...current.data,
               activeTask: task,
               projects: current.data.projects.map((project) => project.id === projectId ? { ...project, tasks: [task, ...project.tasks] } : project),
-            },
+            }, conversationDraftFromData(current.data, current.composerInput)),
           }));
           const started = await redouApi.startTask(task.id, { userInput: trimmed, ...turnOptions });
           const startError = runtimeResultError(started, 'Failed to start task');
@@ -1633,52 +2643,134 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           }
           return;
         }
-        const taskWithInput = currentTask.status === 'running'
-          ? currentTask
+        const isEditingCurrentTask = Boolean(editTarget && (!editTarget.taskId || editTarget.taskId === currentTask.id));
+        if (editTarget && !isEditingCurrentTask) {
+          const error = 'Cannot edit a message from another conversation.';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorFeedback(current.data, error) }));
+          return false;
+        }
+        if (isEditingCurrentTask && currentTask.status === 'running') {
+          const error = '正在执行时不能编辑已发送消息，请先停止当前任务。';
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorFeedback(current.data, error) }));
+          return false;
+        }
+
+        let baseTask = currentTask;
+        if (isEditingCurrentTask && editTarget) {
+          const title = editTarget.isInitialPrompt || shouldReplaceBlankTitle(currentTask) ? titleFromPrompt(trimmed) : currentTask.title;
+          const editedAt = new Date().toISOString();
+          const updateResult = await redouApi.updateTask({
+            id: currentTask.id,
+            userInput: trimmed,
+            title,
+            metadata: {
+              editedUserMessageId: editTarget.messageId,
+              editedSourceEventId: editTarget.sourceEventId || null,
+              editedTurnId: editTarget.turnId || null,
+              editedAt,
+            },
+          });
+          const updateError = actionResultError(updateResult, 'Failed to edit message');
+          if (updateError || !updateResult.data) {
+            const error = updateError || 'Failed to edit message';
+            setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorFeedback(current.data, error) }));
+            return false;
+          }
+          baseTask = mapTask(updateResult.data as Record<string, unknown>);
+        }
+
+        const taskWithInput = baseTask.status === 'running'
+          ? baseTask
           : {
-              ...currentTask,
-              title: shouldReplaceBlankTitle(currentTask) ? titleFromPrompt(trimmed) : currentTask.title,
-              userPrompt: currentTask.userPrompt || trimmed,
+              ...baseTask,
+              title: shouldReplaceBlankTitle(baseTask) ? titleFromPrompt(trimmed) : baseTask.title,
+              userPrompt: isEditingCurrentTask ? trimmed : baseTask.userPrompt || trimmed,
             };
-        const result = currentTask.status === 'running'
+        const startPayload = {
+          userInput: trimmed,
+          ...turnOptions,
+          ...(isEditingCurrentTask && editTarget
+            ? { userMessageId: editTarget.messageId, deliveryMode: 'new_turn' }
+            : {}),
+        };
+        const result = baseTask.status === 'running'
           ? deliveryMode === 'guide'
-            ? await redouApi.steerTask(currentTask.id, trimmed, turnOptions)
-            : await redouApi.queueTask(currentTask.id, trimmed, turnOptions)
-          : await redouApi.startTask(currentTask.id, { userInput: trimmed, ...turnOptions });
+            ? await redouApi.steerTask(baseTask.id, trimmed, turnOptions)
+            : await redouApi.queueTask(baseTask.id, trimmed, turnOptions)
+          : await redouApi.startTask(baseTask.id, startPayload);
         const runtimeError = runtimeResultError(result, 'Runtime request failed');
         if (runtimeError) {
           const erroredTask = { ...taskWithInput, status: 'error' as WorkbenchTaskStatus };
           setState((current) => ({
             ...current,
             runtimeError,
-            selectedTask: current.selectedTask?.id === currentTask.id ? erroredTask : current.selectedTask,
-            data: appendRuntimeErrorFeedback(updateTaskProjection({
-              ...current.data,
-              activeTask: current.data.activeTask.id === currentTask.id ? erroredTask : current.data.activeTask,
-            }, erroredTask), runtimeError),
+            selectedTask: current.selectedTask?.id === baseTask.id ? erroredTask : current.selectedTask,
+            data: appendRuntimeErrorFeedback(updateTaskProjection(
+              isEditingCurrentTask && editTarget ? updateEditedUserPromptProjection(current.data, editTarget, trimmed) : current.data,
+              erroredTask,
+            ), runtimeError),
           }));
-        } else if (currentTask.status === 'running' && deliveryMode !== 'guide') {
-          const queueDepth = Number((result.data as { queueDepth?: number } | null)?.queueDepth || currentTask.queueDepth || 0);
-          const queuedTask = { ...currentTask, queueDepth };
+          if (isEditingCurrentTask) return false;
+        } else if (baseTask.status === 'running' && deliveryMode !== 'guide') {
+          const queueDepth = Number((result.data as { queueDepth?: number } | null)?.queueDepth || baseTask.queueDepth || 0);
+          const queuedTask = { ...baseTask, queueDepth };
           setState((current) => ({
             ...current,
-            selectedTask: current.selectedTask?.id === currentTask.id ? queuedTask : current.selectedTask,
+            selectedTask: current.selectedTask?.id === baseTask.id ? queuedTask : current.selectedTask,
             data: updateTaskProjection(current.data, queuedTask),
           }));
-        } else if (currentTask.status !== 'running') {
+        } else if (baseTask.status !== 'running') {
+          const runningTask = { ...taskWithInput, status: 'running' as WorkbenchTaskStatus };
           setState((current) => ({
             ...current,
-            selectedTask: { ...taskWithInput, status: 'running' },
-            data: {
-              ...current.data,
-              activeTask: { ...taskWithInput, status: 'running' },
-              projects: current.data.projects.map((project) => ({
-                ...project,
-                tasks: project.tasks.map((task) => task.id === currentTask.id ? { ...taskWithInput, status: 'running' } : task),
-              })),
-            },
+            composerEditTarget: null,
+            selectedTask: runningTask,
+            data: updateTaskProjection(
+              isEditingCurrentTask && editTarget ? updateEditedUserPromptProjection(current.data, editTarget, trimmed) : current.data,
+              runningTask,
+            ),
           }));
         }
+      },
+      async stopActiveTask() {
+        const currentTask = state.selectedTask || state.data.activeTask;
+        if (!currentTask || currentTask.status !== 'running') return;
+        if (!hasRealRedouApi()) {
+          const error = 'Electron preload API is not available.';
+          setState((current) => ({
+            ...current,
+            runtimeError: error,
+            data: appendRuntimeErrorFeedback(current.data, error),
+          }));
+          return;
+        }
+        const result = await redouApi.interruptTask(currentTask.id);
+        const error = actionResultError(result, 'Failed to stop task');
+        if (error) {
+          setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorFeedback(current.data, error) }));
+          return;
+        }
+        const stoppedTask = { ...currentTask, status: 'interrupted' as WorkbenchTaskStatus };
+        setState((current) => ({
+          ...current,
+          runtimeError: null,
+          selectedTask: current.selectedTask?.id === currentTask.id ? { ...current.selectedTask, status: 'interrupted' } : current.selectedTask,
+          data: updateTaskProjection({
+            ...current.data,
+            runtimeStatus: current.data.activeTask.id === currentTask.id
+              ? {
+                  ...(current.data.runtimeStatus || {}),
+                  turnStatus: 'interrupted',
+                  rawTurnStatus: 'interrupted',
+                  stopReason: {
+                    ...(current.data.runtimeStatus?.stopReason || {}),
+                    status: 'interrupted',
+                    message: 'Stopped by user.',
+                  },
+                }
+              : current.data.runtimeStatus,
+          }, stoppedTask),
+        }));
       },
       async guideQueuedMessage(message) {
         const taskId = state.selectedTask?.id || state.data.activeTask.id;
@@ -1690,17 +2782,26 @@ export function useWorkbenchStore(): { state: WorkbenchState; actions: Workbench
           setState((current) => ({ ...current, runtimeError: error, data: appendRuntimeErrorFeedback(current.data, error) }));
           return;
         }
-        const queueDepth = Number((result.data as { queueDepth?: number } | null)?.queueDepth || 0);
+        const resultData = result.data as { queueDepth?: number; started?: boolean } | null;
+        const queueDepth = Number(resultData?.queueDepth || 0);
+        const started = Boolean(resultData?.started);
         setState((current) => {
-          const nextSelectedTask = current.selectedTask?.id === taskId ? { ...current.selectedTask, queueDepth } : current.selectedTask;
-          const nextActiveTask = current.data.activeTask.id === taskId ? { ...current.data.activeTask, queueDepth } : current.data.activeTask;
+          const nextStatus = started ? 'running' as WorkbenchTaskStatus : undefined;
+          const nextSelectedTask = current.selectedTask?.id === taskId
+            ? { ...current.selectedTask, queueDepth, ...(nextStatus ? { status: nextStatus } : {}) }
+            : current.selectedTask;
+          const nextActiveTask = current.data.activeTask.id === taskId
+            ? { ...current.data.activeTask, queueDepth, ...(nextStatus ? { status: nextStatus } : {}) }
+            : current.data.activeTask;
           return {
             ...current,
             selectedTask: nextSelectedTask,
             data: updateTaskProjection(updateQueuedMessageProjection({
               ...current.data,
               activeTask: nextActiveTask,
-            }, queueId, (item) => ({ ...item, deliveryMode: 'guide', status: 'completed', queueState: 'guided' })), nextActiveTask),
+            }, queueId, (item) => started
+              ? { ...item, deliveryMode: 'queue', status: 'consumed', queueState: 'started' }
+              : { ...item, deliveryMode: 'guide', status: 'completed', queueState: 'guided' }), nextActiveTask),
           };
         });
       },

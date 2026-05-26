@@ -4,10 +4,14 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { readJsonFile, writeJsonFile } = require('../platform/filesystem/jsonFile.cjs');
+const extensionService = require('../services/local-service/extensions/extensionService.cjs');
 
 const CHANNELS = Object.freeze([
   'redou:skills:list',
   'redou:skills:toggle',
+  'redou:skills:enable',
+  'redou:skills:disable',
+  'redou:skills:create',
   'redou:skills:rescan',
 ]);
 
@@ -152,9 +156,15 @@ async function toggleSkill(payload = {}, dependencies = {}) {
 
 function registerSkillsIpc(ipcMain, dependencies = {}) {
   if (!ipcMain) return CHANNELS;
-  handle(ipcMain, 'redou:skills:list', async (payload) => listSkills(payload, dependencies));
-  handle(ipcMain, 'redou:skills:rescan', async (payload) => listSkills(payload, dependencies));
-  handle(ipcMain, 'redou:skills:toggle', async (payload) => toggleSkill(payload, dependencies));
+  handle(ipcMain, 'redou:skills:list', async () => extensionService.listSkills(dependencies));
+  handle(ipcMain, 'redou:skills:rescan', async () => extensionService.listSkills(dependencies));
+  handle(ipcMain, 'redou:skills:toggle', async (payload) => extensionService.setSkillEnabled(dependencies, payload.id || payload.name, payload.enabled));
+  handle(ipcMain, 'redou:skills:enable', async (payload) => extensionService.setSkillEnabled(dependencies, payload.id || payload.name, true));
+  handle(ipcMain, 'redou:skills:disable', async (payload) => extensionService.setSkillEnabled(dependencies, payload.id || payload.name, false));
+  handle(ipcMain, 'redou:skills:create', async (payload) => {
+    const created = await extensionService.createSkill(dependencies, payload || {});
+    return { ...created, ...(await extensionService.listSkills(dependencies)) };
+  });
   return CHANNELS;
 }
 

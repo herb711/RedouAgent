@@ -36,6 +36,13 @@ const DEFAULT_APP_SETTINGS = Object.freeze({
     inAppBrowser: true,
     screenshotCapture: true,
   },
+  composer: {
+    permissionMode: 'default',
+  },
+  automation: {
+    allowModelCreate: false,
+    exposeToolToModel: false,
+  },
 });
 
 function isPlainObject(value) {

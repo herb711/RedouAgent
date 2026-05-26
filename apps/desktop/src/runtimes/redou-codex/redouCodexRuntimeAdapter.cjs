@@ -30,6 +30,34 @@ function createRedouCodexRuntimeAdapter(dependencies = {}) {
     resumeTask(input) {
       return getLifecycle().resumeTask(input);
     },
+    forkThread(input) {
+      const activeLifecycle = getLifecycle();
+      if (typeof activeLifecycle.forkThread !== 'function') {
+        throw new Error('redou-codex lifecycle does not support thread forking');
+      }
+      return activeLifecycle.forkThread(input);
+    },
+    archiveThread(input) {
+      const activeLifecycle = getLifecycle();
+      if (typeof activeLifecycle.archiveThread !== 'function') {
+        throw new Error('redou-codex lifecycle does not support thread archiving');
+      }
+      return activeLifecycle.archiveThread(input);
+    },
+    unarchiveThread(input) {
+      const activeLifecycle = getLifecycle();
+      if (typeof activeLifecycle.unarchiveThread !== 'function') {
+        throw new Error('redou-codex lifecycle does not support thread unarchiving');
+      }
+      return activeLifecycle.unarchiveThread(input);
+    },
+    setThreadName(input) {
+      const activeLifecycle = getLifecycle();
+      if (typeof activeLifecycle.setThreadName !== 'function') {
+        throw new Error('redou-codex lifecycle does not support thread renaming');
+      }
+      return activeLifecycle.setThreadName(input);
+    },
     steerTask(input) {
       return getLifecycle().steerTask(input);
     },
@@ -42,6 +70,11 @@ function createRedouCodexRuntimeAdapter(dependencies = {}) {
         throw new Error('redou-codex lifecycle does not support approval responses');
       }
       return activeLifecycle.respondApproval(input);
+    },
+    getPendingServerRequest(id) {
+      const activeLifecycle = getLifecycle();
+      if (typeof activeLifecycle.getPendingServerRequest !== 'function') return null;
+      return activeLifecycle.getPendingServerRequest(id);
     },
     dispose() {
       return lifecycle && typeof lifecycle.dispose === 'function'

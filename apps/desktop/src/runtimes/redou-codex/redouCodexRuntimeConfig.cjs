@@ -347,6 +347,77 @@ function tomlKey(key) {
   return /^[A-Za-z0-9_-]+$/.test(key) ? key : tomlString(key);
 }
 
+function parseTopLevelTomlFamily(line) {
+  const trimmed = String(line || '').trim();
+  const array = trimmed.startsWith('[[') && trimmed.endsWith(']]');
+  if (!array && !(trimmed.startsWith('[') && trimmed.endsWith(']'))) return null;
+  const body = array ? trimmed.slice(2, -2) : trimmed.slice(1, -1);
+  let quoted = false;
+  let escaped = false;
+  let family = '';
+  for (const char of body) {
+    if (escaped) {
+      family += char;
+      escaped = false;
+      continue;
+    }
+    if (char === '\\' && quoted) {
+      family += char;
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      quoted = !quoted;
+      family += char;
+      continue;
+    }
+    if (char === '.' && !quoted) break;
+    family += char;
+  }
+  return family.trim().replace(/^"|"$/g, '');
+}
+
+function tomlFamilyBlocks(text, families) {
+  const familySet = new Set(families);
+  const blocks = [];
+  let taking = false;
+  let current = [];
+  function flush() {
+    const block = current.join('\n').trim();
+    if (block) blocks.push(block);
+    current = [];
+  }
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const family = parseTopLevelTomlFamily(line);
+    if (family) {
+      if (taking) flush();
+      taking = familySet.has(family);
+    }
+    if (taking) current.push(line);
+  }
+  if (taking) flush();
+  return blocks;
+}
+
+function stripTomlFamilies(text, families) {
+  const familySet = new Set(families);
+  const kept = [];
+  let skipping = false;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const family = parseTopLevelTomlFamily(line);
+    if (family) skipping = familySet.has(family);
+    if (!skipping) kept.push(line);
+  }
+  return kept.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd();
+}
+
+function preserveRedouRuntimeUserBlocks(generatedText, existingText) {
+  const preservedFamilies = ['features', 'skills', 'mcp_servers', 'plugins', 'marketplaces', 'apps'];
+  const base = stripTomlFamilies(generatedText, preservedFamilies);
+  const preserved = tomlFamilyBlocks(existingText, preservedFamilies);
+  return `${[base, ...preserved].filter(Boolean).join('\n\n').trimEnd()}\n`;
+}
+
 function normalizeGeneratedProvider(provider = {}) {
   const id = cleanString(provider.runtimeProviderId || runtimeProviderId(provider.id || provider.provider || provider.label || provider.baseUrl));
   const label = cleanString(provider.label || provider.name || provider.id || id);
@@ -441,7 +512,8 @@ function writeRedouCodexUserConfigSync(options = {}) {
   const toml = renderRedouCodexUserConfig(options);
   if (!toml) return null;
   const configPath = path.join(redouCodexHome, REDOU_CODEX_CONFIG_FILE);
-  fs.writeFileSync(configPath, toml, 'utf8');
+  const existing = fs.existsSync(configPath) ? fs.readFileSync(configPath, 'utf8') : '';
+  fs.writeFileSync(configPath, preserveRedouRuntimeUserBlocks(toml, existing), 'utf8');
   return configPath;
 }
 

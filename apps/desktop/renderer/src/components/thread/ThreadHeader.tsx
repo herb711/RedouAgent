@@ -12,6 +12,7 @@ function displayStatus(task: WorkbenchTask, progressSteps: ProgressStepData[] = 
   const running = task.status === 'running';
   const queueDepth = task.queueDepth || 0;
   const active = progressSteps.find((step) => step.status === 'active');
+  if (runtimeStatus?.turnStatus === 'interrupted' || task.status === 'interrupted') return '已停止';
   if (runtimeStatus?.turnStatus === 'incomplete') return '未完成，需要继续';
   if (runtimeStatus?.turnStatus === 'waiting_approval') return '等待审批';
   if (runtimeStatus?.turnStatus === 'degraded') return '兼容模式';
