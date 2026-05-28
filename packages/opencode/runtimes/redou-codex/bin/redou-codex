@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+set -eu
+
+RUNTIME_ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+REDOU_PROJECT_ROOT="$(CDPATH= cd -- "$RUNTIME_ROOT/../.." && pwd)"
+: "${REDOU_CODEX_HOME:="$REDOU_PROJECT_ROOT/.redou/redou-codex"}"
+CODEX_HOME="$REDOU_CODEX_HOME"
+REDOU_CODEX_RUNTIME=1
+REDOU_CODEX_MANAGED_PACKAGE_ROOT="$RUNTIME_ROOT"
+export REDOU_PROJECT_ROOT REDOU_CODEX_HOME CODEX_HOME REDOU_CODEX_RUNTIME REDOU_CODEX_MANAGED_PACKAGE_ROOT
+mkdir -p "$REDOU_CODEX_HOME"
+
+RELEASE_BIN="$RUNTIME_ROOT/codex-rs/target/release/redou-codex"
+DEBUG_BIN="$RUNTIME_ROOT/codex-rs/target/debug/redou-codex"
+NODE_WRAPPER="$RUNTIME_ROOT/codex-cli/bin/redou-codex.js"
+
+if [ -x "$RELEASE_BIN" ]; then
+  echo "redou-codex exe: $RELEASE_BIN" >&2
+  exec "$RELEASE_BIN" "$@"
+fi
+
+if [ -x "$DEBUG_BIN" ]; then
+  echo "redou-codex exe: $DEBUG_BIN" >&2
+  exec "$DEBUG_BIN" "$@"
+fi
+
+if [ "${REDOU_CODEX_DEV_MODE:-}" != "1" ] && [ "${REDOU_CODEX_ALLOW_CARGO_FALLBACK:-}" != "1" ]; then
+  echo "REDOU_CODEX_RUNTIME_NOT_FOUND: redou-codex" >&2
+  exit 1
+fi
+
+if [ -f "$NODE_WRAPPER" ]; then
+  exec node "$NODE_WRAPPER" "$@"
+fi
+
+echo "REDOU_CODEX_RUNTIME_NOT_FOUND: redou-codex" >&2
+exit 1

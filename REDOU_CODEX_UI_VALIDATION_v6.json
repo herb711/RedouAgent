@@ -1,0 +1,242 @@
+{
+  "ok": true,
+  "passed": 47,
+  "failed": 0,
+  "checks": [
+    {
+      "name": "bridge file exists under packages/opencode/src/redou-codex-ui",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "bridge starts redou-codex app-server over stdio",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "thread/start mapped",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "turn/start mapped",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "agent message delta mapped",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "command output mapped to redou-codex.shell",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "file change/diff mapped",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "approval request mapped",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "approval reply exposed for permission route",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "unsafe bare codex/opencode rejected",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "official env vars stripped",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "runtime not found explicit error",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/session.ts contains RedouCodexUI.promptAsync",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/session.ts contains RedouCodexUI.command",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/session.ts contains RedouCodexUI.shell",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/session.ts contains RedouCodexUI.diff",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts contains RedouCodexUI.onGlobalEvent",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/global.ts contains redou-codex global event",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/event.ts contains RedouCodexUI.onGlobalEvent",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/event.ts contains redou-codex instance event",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/provider.ts contains RedouCodexUI.providerList",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/config.ts contains RedouCodexUI.configProviders",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/instance.ts contains name: \"redou-codex\"",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/instance.ts contains modelID: \"redou-codex/default\"",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/permission.ts contains RedouCodexUI.permissionReply",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "packages/opencode/src/server/routes/instance/httpapi/handlers/permission.ts contains RedouCodexUI.listPermissions",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "runtime copied into package-local redou-codex path",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "no root redou-opencode-adapter directory",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "no root runtimes directory added",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "no root bin directory added",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "bridge smoke ok",
+      "ok": true,
+      "detail": "session.created,message.updated,message.part.updated,session.status,message.updated,session.status,message.part.updated,message.part.updated"
+    },
+    {
+      "name": "smoke emitted session.created",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "smoke emitted message.part.delta",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "smoke emitted permission.asked",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "smoke emitted permission.replied",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "smoke emitted session.diff",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "smoke emitted session.status",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "fake redou app-server received initialize",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "fake redou app-server received thread/start",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "fake redou app-server received turn/start",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "resolver rejects bare codex",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "resolver rejects bare opencode",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "resolver missing explicit redou bin reports not found",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "runtime file count matches RedouAgent",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "runtime no missing files",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "runtime no changed files",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "runtime executable wrapper mode preserved",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}
